@@ -609,7 +609,11 @@ host terminal may still owe a reply to the previous connection. The client waits
 old Primary DA barrier or OSC 52 clipboard reply before sending a new query
 of the same kind. A request that reaches its deadline while waiting uses the
 usual timeout fallback. Host theme, color and pixel-size reports still update
-the client while it waits.
+the client while it waits. If an RGB or hex color value arrives before the first
+repaint and its terminator comes later, typing such as `zoom` reaches the pane
+as soon as it cannot extend the value. The client applies the color when the
+terminator arrives. Hex digits that still fit the value can be part of a slow
+color reply.
 
 If a clipboard reply starts before handoff and the terminal never finishes it,
 letters and digits typed afterward can look exactly like clipboard payload.

@@ -2580,6 +2580,9 @@ fn idle_guard_during_first_repaint_preserves_slow_host_reports() {
         b"\x1b]11;rgb:1/2/3\x07".as_slice(),
         b"\x1b]10;rgb:1/2/3\x1b\\",
         b"\x1b]4;3;rgb:1/2/3\x07",
+        b"\x1b]4;23;#abcdef012345\x1b\\",
+        b"\x1b]10;rgb:1a/bcd/3ef0\x07",
+        b"\x1b]4;23;red\x07",
         b"\x1b[?997;2n",
         b"\x1b[6;20;10t",
     ] {
@@ -2618,4 +2621,60 @@ fn idle_guard_during_first_repaint_preserves_slow_host_reports() {
             );
         }
     }
+}
+
+#[test]
+fn first_repaint_delivers_typing_while_a_host_color_awaits_its_terminator() {
+    for (report, keys, terminator) in [
+        (
+            b"\x1b]11;rgb:1/2/3".as_slice(),
+            b"zoom".as_slice(),
+            b"\x07".as_slice(),
+        ),
+        (b"\x1b]10;rgb:ffff/a/12", b"fade away", b"\x1b\\"),
+        (b"\x1b]4;19;#abc", b"face zoom\r", b"\x07"),
+    ] {
+        let complete = [report, terminator].concat();
+        let expected = StdinAnsiParser::new().feed(&complete).replies;
+        for split in 0..=keys.len() {
+            let mut parser = StdinAnsiParser::new();
+            parser.begin_forward_generation(Some(1));
+            parser.open_forward(1);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"A".to_vec());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+            parser.begin_forward_generation(Some(2));
+            parser.open_forward(2);
+            parser.queue_terminal_query(ForwardKind::Barrier, b"B".to_vec());
+            assert!(parser.feed(report).residue.is_empty());
+            parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+
+            let mut typed = parser.feed(&keys[..split]).residue;
+            typed.extend(parser.finalize_force());
+            typed.extend(parser.feed(&keys[split..]).residue);
+            typed.extend(parser.finalize_force());
+            assert_eq!(typed, keys, "split {split}");
+            let mut observed = Vec::new();
+            for byte in terminator {
+                let out = parser.feed(std::slice::from_ref(byte));
+                assert!(out.residue.is_empty() && out.completed_forward.is_none());
+                observed.extend(out.replies);
+            }
+            assert_eq!(format!("{observed:?}"), format!("{expected:?}"));
+            assert!(!parser.has_ready_terminal_query());
+            assert!(parser.feed(b"\x1b[?1c").completed_forward.is_none());
+            assert_eq!(parser.ready_terminal_queries().count(), 1);
+        }
+    }
+}
+
+#[test]
+fn first_repaint_keeps_keys_and_color_in_one_read_in_order() {
+    let mut parser = StdinAnsiParser::new();
+    assert!(parser.feed(b"\x1b]11;rgb:1/2/3").residue.is_empty());
+    parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+    let out = parser.feed(b"fade zoom\x07!\x1b]10;rgb:a/b/c\x1b\\");
+    assert_eq!(out.residue, b"fade zoom!");
+    assert!(matches!(&out.replies[..], [
+        HostReply::BackgroundColor(bg), HostReply::ForegroundColor(fg)
+    ] if bg == "rgb:1/2/3" && fg == "rgb:a/b/c"));
 }

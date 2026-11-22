@@ -6,6 +6,7 @@
 //! all other bytes (keyboard input) pass through as a residue byte sequence
 //! that the caller feeds to the normal keyboard parser.
 
+mod color_prefix;
 mod forward_timeout;
 mod host_reply;
 mod seq_scan;
@@ -14,6 +15,7 @@ pub use forward_timeout::{forward_timeout_runtime, schedule_timeout};
 pub use host_reply::{AnsiStdinInstruction, HostReply};
 pub use seq_scan::PendingPartial;
 
+use color_prefix::ColorPrefix;
 use seq_scan::{
     apc_status, contains_subslice, csi_status, marker_match, osc_status, MarkerMatch, SeqStatus,
     PARTIAL_BUFFER_CAP_BYTES, PASTE_END_MARKER, PASTE_START_MARKER,
@@ -209,7 +211,13 @@ enum InputBoundary {
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum OscKind {
-    HostColor,
+    HostColor {
+        prefix: ColorPrefix,
+        complete_at_boundary: bool,
+    },
+    InterruptedColor {
+        complete: bool,
+    },
     Clipboard,
     RetiredClipboard,
 }
@@ -234,7 +242,41 @@ impl PartialOsc {
     }
 
     fn is_clipboard(&self) -> bool {
-        self.kind != OscKind::HostColor
+        matches!(self.kind, OscKind::Clipboard | OscKind::RetiredClipboard)
+    }
+
+    /// A complete color may be waiting only for BEL or ST while the user types.
+    /// Send distinguishable keys through normal input decoding and keep the
+    /// report for its real terminator. ESC is handled by the framing code.
+    fn consume_color_byte(&mut self, byte: u8, keyboard: &mut Vec<u8>) -> bool {
+        match self.kind {
+            OscKind::HostColor {
+                prefix,
+                mut complete_at_boundary,
+            } => {
+                if let Some(next) = prefix.advance(byte) {
+                    self.bytes.push(byte);
+                    if !complete_at_boundary && next.complete() {
+                        complete_at_boundary = true;
+                        self.fresh_at = self.bytes.len();
+                    }
+                    self.kind = OscKind::HostColor {
+                        prefix: next,
+                        complete_at_boundary,
+                    };
+                } else {
+                    keyboard.extend_from_slice(&self.bytes[self.fresh_at..]);
+                    self.bytes.truncate(self.fresh_at);
+                    self.kind = OscKind::InterruptedColor {
+                        complete: complete_at_boundary,
+                    };
+                    keyboard.push(byte);
+                }
+            },
+            OscKind::InterruptedColor { .. } => keyboard.push(byte),
+            _ => return false,
+        }
+        true
     }
 
     fn accepts(&self, byte: u8) -> bool {
@@ -266,6 +308,13 @@ impl PartialOsc {
             if escaped {
                 self.bytes.push(0x1b);
             }
+        }
+        if let OscKind::HostColor {
+            prefix,
+            complete_at_boundary,
+        } = &mut self.kind
+        {
+            *complete_at_boundary = prefix.complete();
         }
         self.fresh_at = self.bytes.len();
     }
@@ -579,7 +628,14 @@ impl StdinAnsiParser {
     /// are the bytes the caller should feed to the keyboard parser.
     pub fn feed(&mut self, bytes: &[u8]) -> ParseOutput {
         let mut out = ParseOutput::default();
-        let bytes = self.resume_partial(bytes, &mut out.replies);
+        let mut keyboard = Vec::new();
+        let bytes = self.resume_partial(bytes, &mut out.replies, &mut keyboard);
+        let bytes = if keyboard.is_empty() {
+            bytes
+        } else {
+            keyboard.extend_from_slice(&bytes);
+            Cow::Owned(keyboard)
+        };
         let (bytes, nested_frames) = self.nested_frame_extractor.extract(&bytes);
         let bytes = &bytes[..];
         out.nested_frames = nested_frames;
@@ -918,9 +974,15 @@ impl StdinAnsiParser {
                 },
             );
         }
-        (self.preserves_host_observations(boundary)
-            && HOST_COLOR_HEADERS.iter().any(|h| bytes.starts_with(h)))
-        .then_some(OscKind::HostColor)
+        if !self.preserves_host_observations(boundary) {
+            return None;
+        }
+        let header = HOST_COLOR_HEADERS.iter().find(|h| bytes.starts_with(h))?;
+        let prefix = ColorPrefix::from_report(bytes, header);
+        Some(OscKind::HostColor {
+            prefix,
+            complete_at_boundary: prefix.complete(),
+        })
     }
 
     fn preserves_host_observations(&self, boundary: InputBoundary) -> bool {
@@ -947,6 +1009,7 @@ impl StdinAnsiParser {
         &mut self,
         bytes: &'a [u8],
         replies: &mut Vec<HostReply>,
+        keyboard: &mut Vec<u8>,
     ) -> Cow<'a, [u8]> {
         for (i, &byte) in bytes.iter().enumerate() {
             match self.recovery_partial.take() {
@@ -995,11 +1058,18 @@ impl StdinAnsiParser {
                     if (!escaped && byte == 7) || (escaped && byte == b'\\') {
                         if osc.kind == OscKind::RetiredClipboard {
                             self.clipboards.observe_terminator();
-                        } else {
+                        } else if !matches!(osc.kind, OscKind::InterruptedColor { complete: false })
+                        {
                             // Classify the complete live OSC through the ordinary decoder.
                             osc.bytes.extend_from_slice(&bytes[i..]);
                             return Cow::Owned(osc.bytes);
                         }
+                    } else if !escaped
+                        && byte != 0x1b
+                        && osc.bytes.len() < self.partial_buffer_limit
+                        && osc.consume_color_byte(byte, keyboard)
+                    {
+                        self.recovery_partial = Some(RecoveryPartial::Osc(osc));
                     } else if escaped
                         || !osc.accepts(byte)
                         || osc.bytes.len() >= self.partial_buffer_limit
