@@ -15,7 +15,7 @@ impl Direction {
     fn owner_field(&self) -> u32 {
         match self {
             Self::Client => 46,
-            Self::Server => 37,
+            Self::Server => 38,
         }
     }
 
@@ -23,7 +23,7 @@ impl Direction {
         match (self, field) {
             (Self::Client, 38) | (Self::Server, 26 | 29) => Some(WireType::Varint),
             (Self::Client, 1..=13 | 16..=20 | 22..=25 | 27..=45)
-            | (Self::Server, 1..=10 | 12..=16 | 18 | 20..=36) => Some(WireType::LengthDelimited),
+            | (Self::Server, 1..=10 | 12..=16 | 18 | 20..=37) => Some(WireType::LengthDelimited),
             _ => None,
         }
     }
@@ -117,3 +117,7 @@ impl<'a> Envelope<'a> {
         generation(bytes)
     }
 }
+
+#[cfg(test)]
+#[path = "unit/attachment_envelope.rs"]
+mod tests;

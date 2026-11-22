@@ -82,13 +82,19 @@ fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
             .position(|p| p["name"] == source)
             .unwrap();
         let original = metadata["packages"][index]["dependencies"].clone();
+        let dev_exception = ROOT_ONLY_DEV_EXCEPTIONS.contains(&(source, destination));
         for kind in [json!(null), json!("build"), json!("dev")] {
             for target in [json!(null), json!("cfg(target_family = \"wasm\")")] {
                 metadata["packages"][index]["dependencies"] = json!([{
                     "name": destination, "rename": "innocent_alias", "optional": true,
                     "kind": kind, "target": target
                 }]);
-                assert!(validate_dependency_boundaries(&metadata)
+                let result = validate_dependency_boundaries(&metadata);
+                if dev_exception && kind == "dev" {
+                    result.unwrap();
+                    continue;
+                }
+                assert!(result
                     .unwrap_err()
                     .to_string()
                     .contains(&format!("{source} may not depend on {destination}")));

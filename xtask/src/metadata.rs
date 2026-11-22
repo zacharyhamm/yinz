@@ -331,6 +331,16 @@ const COMPOSITION_ROOT: &str = "yinz";
 /// every workspace member, including those `LIBRARY_DEPENDENCIES` does not list.
 const ROOT_ONLY_DEPENDENCIES: &[&str] = &["yinz-server-os"];
 
+/// `(package, root-only crate)` pairs allowed as dev-dependencies only. The package's
+/// production code still reaches the backend through its trait; only its tests build the
+/// concrete one.
+const ROOT_ONLY_DEV_EXCEPTIONS: &[(&str, &str)] = &[
+    // Attachment tests drive the production router, screen publication and ACK gate
+    // through the real socket writer and descriptor registry under forced ClientId reuse.
+    // A fake backend cannot observe the writer's refusal prefix or a reused ID's sockets.
+    ("yinz-server", "yinz-server-os"),
+];
+
 /// Features that exist only for other crates' tests. Enabled from a normal or build dependency,
 /// one is compiled into everything that links the crate, the release binary included, and every
 /// build has it on, so a `cfg(any(test, feature = "test-support"))` gate excludes nothing.
@@ -387,10 +397,12 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
             let target = dependency["name"]
                 .as_str()
                 .context("Missing dependency name")?;
-            if ROOT_ONLY_DEPENDENCIES.contains(&target) {
+            let name = package["name"].as_str().context("Missing package name")?;
+            let excepted =
+                dependency["kind"] == "dev" && ROOT_ONLY_DEV_EXCEPTIONS.contains(&(name, target));
+            if ROOT_ONLY_DEPENDENCIES.contains(&target) && !excepted {
                 anyhow::bail!(
-                    "{} may not depend on {target}; only {COMPOSITION_ROOT} may (kind: {}, target: {})",
-                    package["name"].as_str().context("Missing package name")?,
+                    "{name} may not depend on {target}; only {COMPOSITION_ROOT} may (kind: {}, target: {})",
                     dependency["kind"],
                     dependency["target"]
                 );

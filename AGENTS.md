@@ -112,10 +112,12 @@ These changes do not automatically require or authorize a full-suite run.
 
 In-process whole-app tests use a fake OS backend. The real `yinz-server-os/`
 backend runs end to end only in tests that spawn the `yinz` binary, mainly the
-root package's tests and the integration suite's plugin-test sessions. For
-`yinz-server-os/` changes, select relevant tests from `yinz-server-os`, the root
-package, and the integration suite. Include relevant remote tests when remote
-spawning changes.
+root package's tests and the integration suite's plugin-test sessions. A few
+`yinz-server` attachment tests also drive its socket writer in process, the only
+dev-only exception in `ROOT_ONLY_DEV_EXCEPTIONS` (`xtask/src/metadata.rs`). For
+`yinz-server-os/` changes, select relevant tests from `yinz-server-os`,
+`yinz-server`, the root package, and the integration suite. Include relevant
+remote tests when remote spawning changes.
 
 For selected tests that bind TCP or Unix sockets, use sandbox escalation on the
 first attempt.
