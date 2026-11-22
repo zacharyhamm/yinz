@@ -27,6 +27,8 @@ const MAX_PENDING: usize = 256;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ASSEMBLY: usize = 64 * 1024;
 const POLICY_TIMEOUT: Duration = Duration::from_secs(1);
+/// Resolution reason for Claude's idle reminder, suppressed before policy.
+const CLAUDE_IDLE_REMINDER: &str = "claude_idle_reminder";
 
 #[derive(Default)]
 pub(super) struct NotificationPolicy {
@@ -66,7 +68,10 @@ impl Pending {
             + self.desktop.iter().map(raw_bytes).sum::<usize>()
     }
     fn fallback(&mut self, reason: &str) {
-        if self.fallback.as_deref() != Some("application_closed") {
+        // A screen-side suppression (application closed, Claude idle reminder) stands.
+        if !(matches!(self.decision, Some(NotificationDecision::Suppress))
+            && self.fallback.is_some())
+        {
             self.decision = Some(NotificationDecision::Pass);
             self.fallback = Some(reason.into());
         }
@@ -158,7 +163,7 @@ impl Screen {
             String::new(),
             text,
         );
-        self.queue_notification(original, vec![], None, click, completion, None)
+        self.queue_notification(original, vec![], None, click, completion, None, None)
     }
 
     fn queue_notification(
@@ -169,6 +174,7 @@ impl Screen {
         on_click: Option<NotificationClick>,
         completion: Option<NotificationEnd>,
         fallback: Option<String>,
+        suppress: Option<String>,
     ) -> Result<()> {
         self.core
             .bus
@@ -187,6 +193,11 @@ impl Screen {
             completion,
             fallback,
         );
+        if let Some(reason) = suppress {
+            // Decided before policy: the plugin is not asked and overflow cannot pass it.
+            pending.decision = Some(NotificationDecision::Suppress);
+            pending.fallback = Some(reason);
+        }
         if self
             .notices
             .notification_policy
@@ -231,6 +242,9 @@ impl Screen {
                 })
                 .context("report Codex plan prompt")
                 .non_fatal();
+            let claude_idle = yinz_agent_control::providers::claude_idle::idle_reminder(
+                &self.core, &title, &body, pane,
+            );
             let source = match &notification {
                 PendingNotification::Osc9 { .. } => NotificationSource::Osc9,
                 PendingNotification::Osc777 { .. } => NotificationSource::Osc777,
@@ -243,7 +257,7 @@ impl Screen {
                 payload,
                 display,
                 wants_report,
-                ..
+                terminator,
             } = &notification
             {
                 let (metadata, _) = split_osc99_payload(payload);
@@ -396,9 +410,13 @@ impl Screen {
                             sequence,
                             ..Default::default()
                         });
+                    // A Claude idle reminder is identified only by its completing chunk,
+                    // which must not reach the host even when the rest bypassed the policy.
                     if let Some(reason) = &assembly.bypass {
                         fallback = Some(reason.clone());
-                        self.deliver_desktop_notifications(vec![notification.clone()], pane);
+                        if !claude_idle {
+                            self.deliver_desktop_notifications(vec![notification.clone()], pane);
+                        }
                     } else {
                         assembly.bytes += raw_bytes(&notification);
                         assembly.chunks.push(notification.clone());
@@ -407,7 +425,10 @@ impl Screen {
                         {
                             assembly.bypass = Some("assembly_overflow".into());
                             assembly.bytes = 0;
-                            let raw = std::mem::take(&mut assembly.chunks);
+                            let mut raw = std::mem::take(&mut assembly.chunks);
+                            if claude_idle {
+                                raw.pop();
+                            }
                             self.deliver_desktop_notifications(raw, pane);
                             fallback = Some("assembly_overflow".into());
                         }
@@ -429,6 +450,23 @@ impl Screen {
                     self.deliver_desktop_notifications(chunks, pane);
                     continue;
                 }
+                if claude_idle && fallback.is_some() && !id.is_empty() {
+                    // Bypassed chunks already reached the host; discard what it assembled.
+                    // The report flag is part of the namespaced ID the host saw.
+                    // Claude ends the reminder with an empty `d=1:a=focus` chunk, which is
+                    // forwarded raw because it shows nothing. kitty drops an unfinished
+                    // notification on a close, so that chunk has no title left to complete;
+                    // without the close it would show a title-only "Claude Code".
+                    self.deliver_desktop_notifications(
+                        vec![PendingNotification::Osc99 {
+                            payload: format!("i={id}:p=close;"),
+                            terminator: terminator.clone(),
+                            wants_report: *wants_report,
+                            display: None,
+                        }],
+                        pane,
+                    );
+                }
                 osc99_identity = Some((id, *wants_report));
             } else {
                 chunks.push(notification);
@@ -440,7 +478,15 @@ impl Screen {
                 title,
                 body,
             );
-            self.queue_notification(original, chunks, osc99_identity, None, None, fallback)?;
+            self.queue_notification(
+                original,
+                chunks,
+                osc99_identity,
+                None,
+                None,
+                fallback,
+                claude_idle.then(|| CLAUDE_IDLE_REMINDER.into()),
+            )?;
         }
         Ok(())
     }
@@ -966,7 +1012,9 @@ impl NotificationPolicy {
         mut pending: Pending,
         senders: &yinz_bus::thread_bus::ThreadSenders,
     ) -> Result<()> {
-        if pending.policy.is_none() || pending.fallback.is_some() {
+        if pending.decision.is_some() {
+            // Already decided, as for a suppressed Claude idle reminder.
+        } else if pending.policy.is_none() || pending.fallback.is_some() {
             pending.decision = Some(NotificationDecision::Pass);
         } else if let Some(plugin) = pending.policy {
             senders

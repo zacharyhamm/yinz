@@ -95,6 +95,18 @@ per assembly; pending work is capped at 256 notifications and 16 MiB per session
 Overflow forwards original chunks and bypasses interception for the rest of
 that assembly.
 
+Claude Code's own idle reminder, "Claude is waiting for your input", is
+suppressed before the policy sees it when it comes from a pane Yinz tracks as a
+Claude agent. It still arrives as `NotificationReceived` and is recorded in
+history with fallback reason `claude_idle_reminder`. It is never shown as a
+toast, sent to the host terminal, or pushed to a phone. If OSC 99 chunks reached
+the host before the reminder was recognized, which happens when no policy is
+bound or its assembly bypassed the policy, Yinz withholds the completing chunk
+and sends the host a close for that ID. Claude's trailing empty OSC 99 chunk
+is forwarded unchanged and shows nothing, because the close already dropped
+the host's unfinished title. Claude's other notifications,
+such as permission requests, are unchanged.
+
 Detached sessions record and publish outcomes without replaying visible delivery
 on reattachment. Agent-state detection uses original content. Plain BEL events
 and editing click targets are outside this policy.

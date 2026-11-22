@@ -602,3 +602,124 @@ fn notifications_omit_recipients_with_no_terminal_output() {
     assert_eq!(frames[0].len(), 1);
     assert!(frames[0][&ClientId::new(1)].contains("finished"));
 }
+
+const CLAUDE_IDLE: &str = "Claude is waiting for your input";
+
+/// What the host received and how each notification resolved, after `bytes` reach pane 1
+/// while it runs an agent of `kind` (none for `None`).
+fn notify_from_agent_pane(
+    kind: Option<&str>,
+    bytes: &str,
+) -> (String, Vec<yinz_types::data::NotificationResolution>) {
+    let (mut screen, server_receiver) =
+        screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, kitty_env());
+    let terminal = TerminalId::new(1);
+    let agent = kind.map(|kind| {
+        let HookOutcome::Reported(agent) = hook_outcome(
+            kind,
+            &HookEvent {
+                hook_event_name: "Stop".into(),
+                session_id: "conversation".into(),
+                ..Default::default()
+            },
+        ) else {
+            panic!("a Stop reports an agent")
+        };
+        agent
+    });
+    crate::screen::apply_pane_agent_report(&mut screen, PaneId::Terminal(terminal), agent).unwrap();
+    let (sender, receiver) = channels::unbounded();
+    screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let pane = screen
+        .get_active_tab_mut(ClientId::new(1))
+        .unwrap()
+        .get_active_pane_mut(ClientId::new(1))
+        .unwrap();
+    assert_eq!(pane.pid(), PaneId::Terminal(terminal));
+    pane.handle_pty_bytes(bytes.as_bytes().to_vec());
+    let notifications = pane
+        .terminal_io_mut()
+        .unwrap()
+        .drain_desktop_notifications();
+    assert!(!notifications.is_empty(), "{bytes:?} is a notification");
+    screen.forward_desktop_notifications(notifications, terminal);
+    let resolved = receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events
+                .into_iter()
+                .filter_map(|(_, _, event)| match event {
+                    Event::NotificationResolved(resolution) => Some(resolution),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    (collect_forwarded_notifications(&server_receiver), resolved)
+}
+
+fn each_protocol(text: &str) -> [String; 3] {
+    [
+        format!("\x1b]9;{text}\x07"),
+        format!("\x1b]777;notify;Claude Code;{text}\x07"),
+        // Claude Code's own kitty sequence. The body chunk completes the notification, so
+        // the trailing empty chunk starts a new one with no text.
+        format!(
+            "\x1b]99;i=idle:d=0:p=title;Claude Code\x07\x1b]99;i=idle:p=body;{text}\x07\x1b]99;i=idle:d=1:a=focus;\x07"
+        ),
+    ]
+}
+
+#[test]
+fn claude_idle_reminders_are_suppressed_from_a_claude_pane() {
+    for bytes in each_protocol(CLAUDE_IDLE) {
+        let (forwarded, resolved) = notify_from_agent_pane(Some("claude"), &bytes);
+        if bytes.starts_with("\x1b]99;") {
+            // With no policy bound, the title chunk streams to the host before the body
+            // identifies the reminder, so the host is told to discard it. The trailing empty
+            // chunk is forwarded as is: kitty dropped the unfinished title on the close, so
+            // that chunk has no title and shows nothing. Without the close it would complete
+            // a "Claude Code" notification.
+            assert_eq!(
+                forwarded,
+                "\x1b]99;i=p1.idle:d=0:p=title:a=focus,report;Claude Code\x07\
+                 \x1b]99;i=p1.idle:p=close;\x07\
+                 \x1b]99;i=p1.idle:d=1:a=focus,report;\x07"
+            );
+        } else {
+            assert_eq!(forwarded, "", "{bytes:?} reaches no host");
+        }
+        assert_eq!(resolved.len(), 1, "{bytes:?}");
+        assert!(resolved[0].suppressed, "{bytes:?}");
+        assert_eq!(
+            resolved[0].fallback_reason.as_deref(),
+            Some("claude_idle_reminder"),
+            "{bytes:?}"
+        );
+        assert!(resolved[0].original.body.contains(CLAUDE_IDLE), "{bytes:?}");
+    }
+}
+
+#[test]
+fn claude_idle_reminders_pass_from_other_panes_and_other_claude_notifications_pass() {
+    for (kind, text) in [
+        (None, CLAUDE_IDLE),
+        (Some("codex"), CLAUDE_IDLE),
+        (Some("claude"), "Claude needs your permission to use Bash"),
+        (
+            Some("claude"),
+            "Claude is waiting for your input to continue the plan",
+        ),
+    ] {
+        for bytes in each_protocol(text) {
+            let (forwarded, resolved) = notify_from_agent_pane(kind, &bytes);
+            assert!(
+                forwarded.contains(text),
+                "{kind:?} {bytes:?} reaches the host"
+            );
+            assert_eq!(resolved.len(), 1, "{kind:?} {bytes:?}");
+            assert!(!resolved[0].suppressed, "{kind:?} {bytes:?}");
+        }
+    }
+}

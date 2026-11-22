@@ -1320,3 +1320,143 @@ fn a_toast_raised_before_the_first_client_is_shown_to_that_client_only() {
         shown(&screen)
     );
 }
+
+/// Track pane 1 as an idle Claude agent.
+fn claude_on_pane_1(screen: &mut Screen) {
+    use yinz_types::agent::{hook_outcome, HookEvent, HookOutcome};
+    let HookOutcome::Reported(agent) = hook_outcome(
+        "claude",
+        &HookEvent {
+            hook_event_name: "Stop".into(),
+            session_id: "conversation".into(),
+            ..Default::default()
+        },
+    ) else {
+        panic!("a Stop reports an agent")
+    };
+    crate::screen::apply_pane_agent_report(
+        screen,
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(agent),
+    )
+    .unwrap();
+}
+
+#[test]
+fn claude_idle_reminders_are_suppressed_without_asking_the_policy_and_stay_suppressed() {
+    let (mut screen, server, plugins, _) = policy_screen();
+    claude_on_pane_1(&mut screen);
+    // An undecided notification ahead in the queue holds the reminders back, so the
+    // overflow below reaches them before they commit.
+    screen
+        .receive_toast("ahead".into(), None, None, None, None)
+        .unwrap();
+    screen
+        .receive_desktop_notifications(
+            vec![
+                osc("i=idle:d=0;Claude Code", None),
+                osc(
+                    "i=idle:p=body;Claude is waiting for your input",
+                    Some(("Claude Code", "Claude is waiting for your input")),
+                ),
+                // Claude's trailing empty chunk, which has nothing to show.
+                osc("i=idle:d=1:a=focus;", None),
+                PendingNotification::Osc9 {
+                    body: "Claude is waiting for your input".into(),
+                },
+            ],
+            TerminalId::new(1),
+        )
+        .unwrap();
+    assert_eq!(
+        desktop_output(&server),
+        "\x1b]99;i=p1r.idle:d=1:a=focus,report;\x1b\\",
+        "only the trailing empty chunk reaches the host"
+    );
+    let requested: Vec<_> = events(&plugins)
+        .into_iter()
+        .filter_map(|(_, event)| match event {
+            Event::NotificationRequested(data) => Some(data.body),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requested, ["ahead"], "only the toast asks the policy");
+    for index in 0..256 {
+        screen
+            .receive_toast(format!("flood-{index}"), None, None, None, None)
+            .unwrap();
+    }
+    let reminders: Vec<_> = screen
+        .notices
+        .notification_history
+        .iter()
+        .filter_map(|record| record.info.outcome.as_ref())
+        .filter(|outcome| outcome.original.body == "Claude is waiting for your input")
+        .collect();
+    assert_eq!(reminders.len(), 2);
+    for outcome in reminders {
+        assert!(outcome.suppressed);
+        assert_eq!(
+            outcome.fallback_reason.as_deref(),
+            Some("claude_idle_reminder")
+        );
+    }
+    assert!(!desktop_output(&server).contains("Claude"));
+}
+
+#[test]
+fn claude_idle_reminders_stay_off_the_host_after_their_assembly_bypassed_the_policy() {
+    const REMINDER: &str = "Claude is waiting for your input";
+    // `released`: a policy reload releases the held title chunk before the body arrives.
+    // Otherwise the completing body chunk itself overflows the 64 KiB assembly bound.
+    for released in [true, false] {
+        let (mut screen, server, _, _) = policy_screen();
+        claude_on_pane_1(&mut screen);
+        let title = if released {
+            "Claude Code".to_owned()
+        } else {
+            "x".repeat(64 * 1024 - 64)
+        };
+        screen
+            .receive_desktop_notifications(
+                vec![osc(&format!("i=idle:d=0;{title}"), None)],
+                TerminalId::new(1),
+            )
+            .unwrap();
+        if released {
+            screen
+                .notification_policy_unavailable(POLICY, "policy_reloaded".into(), false)
+                .unwrap();
+        }
+        let body = format!("i=idle:p=body;{REMINDER}{}", " ".repeat(128));
+        screen
+            .receive_desktop_notifications(
+                vec![osc(&body, Some((&title, REMINDER)))],
+                TerminalId::new(1),
+            )
+            .unwrap();
+        let output = desktop_output(&server);
+        assert!(output.contains(&title), "released={released}: {output:?}");
+        assert!(
+            !output.contains(REMINDER),
+            "released={released}: {output:?}"
+        );
+        // The app asked for reports, so the host knows this ID with the `r` flag.
+        assert!(
+            output.ends_with("\x1b]99;i=p1r.idle:p=close;\x1b\\"),
+            "released={released}: {output:?}"
+        );
+        let outcome = screen
+            .notices
+            .notification_history
+            .last()
+            .and_then(|record| record.info.outcome.as_ref())
+            .unwrap();
+        assert!(outcome.suppressed, "released={released}");
+        assert_eq!(
+            outcome.fallback_reason.as_deref(),
+            Some("claude_idle_reminder"),
+            "released={released}"
+        );
+    }
+}
