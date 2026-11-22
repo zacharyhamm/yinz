@@ -55,9 +55,13 @@ fn access<T>(
     let mut devices: Vec<Device> = rows
         .into_iter()
         .filter_map(|row| {
-            serde_json::from_value(row)
-                .map_err(|e| log::warn!("dropping an undecodable Siri pairing: {e}"))
-                .ok()
+            match serde_json::from_value(row).context("drop an undecodable Siri pairing") {
+                Ok(device) => Some(device),
+                Err(error) => {
+                    Err::<(), _>(error).non_fatal();
+                    None
+                },
+            }
         })
         .collect();
     devices.retain(|d| {

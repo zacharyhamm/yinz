@@ -198,14 +198,30 @@ fn matches(agent: &Agent, mut target: &str, providers: &[String]) -> bool {
             _ => &[],
         };
         if !locations.is_empty() {
+            // "in the swamp project" puts an article before the name and a noun after it.
+            let article = ["the ", "a "]
+                .into_iter()
+                .find_map(|article| rest.strip_prefix(article));
             let Some(remaining) = locations
                 .iter()
                 .filter(|name| !name.is_empty())
-                .filter_map(|name| after_name(rest, name))
+                .flat_map(|name| {
+                    [Some(rest), article]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(move |text| after_name(text, name))
+                })
                 .min_by_key(|s| s.len())
             else {
                 return false;
             };
+            if let Some(after_noun) = ["project", "session", "branch", "worktree"]
+                .into_iter()
+                .find_map(|noun| after_name(remaining, noun))
+                && matches(agent, after_noun, providers)
+            {
+                return true;
+            }
             target = remaining;
             continue;
         }
@@ -270,6 +286,9 @@ pub(super) struct Launch {
 pub(super) struct Prepared {
     pub utterance: String,
     pub action: Mutation,
+    /// When the command was checkpointed, so a recovery that keeps failing can be abandoned.
+    #[serde(default)]
+    pub since_ms: i64,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) enum Mutation {

@@ -158,6 +158,8 @@ const CHECK_LAUNCH: &str = "The launch outcome is uncertain. Say “check again�
 const CHANGED: &str = "That conversation ended or changed. Please select an agent again.";
 /// How long Siri waits for the answer that refines an unmatched search.
 const REFINEMENT_WINDOW_MS: i64 = 120_000;
+/// How long a checkpointed command keeps retrying its recovery before Siri gives up on it.
+const RECOVERY_WINDOW_MS: i64 = 120_000;
 struct Context<'a> {
     state: &'a State,
     listener_instance: &'a str,
@@ -303,15 +305,26 @@ impl Context<'_> {
                 "application/json",
             );
         }
-        let result = if let Some(prepared) = &d.prepared {
-            match prepared.action.clone() {
+        let recovering = d.prepared.as_ref().map(|p| (p.action.clone(), p.since_ms));
+        let result = match recovering.clone() {
+            Some((
                 Mutation::Send {
                     id, agent, after, ..
-                } => self.recover_send(&id, agent, after).await,
-                action => self.mutate(action).await,
-            }
-        } else {
-            self.interpret(&cmd.command).await
+                },
+                _,
+            )) => self.recover_send(&id, agent, after).await,
+            Some((action, _)) => self.mutate(action).await,
+            None => self.interpret(&cmd.command).await,
+        };
+        // The phone resubmits a checkpointed command on every run, so a recovery that keeps
+        // failing would otherwise refuse every later command, including "cancel".
+        let result = match (result, recovering) {
+            (Err(Failure::Retry), Some((action, since)))
+                if self.state.auth.now_ms().saturating_sub(since) > RECOVERY_WINDOW_MS =>
+            {
+                Ok(self.abandon(action))
+            },
+            (result, _) => result,
         };
         let mut reply = match result {
             Ok(answer) => answer,
@@ -330,6 +343,22 @@ impl Context<'_> {
             return unavailable();
         }
         json_response(reply)
+    }
+
+    /// Release a checkpointed command whose recovery kept failing, saying what may have happened.
+    fn abandon(&mut self, action: Mutation) -> Value {
+        match action {
+            Mutation::Launch(body) => {
+                self.phone.dialogue.uncertain_launch = Some(body);
+                answer(CHECK_LAUNCH, true)
+            },
+            Mutation::Send { .. } => {
+                answer("Delivery is uncertain. Check the agent’s timeline.", false)
+            },
+            Mutation::Readback => {
+                answer("Message delivered. Ask “did it reply?” in a moment.", false)
+            },
+        }
     }
 
     async fn interpret(&mut self, input: &str) -> Result<Value> {
@@ -616,10 +645,11 @@ impl Context<'_> {
         match r["outcome"].as_str() {
             Some("submitted" | "command_sent") => {},
             _ if recovering && r["acknowledged"] == true => {},
+            // A prompt whose delivery started may have reached the agent before it changed.
             Some(
                 "target_changed" | "target_closed" | "not_agent" | "target_not_found"
                 | "target_exited",
-            ) => return Err(spoken(CHANGED)),
+            ) if r["prompt_delivery"] != "started" => return Err(spoken(CHANGED)),
             Some("rejected") if r["prompt_delivery"] != "started" => {
                 return Err(spoken(
                     r["message"]
@@ -657,6 +687,7 @@ impl Context<'_> {
         self.phone.dialogue.prepared = Some(Prepared {
             utterance: input.into(),
             action: action.clone(),
+            since_ms: self.state.auth.now_ms(),
         });
         self.save().await?;
         self.mutate(action).await
@@ -702,7 +733,8 @@ impl Context<'_> {
                 });
                 match self.bind_launch().await {
                     Ok(()) => Ok(answer("Agent launched and selected.", false)),
-                    Err(Failure::Retry) => Ok(answer(
+                    // The launch succeeded; only selecting it failed, so never invite a relaunch.
+                    Err(Failure::Retry | Failure::TargetChanged) => Ok(answer(
                         "The agent launched. Say “tell it” once it is ready.",
                         false,
                     )),
@@ -798,7 +830,13 @@ impl Context<'_> {
             vec![],
             Some(json!({"submission_id":l.id,"agent":agent.identity})),
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            Failure::Spoken(speech) => Failure::Spoken(format!(
+                "The agent launched, but Yinz could not select it. {speech}"
+            )),
+            error => error,
+        })?;
         self.phone.dialogue.selected = Some(agent);
         self.phone.dialogue.launched = None;
         Ok(())

@@ -1100,3 +1100,55 @@ async fn siri_stale_request_resyncs_the_cursor_and_in_flight_command() {
     );
     assert_eq!(phone.backend.0.lock().unwrap().sends.len(), 1);
 }
+
+#[test]
+fn siri_location_accepts_an_article_and_a_trailing_noun() {
+    let agent: Agent = serde_json::from_value(row(1)).unwrap();
+    for target in [
+        "the agent in the swamp project",
+        "the agent in swamp project",
+        "the agent in a swamp worktree",
+        "the agent on the mobile login 1 branch",
+        "the agent in session session 1",
+    ] {
+        assert!(matching_target(target)(&agent), "{target}");
+    }
+    for target in [
+        "the agent in the yinz project",
+        "the agent on the main branch",
+    ] {
+        assert!(!matching_target(target)(&agent), "{target}");
+    }
+}
+
+#[tokio::test]
+async fn siri_abandons_a_recovery_that_keeps_failing() {
+    let clock = Arc::new(AtomicI64::new(SystemClock.now_ms()));
+    let mut phone = Phone::with_clock(clock.clone());
+    let send = "Tell the agent on mobile login 1 to run tests";
+    {
+        let mut live = phone.backend.0.lock().unwrap();
+        live.lose_send_response = true;
+        live.lookup_unavailable = true;
+    }
+    assert_eq!(
+        phone.request(&phone.cursor, send).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // Within the window the phone keeps recovering, and any other command is stale.
+    assert_eq!(
+        phone.request(&phone.cursor, send).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        conflict(&phone, &phone.cursor, "cancel").await["pending"],
+        send
+    );
+    clock.fetch_add(RECOVERY_WINDOW_MS + 1, Ordering::Release);
+    assert!(phone.say(send).await["speech"]
+        .as_str()
+        .unwrap()
+        .contains("Delivery is uncertain"));
+    assert_eq!(phone.say("cancel").await["speech"], "Okay.");
+    assert_eq!(phone.backend.0.lock().unwrap().sends.len(), 1);
+}
