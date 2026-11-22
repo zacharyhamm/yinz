@@ -193,6 +193,23 @@ enum StartupKittyProbe {
     Resolved,
 }
 
+impl StartupKittyProbe {
+    fn observe_reply(&mut self, payload: &[u8]) -> Option<HostReply> {
+        if !matches!(self, Self::AwaitingReply | Self::UnsupportedAwaitingReply)
+            || !payload.starts_with(b"G")
+            || !contains_subslice(payload, b"i=31")
+        {
+            return None;
+        }
+        let supported = contains_subslice(payload, b"i=31;OK");
+        // A late success upgrades the provisional negative. A late refusal
+        // settles the probe without sending the same capability twice.
+        let publish = supported || *self == Self::AwaitingReply;
+        *self = Self::Resolved;
+        publish.then_some(HostReply::KittyGraphicsSupport(supported))
+    }
+}
+
 /// Input that may still complete a terminal sequence across a recovery boundary.
 enum RecoveryPartial {
     Prefix {
@@ -226,66 +243,80 @@ enum OscKind {
         input: ColorInput,
     },
     Clipboard,
-    RetiredClipboard(ClipboardField),
+    RetiredClipboard(ClipboardFields),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum ClipboardField {
-    Selection,
-    DataStart,
-    Data,
+struct ClipboardFields {
+    // Both can be possible when a semicolon in pasted text could also have
+    // ended the selector. Ordinary base64 bytes are private in every field.
+    may_be_selection: bool,
+    may_start_data: bool,
 }
 
-impl ClipboardField {
+impl ClipboardFields {
     fn from_report(bytes: &[u8]) -> Self {
         let mut fields = bytes[b"\x1b]52;".len()..].splitn(2, |&byte| byte == b';');
-        match fields.nth(1) {
-            None => Self::Selection,
-            Some([] | [0x1b]) => Self::DataStart,
-            Some(_) => Self::Data,
+        let data = fields.nth(1);
+        Self {
+            may_be_selection: data.is_none(),
+            may_start_data: matches!(data, Some([] | [0x1b])),
         }
     }
 
-    fn consume(&mut self, byte: u8) -> bool {
-        if *self == Self::Selection && byte == b';' {
-            *self = Self::DataStart;
+    fn consume(&mut self, byte: u8, in_paste: bool) -> bool {
+        if self.may_be_selection && byte == b';' {
+            self.may_be_selection = in_paste;
+            self.may_start_data = true;
             return true;
         }
-        let payload = byte.is_ascii_alphanumeric() || b"+/=".contains(&byte);
-        if payload || (*self == Self::DataStart && byte == b'?') {
-            if *self == Self::DataStart {
-                *self = Self::Data;
-            }
+        if byte.is_ascii_alphanumeric()
+            || b"+/=".contains(&byte)
+            || (self.may_start_data && byte == b'?')
+        {
+            // A compatible paste byte can belong entirely to the paste, so
+            // the retired reply might still be at the start of its data.
+            self.may_start_data &= in_paste;
             return true;
         }
         false
     }
 }
 
-/// A possible ST introducer is kept separately from the report body. Only a
-/// fresh ESC can go to the keyboard, once the following byte rules out ST.
+/// The introducer owns the sequence. First repaint enables keys on the same
+/// terminal; attachment replacement keeps only enough framing to drain it.
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum OscEscape {
-    None,
-    BeforeBoundary,
+enum InputOrigin {
     Fresh,
+    HostOnly,
+    Stale,
+}
+
+impl InputOrigin {
+    fn mark_boundary(&mut self, boundary: InputBoundary) {
+        if boundary == InputBoundary::Recovery {
+            *self = Self::Stale;
+        } else if *self == Self::Fresh {
+            *self = Self::HostOnly;
+        }
+    }
 }
 
 struct PartialOsc {
     bytes: Vec<u8>,
     fresh_at: usize,
-    escape: OscEscape,
+    escape: Option<InputOrigin>,
     interruption: Interruption,
     kind: OscKind,
 }
 
 impl PartialOsc {
-    fn new(mut bytes: Vec<u8>, kind: OscKind) -> Self {
+    fn new(mut bytes: Vec<u8>, kind: OscKind, boundary: InputBoundary) -> Self {
         let escape = if bytes.ends_with(b"\x1b") {
             bytes.pop();
-            OscEscape::BeforeBoundary
+            Some(InputOrigin::Fresh)
         } else {
-            OscEscape::None
+            None
         };
         let mut partial = Self {
             bytes,
@@ -294,7 +325,7 @@ impl PartialOsc {
             interruption: Interruption::None,
             kind,
         };
-        partial.mark_boundary();
+        partial.mark_boundary(boundary);
         partial
     }
 
@@ -404,16 +435,16 @@ impl PartialOsc {
             _ => self.bytes.len(),
         };
         let mut keys = self.bytes.split_off(start);
-        if self.escape == OscEscape::Fresh {
+        if self.escape == Some(InputOrigin::Fresh) {
             keys.push(0x1b);
         }
         keys
     }
 
-    fn mark_boundary(&mut self) {
-        self.interruption.mark_boundary();
-        if self.escape == OscEscape::Fresh {
-            self.escape = OscEscape::BeforeBoundary;
+    fn mark_boundary(&mut self, boundary: InputBoundary) {
+        self.interruption.mark_boundary(boundary);
+        if let Some(origin) = &mut self.escape {
+            origin.mark_boundary(boundary);
         }
         if matches!(self.kind, OscKind::RetiredClipboard(_)) {
             self.bytes.clear();
@@ -965,7 +996,11 @@ impl StdinAnsiParser {
             // An idle tick does not retract the physical query. Preserve its
             // reply for this owner, or just its framing if recovery intervenes.
             self.inner = InputParser::new();
-            self.recovery_partial = Some(RecoveryPartial::Osc(PartialOsc::new(pending, kind)));
+            self.recovery_partial = Some(RecoveryPartial::Osc(PartialOsc::new(
+                pending,
+                kind,
+                InputBoundary::Idle,
+            )));
             return Vec::new();
         }
         if !pending.is_empty() && self.is_recovery_prefix(&pending, InputBoundary::Idle) {
@@ -1038,12 +1073,12 @@ impl StdinAnsiParser {
                 if osc.kind == OscKind::Clipboard
                     && (boundary == InputBoundary::Recovery || self.clipboards.retired != 0)
                 {
-                    osc.kind = OscKind::RetiredClipboard(ClipboardField::from_report(&osc.bytes));
+                    osc.kind = OscKind::RetiredClipboard(ClipboardFields::from_report(&osc.bytes));
                 }
-                osc.mark_boundary();
+                osc.mark_boundary(boundary);
             },
             Some(RecoveryPartial::Osc(osc)) if boundary == InputBoundary::FirstRepaint => {
-                osc.mark_boundary()
+                osc.mark_boundary(boundary)
             },
             Some(RecoveryPartial::Osc(_)) => self.recovery_partial = None,
             Some(RecoveryPartial::Prefix {
@@ -1067,7 +1102,9 @@ impl StdinAnsiParser {
                     .unwrap_or(0);
                 Some(RecoveryPartial::Paste(matched))
             } else if let Some(kind) = self.partial_osc_kind(&pending, boundary) {
-                Some(RecoveryPartial::Osc(PartialOsc::new(pending, kind)))
+                Some(RecoveryPartial::Osc(PartialOsc::new(
+                    pending, kind, boundary,
+                )))
             } else if self.is_recovery_prefix(&pending, boundary) {
                 Some(RecoveryPartial::Prefix {
                     fresh_at: pending.len(),
@@ -1084,7 +1121,7 @@ impl StdinAnsiParser {
         if self.clipboards.outstanding != 0 && bytes.starts_with(b"\x1b]52;") {
             return Some(
                 if boundary == InputBoundary::Recovery || self.clipboards.retired != 0 {
-                    OscKind::RetiredClipboard(ClipboardField::from_report(bytes))
+                    OscKind::RetiredClipboard(ClipboardFields::from_report(bytes))
                 } else {
                     OscKind::Clipboard
                 },
@@ -1141,7 +1178,9 @@ impl StdinAnsiParser {
                         if boundary != InputBoundary::Idle && prefix == PASTE_START_MARKER {
                             Some(RecoveryPartial::Paste(0))
                         } else if let Some(kind) = self.partial_osc_kind(&prefix, boundary) {
-                            Some(RecoveryPartial::Osc(PartialOsc::new(prefix, kind)))
+                            Some(RecoveryPartial::Osc(PartialOsc::new(
+                                prefix, kind, boundary,
+                            )))
                         } else if boundary != InputBoundary::Recovery
                             && matches!(csi_status(&prefix), SeqStatus::Complete(_))
                         {
@@ -1176,6 +1215,7 @@ impl StdinAnsiParser {
                         && osc.consume_interruption(
                             byte,
                             self.partial_buffer_limit,
+                            &mut self.startup_kitty_probe,
                             replies,
                             keyboard,
                         )
@@ -1183,14 +1223,14 @@ impl StdinAnsiParser {
                         self.recovery_partial = Some(RecoveryPartial::Osc(osc));
                         continue;
                     }
-                    if retained && osc.escape != OscEscape::None && byte != b'\\' {
-                        if osc.escape == OscEscape::Fresh {
+                    if retained && osc.escape.is_some() && byte != b'\\' {
+                        if osc.escape == Some(InputOrigin::Fresh) {
                             osc.interrupt_color(keyboard);
                             keyboard.push(0x1b);
                         }
-                        osc.escape = OscEscape::None;
+                        osc.escape = None;
                     }
-                    let escaped = osc.escape != OscEscape::None;
+                    let escaped = osc.escape.is_some();
                     if (!escaped && byte == 7) || (escaped && byte == b'\\') {
                         if matches!(osc.kind, OscKind::RetiredClipboard(_)) {
                             self.clipboards.observe_terminator();
@@ -1204,8 +1244,8 @@ impl StdinAnsiParser {
                         }
                     } else if let OscKind::RetiredClipboard(field) = &mut osc.kind {
                         if byte == 0x1b {
-                            osc.escape = OscEscape::Fresh;
-                        } else if !field.consume(byte) {
+                            osc.escape = Some(InputOrigin::Fresh);
+                        } else if !field.consume(byte, false) {
                             keyboard.push(byte);
                         }
                         self.recovery_partial = Some(RecoveryPartial::Osc(osc));
@@ -1224,7 +1264,7 @@ impl StdinAnsiParser {
                         return Cow::Owned(keyboard);
                     } else {
                         if byte == 0x1b {
-                            osc.escape = OscEscape::Fresh;
+                            osc.escape = Some(InputOrigin::Fresh);
                         } else {
                             osc.bytes.push(byte);
                         }
@@ -1272,24 +1312,8 @@ impl StdinAnsiParser {
                 match apc_status(rest) {
                     SeqStatus::Complete(len) => {
                         let payload = &rest[2..len - 2];
-                        if matches!(
-                            self.startup_kitty_probe,
-                            StartupKittyProbe::AwaitingReply
-                                | StartupKittyProbe::UnsupportedAwaitingReply
-                        ) && payload.first() == Some(&b'G')
-                            && contains_subslice(payload, b"i=31")
-                        {
-                            let supported = contains_subslice(payload, b"i=31;OK");
-                            // A late `OK` still turns the capability on - a slow host is not an
-                            // incapable one - but a late refusal only repeats what the barrier
-                            // or deadline said, and a repeat costs the server a whole `ModeUpdate`
-                            // fan-out to every plugin for no change.
-                            if supported
-                                || self.startup_kitty_probe == StartupKittyProbe::AwaitingReply
-                            {
-                                replies.push(HostReply::KittyGraphicsSupport(supported));
-                            }
-                            self.startup_kitty_probe = StartupKittyProbe::Resolved;
+                        if let Some(reply) = self.startup_kitty_probe.observe_reply(payload) {
+                            replies.push(reply);
                         }
                         i += len;
                         continue;

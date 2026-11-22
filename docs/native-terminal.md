@@ -641,11 +641,20 @@ This includes letters typed on the replacement, even after Enter. Enter,
 Ctrl-C, spaces and complete arrow keys reach the keyboard handler while the
 client continues draining the old reply. A terminal string or bracketed paste
 can carry its own terminator. That terminator leaves the old query pending.
-Even inside the paste, bytes that could be old clipboard data are discarded.
+Inside a paste, the client discards bytes that fit the unfinished clipboard
+field. Once clipboard data has started, pasted semicolons and question marks
+reach the pane. A color or graphics probe reply that spans the replacement's
+first repaint still updates that attachment.
 The old reply's own terminator releases the next waiting clipboard query, and
 typing after it works normally. If the terminal never sends the terminator,
 ambiguous typing continues to be discarded and waiting clipboard queries can
 time out.
+
+On a legacy terminal, Alt+Shift+P can send the same bytes as the start of a
+device control string (DCS). If this happens during the clipboard drain, even
+a following BEL, Enter or Ctrl-C can belong to that string. The client waits
+for the string terminator and then the clipboard terminator. When the bytes
+actually came from the key, typing and clipboard requests can remain blocked.
 
 | Client and server | Attachment behavior |
 |---|---|

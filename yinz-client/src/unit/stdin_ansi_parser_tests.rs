@@ -2584,6 +2584,165 @@ fn retired_clipboard_ignores_terminators_inside_intervening_strings_and_paste() 
     }
 }
 
+fn interrupted_clipboard() -> StdinAnsiParser {
+    let mut parser = source_clipboard_partial(b"\x1b]52;c;b2xk").take_for_next_attachment();
+    parser.begin_forward_generation(Some(2));
+    assert_eq!(parser.feed(b"\r").residue, b"\r");
+    parser
+}
+
+fn queue_replacement_clipboard(parser: &mut StdinAnsiParser) {
+    parser.open_clipboard_forward(9);
+    parser.queue_terminal_query(ForwardKind::Clipboard, b"B".to_vec());
+    assert!(!parser.has_ready_terminal_query());
+}
+
+fn finish_retired_clipboard(parser: &mut StdinAnsiParser) {
+    assert!(!parser.has_ready_terminal_query());
+    let tail = parser.feed(b"dGVzdA==");
+    assert!(tail.residue.is_empty() && tail.completed_clipboard_forward.is_none());
+    assert!(!parser.has_ready_terminal_query());
+    let end = parser.feed(b"\x07");
+    assert!(end.residue.is_empty() && end.completed_clipboard_forward.is_none());
+    assert_eq!(parser.ready_terminal_queries().collect::<Vec<_>>(), [b"B"]);
+    let own = b"\x1b]52;c;bmV3\x1b\\";
+    assert_eq!(
+        parser.feed(own).completed_clipboard_forward,
+        Some((9, own.to_vec()))
+    );
+}
+
+#[test]
+fn retained_osc_preserves_field_incompatible_paste_bytes() {
+    for (prefix, paste, keys) in [
+        (
+            b"\x1b]52;c;b2".as_slice(),
+            b"!a;?".as_slice(),
+            b"!;?".as_slice(),
+        ),
+        (b"\x1b]52;c;", b"?!;?", b"!;"),
+        (b"\x1b]52;c", b"?;!", b"?!"),
+    ] {
+        let mut parser = source_clipboard_partial(prefix).take_for_next_attachment();
+        let mut typed = Vec::new();
+        for byte in [b"\x1b[200~", paste, b"\x1b[201~"].concat() {
+            typed.extend(parser.feed(&[byte]).residue);
+            typed.extend(parser.finalize_force());
+        }
+        assert_eq!(typed, [b"\x1b[200~", keys, b"\x1b[201~"].concat());
+        queue_replacement_clipboard(&mut parser);
+        finish_retired_clipboard(&mut parser);
+    }
+}
+
+#[test]
+fn retained_osc_preserves_modified_ss3_arrows() {
+    for (input, expected) in [
+        (b"\x1bOa".as_slice(), b"\x1bOa".as_slice()),
+        (b"\x1bOd", b"\x1bOd"),
+        (b"\x1bO1A", b"\x1bO1A"),
+        (b"\x1bO1;5A", b"\x1bO1;5A"),
+        (b"\x1bO1;8D", b"\x1bO1;8D"),
+        (b"\x1bO1;5z", b"\x1b;"),
+    ] {
+        let mut parser = interrupted_clipboard();
+        let mut typed = Vec::new();
+        for &byte in input {
+            typed.extend(parser.feed(&[byte]).residue);
+            typed.extend(parser.finalize_force());
+        }
+        assert_eq!(typed, expected);
+        queue_replacement_clipboard(&mut parser);
+        finish_retired_clipboard(&mut parser);
+    }
+}
+
+#[test]
+fn retained_osc_scopes_terminal_reports_across_stamp_changes() {
+    for report in [
+        b"\x1b]11;#abcdef\x07".as_slice(),
+        b"\x1b]11;#abcdef\x1b\\",
+        b"\x1b_Gi=31;OK\x1b\\",
+    ] {
+        for split in 0..report.len() {
+            for same_attachment in [true, false] {
+                let mut parser = interrupted_clipboard();
+                parser.expect_kitty_probe_reply();
+                queue_replacement_clipboard(&mut parser);
+                let partial = parser.feed(&report[..split]);
+                assert!(partial.residue.is_empty() && partial.replies.is_empty());
+                assert!(parser.finalize_force().is_empty());
+                let next = if same_attachment { 2 } else { 3 };
+                parser.input_stamp_changed(Some((2, false)), Some((next, true)));
+                if !same_attachment {
+                    parser.begin_forward_generation(Some(next));
+                    queue_replacement_clipboard(&mut parser);
+                }
+                let result = parser.feed(&report[split..]);
+                assert!(
+                    result.residue.is_empty() && result.completed_clipboard_forward.is_none(),
+                    "split {split}"
+                );
+                if !same_attachment && split > 0 {
+                    assert!(result.replies.is_empty());
+                } else if report[1] == b']' {
+                    assert!(
+                        matches!(&result.replies[..], [HostReply::BackgroundColor(value)] if value == "#abcdef"),
+                        "split {split}"
+                    );
+                } else {
+                    assert!(
+                        matches!(&result.replies[..], [HostReply::KittyGraphicsSupport(true)]),
+                        "split {split}"
+                    );
+                    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+                }
+                finish_retired_clipboard(&mut parser);
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_osc_keeps_an_interrupted_pastes_terminators_across_repaint() {
+    let paste = b"\x1b[200~!\x07\x1b\\\x1b[201~";
+    for split in 1..paste.len() {
+        let mut parser = interrupted_clipboard();
+        parser.feed(&paste[..split]);
+        parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+        queue_replacement_clipboard(&mut parser);
+        let output = parser.feed(&paste[split..]);
+        assert!(
+            output.residue.is_empty() && output.completed_clipboard_forward.is_none(),
+            "split {split}"
+        );
+        finish_retired_clipboard(&mut parser);
+    }
+}
+
+#[test]
+fn retained_osc_dcs_and_legacy_alt_p_share_the_same_prefix() {
+    // Alt+P, clipboard BEL and subsequent typing are also a DCS introducer,
+    // an ignored BEL in its entry state, then a command and its data.
+    let mut parser = interrupted_clipboard();
+    parser.open_clipboard_forward(8);
+    parser.queue_terminal_query(ForwardKind::Clipboard, b"waiting".to_vec());
+    let ambiguous = parser.feed(b"\x1bP\x07hello\r\x03");
+    assert!(ambiguous.residue.is_empty() && ambiguous.completed_clipboard_forward.is_none());
+    assert!(parser.finalize_force().is_empty() && !parser.has_ready_terminal_query());
+    // In the DCS interpretation this ST closes the *inner* string. Paying the
+    // debt at BEL or ST would expose the old clipboard bytes that follow.
+    assert!(parser.feed(b"\x1b\\").residue.is_empty());
+    assert!(!parser.has_ready_terminal_query());
+    assert!(parser.feed(b"dGVzdA==").residue.is_empty());
+    assert!(parser.feed(b"\x07").residue.is_empty());
+    assert_eq!(
+        parser.ready_terminal_queries().collect::<Vec<_>>(),
+        [b"waiting"]
+    );
+    assert_eq!(parser.feed(b"hello\r\x03").residue, b"hello\r\x03");
+}
+
 #[test]
 fn first_repaint_keeps_fragmented_host_observations_during_barrier_drain() {
     for report in [
