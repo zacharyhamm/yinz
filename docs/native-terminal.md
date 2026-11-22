@@ -614,14 +614,21 @@ repaint and its terminator comes later, typing such as `zoom` reaches the pane
 as soon as it cannot extend the value. The client applies the color when the
 terminator arrives. For example, if the client has received `#abc` and then
 reads `d` followed by BEL, it applies `#abc` and delivers `d` to the pane.
+If it has received `#abcd` before repaint and reads `e` followed by BEL,
+the pane receives only `e`. The earlier `d` falls outside the valid color.
 A key such as `z` can also arrive between RGB channels while the client waits
-for the rest of the report. After typing interrupts a color reply, a standalone
-Escape uses the normal keyboard deadline.
+for the rest of the report. If the host resumes the interrupted RGB value and
+completes its final channel, the client holds Escape for the backslash that
+finishes the report. A separately pressed Escape at that point also waits for
+more input. Immediately after an interrupting key, Escape uses the normal
+keyboard deadline. A slow terminator there can send an extra Escape to the pane.
 
 Hex digits can belong to either stream. For example, if `#abc` arrived before
 repaint, the bytes `defz` before BEL could mean the user typed the whole word,
 or the host extended the color to `#abcdef` and the user typed only `z`.
-The client delivers `defz` as typing in that case.
+The client delivers `defz` as typing in that case. While an RGB channel is
+incomplete, the client can instead consume typed digits as part of the color,
+even after a key such as `z` has reached the pane.
 
 If a clipboard reply starts before handoff and the terminal never finishes it,
 letters and digits typed afterward can look exactly like clipboard payload.

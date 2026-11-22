@@ -2683,6 +2683,9 @@ fn first_repaint_keeps_keys_and_color_in_one_read_in_order() {
 fn repaint_color_terminator_releases_only_incomplete_hex_digits() {
     for (before, after, color, keys) in [
         ("#abc", "d", "#abc", "d"),
+        ("#abcd", "e", "#abc", "e"),
+        ("#abcde", "", "#abc", ""),
+        ("#abcd", "ef", "#abcdef", ""),
         ("#abcdef", "01", "#abcdef", "01"),
         ("#abc", "def0", "#abcdef", "0"),
         ("#ab", "cdef", "#abcdef", ""),
@@ -2704,6 +2707,24 @@ fn repaint_color_terminator_releases_only_incomplete_hex_digits() {
             assert!(
                 matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == color)
             );
+        }
+    }
+}
+
+#[test]
+fn repaint_color_interruption_replays_only_fresh_surplus_digits() {
+    for interrupt in [b"z".as_slice(), b"\x1b[A"] {
+        let mut parser = StdinAnsiParser::new();
+        parser.feed(b"\x1b]11;#abcd");
+        parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+        assert!(parser.feed(b"e").residue.is_empty());
+        let output = parser.feed(interrupt);
+        assert_eq!(output.residue, [b"e", interrupt].concat());
+        if interrupt == b"z" {
+            assert!(matches!(
+                &parser.feed(b"\x07").replies[..],
+                [HostReply::BackgroundColor(value)] if value == "#abc"
+            ));
         }
     }
 }
@@ -2732,6 +2753,22 @@ fn repaint_color_interleaved_key_preserves_the_unfinished_body() {
             }
         }
     }
+}
+
+#[test]
+fn repaint_color_resumed_body_keeps_a_slow_string_terminator_off_the_keyboard() {
+    let mut parser = StdinAnsiParser::new();
+    parser.feed(b"\x1b]11;rgb:1111/");
+    parser.input_stamp_changed(Some((2, false)), Some((2, true)));
+    assert_eq!(parser.feed(b"z").residue, b"z");
+    assert!(parser.feed(b"2222/3333\x1b").residue.is_empty());
+    assert!(parser.finalize_fast_partial().is_empty());
+    assert!(parser.finalize_force().is_empty());
+    let output = parser.feed(b"\\!");
+    assert_eq!(output.residue, b"!");
+    assert!(
+        matches!(&output.replies[..], [HostReply::BackgroundColor(value)] if value == "rgb:1111/2222/3333")
+    );
 }
 
 #[test]

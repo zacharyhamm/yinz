@@ -267,8 +267,13 @@ impl PartialOsc {
     }
 
     fn complete_color_end(&self, prefix: ColorPrefix) -> Option<usize> {
-        let end = self.bytes.len() - prefix.digits_after_complete_value()?;
-        (end >= self.fresh_at).then_some(end)
+        Some(self.bytes.len() - prefix.digits_after_complete_value()?)
+    }
+
+    fn finish_color_at(&mut self, end: usize, keyboard: &mut Vec<u8>) {
+        // Surplus hex digits can straddle repaint. Only the fresh ones can be keys.
+        keyboard.extend_from_slice(&self.bytes[end.max(self.fresh_at)..]);
+        self.bytes.truncate(end);
     }
 
     fn consume_color_byte(&mut self, byte: u8, keyboard: &mut Vec<u8>) -> bool {
@@ -280,7 +285,13 @@ impl PartialOsc {
                 self.bytes.push(byte);
                 self.kind = OscKind::HostColor {
                     prefix: next,
-                    input,
+                    // Once the interrupted host value resumes and reaches a
+                    // legal width, its ST can again arrive across an idle tick.
+                    input: if input == ColorInput::Interleaved && next.complete() {
+                        ColorInput::ReadingBody
+                    } else {
+                        input
+                    },
                 };
                 return true;
             }
@@ -293,8 +304,7 @@ impl PartialOsc {
                 self.complete_color_end(prefix)
             };
             let input = if let Some(end) = rollback {
-                keyboard.extend_from_slice(&self.bytes[end..]);
-                self.bytes.truncate(end);
+                self.finish_color_at(end, keyboard);
                 ColorInput::AfterValue
             } else {
                 ColorInput::Interleaved
@@ -315,8 +325,7 @@ impl PartialOsc {
             return true;
         }
         if let Some(end) = self.complete_color_end(prefix) {
-            keyboard.extend_from_slice(&self.bytes[end..]);
-            self.bytes.truncate(end);
+            self.finish_color_at(end, keyboard);
             true
         } else {
             input != ColorInput::Interleaved
@@ -352,7 +361,10 @@ impl PartialOsc {
             OscKind::HostColor {
                 input: ColorInput::ReadingBody | ColorInput::Interleaved,
                 prefix,
-            } => self.complete_color_end(prefix).unwrap_or(self.bytes.len()),
+            } => self
+                .complete_color_end(prefix)
+                .unwrap_or(self.bytes.len())
+                .max(self.fresh_at),
             _ => self.bytes.len(),
         };
         let mut keys = self.bytes.split_off(start);
