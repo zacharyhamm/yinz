@@ -14,7 +14,7 @@ use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::route::NotificationEnd;
-use crate::tab::Tab;
+use crate::tab::{LayoutAdmission, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::time::Instant;
 use yinz_bus::pty::VteBytes;
@@ -682,6 +682,24 @@ impl Screen {
                             && active_tab.tiled_content_pane_count() > 0
                             && !active_tab.has_reserved_layout_slot()
                         {
+                            // An active swap layout places the agent like any new tiled pane and
+                            // stays active, so a later close re-applies it. Otherwise (a dirty
+                            // layout keeps the user's sizes) the agent splits a region.
+                            let (initial_pane_title, invoked_with) = match active_tab
+                                .admit_agent_pane_into_layout(pid, initial_pane_title, invoked_with)
+                            {
+                                Ok(LayoutAdmission::Placed) => {
+                                    placed_in = Some(tab_index);
+                                    return Ok(());
+                                },
+                                Ok(LayoutAdmission::Declined { title, run }) => (title, run),
+                                Err(reason) => {
+                                    if let Some(gate) = &managed_gate {
+                                        gate.revoke(reason);
+                                    }
+                                    anyhow::bail!("agent placement rejected: {reason:?}");
+                                },
+                            };
                             let anchor = active_tab.worker_split_anchor().ok_or_else(|| {
                                 if let Some(gate) = &managed_gate {
                                     gate.revoke(

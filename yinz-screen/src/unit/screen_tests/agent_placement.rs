@@ -10,7 +10,9 @@ use super::*;
 use crate::route::{wait_for_action_completion, NotificationEnd};
 use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
 use crate::screen::thread_main::PendingEvents;
+use crate::tab::Tab;
 use std::collections::BTreeMap;
+use yinz_types::geometry::{Resize, ResizeStrategy};
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
@@ -1705,7 +1707,8 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     assert!(gate.snapshot().slot.is_some());
     let tab = &screen.core.tabs[&tab_id];
     assert_eq!(tab.tiled_content_pane_count(), 2);
-    // Worker admission splits the existing pane and leaves the swap layout to the user.
+    // This tab was opened without swap layouts, so no layout can hold the agent: worker
+    // admission splits the existing pane and leaves the layout to the user.
     assert!(tab.swap_layout_info().1);
     let viewport = tab.get_viewport();
     let agent = tab
@@ -1721,5 +1724,140 @@ fn only_tabs_opened_for_an_agent_hold_a_layout_slot() {
     assert_eq!(
         agent.cols.as_usize() + existing.cols.as_usize(),
         viewport.cols
+    );
+}
+
+/// The distinct left edges of a tab's content panes: one per column of a columnar layout.
+fn content_columns(screen: &Screen, tab_id: TabId) -> Vec<usize> {
+    let tab = &screen.core.tabs[&tab_id];
+    let mut columns: Vec<usize> = tab
+        .get_tiled_pane_ids()
+        .into_iter()
+        .filter(|id| *id != TAB_BAR && *id != STATUS_BAR)
+        .map(|id| tab.get_pane_with_id(id).unwrap().position_and_size().x)
+        .collect();
+    columns.sort_unstable();
+    columns.dedup();
+    columns
+}
+
+fn assert_managed_agent_placed(
+    completion: tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>,
+    gate: &yinz_bus::agent_launch::LaunchGate,
+    tab_id: TabId,
+    case: &str,
+) {
+    let result = completion.blocking_recv().unwrap();
+    assert!(result.error_message.is_none(), "{case}: {result:?}");
+    assert_eq!(result.affected_tab_id, Some(tab_id), "{case}");
+    assert_eq!(gate.snapshot().revoked, None, "{case}");
+}
+
+#[test]
+fn managed_agents_follow_an_active_swap_layout_and_a_dirty_one_keeps_its_sizes() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_default_layout(false);
+    let plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::NewTab(None), None, CLIENT)
+        .unwrap();
+    let tab_id = target.tab_id;
+    let mut pending = PendingEvents::default();
+    land_asked_layout(
+        &mut screen,
+        layouts_asked_for(&plugins).remove(0),
+        &mut pending,
+    );
+    load_ui_plugins(&mut screen, tab_id);
+    let to_tab = ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id);
+    let (completion, gate) =
+        place_managed_agent(&mut screen, 20, to_tab, Some(target.clone()), &mut pending);
+    assert_agent_fills_default_layout(
+        &screen,
+        tab_id,
+        20,
+        SURFACE.rows,
+        completion,
+        &gate,
+        "first",
+    );
+
+    let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
+    for _ in 0..10 {
+        if tab.swap_layout_info().0.as_deref() == Some("three-columns") {
+            break;
+        }
+        tab.next_swap_layout().unwrap();
+    }
+    assert_eq!(
+        tab.swap_layout_info(),
+        (Some("three-columns".into()), false),
+        "the three-columns swap layout became current"
+    );
+    let later = yinz_bus::route::AgentTabPlacement {
+        created: false,
+        ..target
+    };
+    for (pid, columns) in [(21, 2), (22, 3)] {
+        let case = format!("agent {pid}");
+        let (completion, gate) =
+            place_managed_agent(&mut screen, pid, to_tab, Some(later.clone()), &mut pending);
+        assert_managed_agent_placed(completion, &gate, tab_id, &case);
+        assert_eq!(
+            screen.core.tabs[&tab_id].swap_layout_info(),
+            (Some("three-columns".into()), false),
+            "{case}"
+        );
+        assert_eq!(content_columns(&screen, tab_id).len(), columns, "{case}");
+    }
+
+    let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(22)), false, None);
+    assert_eq!(
+        tab.swap_layout_info(),
+        (Some("three-columns".into()), false),
+        "close"
+    );
+    assert_eq!(content_columns(&screen, tab_id).len(), 2, "close");
+
+    // A manual resize makes the layout dirty: the next agent splits a region beside the others
+    // and the user's sizes stay.
+    let tab = screen.core.tabs.get_mut(&tab_id).unwrap();
+    tab.resize_pane_with_id(
+        ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        PaneId::Terminal(crate::TerminalId::new(20)),
+    )
+    .unwrap();
+    assert!(tab.swap_layout_info().1, "resized");
+    let geoms = |tab: &Tab| -> Vec<(PaneId, (usize, usize, usize, usize))> {
+        tab.get_tiled_pane_ids()
+            .into_iter()
+            .map(|id| {
+                let g = tab.get_pane_with_id(id).unwrap().position_and_size();
+                (id, (g.x, g.y, g.cols.as_usize(), g.rows.as_usize()))
+            })
+            .collect()
+    };
+    let before = geoms(tab);
+    let (completion, gate) =
+        place_managed_agent(&mut screen, 23, to_tab, Some(later), &mut pending);
+    assert_managed_agent_placed(completion, &gate, tab_id, "dirty");
+    let tab = &screen.core.tabs[&tab_id];
+    assert!(tab
+        .get_tiled_pane_ids()
+        .contains(&PaneId::Terminal(crate::TerminalId::new(23))));
+    assert!(tab.swap_layout_info().1, "dirty");
+    let after = geoms(tab);
+    let changed: Vec<_> = before
+        .iter()
+        .filter(|(id, geom)| {
+            after.iter().find(|(other, _)| other == id).map(|(_, g)| g) != Some(geom)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(
+        changed.len(),
+        1,
+        "only the split pane gives up room: {changed:?}"
     );
 }

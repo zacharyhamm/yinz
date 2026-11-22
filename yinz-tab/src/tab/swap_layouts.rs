@@ -237,21 +237,11 @@ impl SwapLayouts {
         }
         None
     }
-    fn state_fits_tiled_panes_constraint(
-        &self,
-        constraint: &LayoutConstraint,
-        tiled_panes: &TiledPanes,
-    ) -> bool {
+    fn tiled_pane_count_fits_constraint(constraint: &LayoutConstraint, pane_count: usize) -> bool {
         match constraint {
-            LayoutConstraint::MaxPanes(max_panes) => {
-                tiled_panes.visible_panes_count() <= *max_panes
-            },
-            LayoutConstraint::MinPanes(min_panes) => {
-                tiled_panes.visible_panes_count() >= *min_panes
-            },
-            LayoutConstraint::ExactPanes(pane_count) => {
-                tiled_panes.visible_panes_count() == *pane_count
-            },
+            LayoutConstraint::MaxPanes(max_panes) => pane_count <= *max_panes,
+            LayoutConstraint::MinPanes(min_panes) => pane_count >= *min_panes,
+            LayoutConstraint::ExactPanes(exact) => pane_count == *exact,
             LayoutConstraint::NoConstraint => true,
         }
     }
@@ -273,6 +263,72 @@ impl SwapLayouts {
             LayoutConstraint::NoConstraint => true,
         }
     }
+    fn next_tiled_layout_position(&self, position: usize, search_backwards: bool) -> usize {
+        if !search_backwards {
+            position + 1
+        } else if position == 0 {
+            self.swap_tiled_layouts.len().saturating_sub(1)
+        } else {
+            position - 1
+        }
+    }
+    /// Searches the tiled swap layouts from `position` for the first one with a variant that
+    /// holds `pane_count` panes in the display area, wrapping around and giving up on reaching
+    /// `initial_position` again. Returns the position the search ended at, which is the found
+    /// layout's position when there is one.
+    fn search_tiled_layouts(
+        &self,
+        mut position: usize,
+        initial_position: usize,
+        search_backwards: bool,
+        pane_count: usize,
+    ) -> (usize, Option<TiledPaneLayout>) {
+        // Each layout is visited at most once per direction, plus the wrap through the
+        // out-of-range position; the bound only guards against a position that never recurs.
+        for _ in 0..=2 * (self.swap_tiled_layouts.len() + 1) {
+            match self.swap_tiled_layouts.get(position) {
+                Some(swap_layout) => {
+                    for (constraint, layout) in swap_layout.0.iter() {
+                        if Self::tiled_pane_count_fits_constraint(constraint, pane_count)
+                            && self.tiled_layout_fits_display(layout, pane_count)
+                        {
+                            return (position, Some(layout.clone()));
+                        }
+                    }
+                    position = self.next_tiled_layout_position(position, search_backwards);
+                },
+                None => position = 0,
+            }
+            if position == initial_position {
+                break;
+            }
+        }
+        (position, None)
+    }
+    fn tiled_layout_fits_display(&self, layout: &TiledPaneLayout, pane_count: usize) -> bool {
+        let focus_layout_if_not_focused = true;
+        let display_area = PaneGeom::from(&*self.display_area.borrow());
+        layout
+            .position_panes_in_space(
+                &display_area,
+                Some(pane_count),
+                false,
+                focus_layout_if_not_focused,
+            )
+            .is_ok()
+    }
+    /// Whether relaying out `pane_count` tiled panes would find a layout, searching from the
+    /// current one without stepping past it first, as a relayout after adding or closing a pane
+    /// does. Nothing changes: this only probes.
+    pub fn tiled_layout_fits(&self, pane_count: usize) -> bool {
+        if self.swap_tiled_layouts.is_empty() {
+            return false;
+        }
+        let position = self.current_tiled_layout_position;
+        self.search_tiled_layouts(position, position, false, pane_count)
+            .1
+            .is_some()
+    }
     pub fn swap_tiled_panes(
         &mut self,
         tiled_panes: &TiledPanes,
@@ -281,67 +337,19 @@ impl SwapLayouts {
         if self.swap_tiled_layouts.is_empty() {
             return None;
         }
-
-        macro_rules! progress_layout {
-            () => {{
-                if search_backwards {
-                    if self.current_tiled_layout_position == 0 {
-                        self.current_tiled_layout_position =
-                            self.swap_tiled_layouts.len().saturating_sub(1);
-                    } else {
-                        self.current_tiled_layout_position -= 1;
-                    }
-                } else {
-                    self.current_tiled_layout_position += 1;
-                }
-            }};
-        }
-
         let initial_position = self.current_tiled_layout_position;
-        if !self.is_tiled_damaged
-            && self
-                .swap_tiled_layouts
-                .get(self.current_tiled_layout_position)
-                .is_some()
-        {
-            progress_layout!();
+        let mut position = initial_position;
+        if !self.is_tiled_damaged && self.swap_tiled_layouts.get(position).is_some() {
+            position = self.next_tiled_layout_position(position, search_backwards);
         }
         self.is_tiled_damaged = false;
-        loop {
-            match self
-                .swap_tiled_layouts
-                .get(self.current_tiled_layout_position)
-            {
-                Some(swap_layout) => {
-                    for (constraint, layout) in swap_layout.0.iter() {
-                        if self.state_fits_tiled_panes_constraint(constraint, tiled_panes) {
-                            let focus_layout_if_not_focused = true;
-                            let display_area = self.display_area.borrow();
-                            let pane_count = tiled_panes.visible_panes_count();
-                            let display_area = PaneGeom::from(&*display_area);
-                            if layout
-                                .position_panes_in_space(
-                                    &display_area,
-                                    Some(pane_count),
-                                    false,
-                                    focus_layout_if_not_focused,
-                                )
-                                .is_ok()
-                            {
-                                return Some(layout.clone());
-                            }
-                        };
-                    }
-                    progress_layout!();
-                },
-                None => {
-                    self.current_tiled_layout_position = 0;
-                },
-            };
-            if self.current_tiled_layout_position == initial_position {
-                break;
-            }
-        }
-        None
+        let (position, layout) = self.search_tiled_layouts(
+            position,
+            initial_position,
+            search_backwards,
+            tiled_panes.visible_panes_count(),
+        );
+        self.current_tiled_layout_position = position;
+        layout
     }
 }

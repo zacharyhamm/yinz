@@ -30,6 +30,7 @@ use crate::ui::damage::CellRect;
 
 use copy_command::CopyCommand;
 pub use mouse_handler::{MouseEffect, MouseHandler, PaneResizeState, ResizeDragTarget};
+pub use pane_creation::LayoutAdmission;
 
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;

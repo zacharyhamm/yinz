@@ -33,6 +33,20 @@ use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::Offset;
 use yinz_types::pane_size::PaneGeom;
 
+/// What [`Tab::admit_agent_pane_into_layout`] did with an agent pane.
+#[derive(Debug)]
+pub enum LayoutAdmission {
+    /// The pane is in the tab, placed by the selected swap layout. Should applying the layout
+    /// still fail after insertion, the pane stays where the grid split put it and the layout is
+    /// left dirty.
+    Placed,
+    /// The layout does not apply. Nothing changed, and the pane is yet to be built from these.
+    Declined {
+        title: Option<String>,
+        run: Option<Run>,
+    },
+}
+
 impl Tab {
     fn normalize_invoked_with_for_default_shell(&self, invoked_with: Option<Run>) -> Option<Run> {
         let default_shell_run_command = Run::Command(RunCommand {
@@ -405,6 +419,70 @@ impl Tab {
         self.set_should_clear_display_before_rendering();
         self.swap_layouts.set_is_tiled_damaged();
         Ok(())
+    }
+
+    /// Place a managed agent pane through the tab's selected swap layout, as a new tiled pane
+    /// would be, so that the layout stays active and a later close re-applies it.
+    ///
+    /// Declines, handing the pane's title and command back with nothing changed, when the
+    /// layout does not apply: automatic layout is off, the layout is dirty (eg. the user resized
+    /// a pane), the tab is pending, fullscreen or holds stack lists, or no swap layout holds one
+    /// more pane. The caller then places the pane by splitting a region instead.
+    pub fn admit_agent_pane_into_layout(
+        &mut self,
+        pid: PaneId,
+        title: Option<String>,
+        run: Option<Run>,
+    ) -> Result<LayoutAdmission, yinz_types::agent::launch::LaunchReason> {
+        use yinz_types::agent::launch::LaunchReason;
+        // Fullscreen and stack lists hide tiled panes that placement would bring back, so the
+        // visible count below would not be the count the relayout sees.
+        if !self.auto_layout
+            || self.is_pending
+            || self.swap_layouts.is_tiled_damaged()
+            || self.tiled_panes.fullscreen_is_active()
+            || self.has_stack_lists()
+        {
+            return Ok(LayoutAdmission::Declined { title, run });
+        }
+        self.ensure_worker_pane_capacity()
+            .map_err(|_| LaunchReason::PaneLimit)?;
+        let pane_count = self.tiled_panes.visible_panes_count() + 1;
+        if !self.tiled_panes.has_room_for_new_pane()
+            || !self.swap_layouts.tiled_layout_fits(pane_count)
+        {
+            return Ok(LayoutAdmission::Declined { title, run });
+        }
+        let pane = match self
+            .build_pane(pid, title, run, None)
+            .context("build agent pane for swap layout admission")
+        {
+            Ok(pane) => pane,
+            Err(error) => {
+                Err::<(), _>(error).non_fatal();
+                return Err(LaunchReason::InvalidRequest);
+            },
+        };
+        let added = self
+            .add_tiled_pane_with_policy(pane, pid, false, None, false)
+            .context("add agent pane through swap layout");
+        if !self.tiled_panes.panes_contain(&pid) {
+            // The grid handed the pane back and it was parked: an admitted agent must not be
+            // reported placed while nothing renders it. Drop it so the caller forgets it, as a
+            // rejected worker split does.
+            self.suppressed_panes.remove(&pid);
+            let reason = if added.is_err() {
+                LaunchReason::PlacementRevoked
+            } else {
+                LaunchReason::InsufficientRoom
+            };
+            added.non_fatal();
+            return Err(reason);
+        }
+        // The pane is in the layout by now; a failure after insertion (the relayout's resize
+        // batching) must not revoke a launch whose pane stays in the tab.
+        added.non_fatal();
+        Ok(LayoutAdmission::Placed)
     }
 
     pub fn worker_region_members(&mut self, pane: PaneId) -> Vec<PaneId> {

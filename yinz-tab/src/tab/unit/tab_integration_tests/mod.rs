@@ -1848,6 +1848,7 @@ impl SuppressedPaneModel {
     }
 }
 
+mod agent_layout_admission;
 mod agent_new_tab_layout;
 mod borderless_pinned;
 mod centered_agents;
