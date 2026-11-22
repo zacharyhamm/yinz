@@ -79,13 +79,26 @@ fn detaching_a_client_before_the_session_exists_is_a_no_op() {
 
 #[test]
 fn mouse_updates_reach_every_interactive_client_with_a_full_server_queue() {
+    // Allocate the live attachments first: delivery matches the attachment generation, so the
+    // queued updates must name the identities the session actually handed out.
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let clients: Vec<(ClientId, bool)> = (1..=64)
+        .map(|id| {
+            let mut state = state.write().unwrap();
+            let client = state.new_client().unwrap();
+            state.interactive_clients.insert(client);
+            assert_eq!(client.get(), id);
+            assert!(client.generation().is_some());
+            (client, id % 2 == 0)
+        })
+        .collect();
     let (screen_tx, _screen_rx) = channels::unbounded();
     let (plugin_tx, _plugin_rx) = channels::unbounded();
     let (server_tx, server_rx) = channels::bounded(50);
     for _ in 0..50 {
         server_tx
             .send((
-                ServerInstruction::ConnStatus(ClientId::new(1)),
+                ServerInstruction::ConnStatus(clients[0].0),
                 ErrorContext::default(),
             ))
             .unwrap();
@@ -97,17 +110,16 @@ fn mouse_updates_reach_every_interactive_client_with_a_full_server_queue() {
     session.senders.to_server = Some(SenderWithContext::new(server_tx));
     session.senders.should_silently_fail = true;
     let (done_tx, done_rx) = channels::bounded(1);
+    let changes: Vec<(ClientId, Config)> = clients
+        .iter()
+        .map(|&(client, enabled)| {
+            let mut config = Config::default();
+            config.options.mouse_mode = Some(enabled);
+            (client, config)
+        })
+        .collect();
     let propagation = std::thread::spawn(move || {
-        session.propagate_configuration_changes(
-            (1..=64)
-                .map(|id| {
-                    let mut config = Config::default();
-                    config.options.mouse_mode = Some(id % 2 == 0);
-                    (ClientId::new(id), config)
-                })
-                .collect(),
-            false,
-        );
+        session.propagate_configuration_changes(changes, false);
         done_tx.send(()).unwrap();
         session
     });
@@ -119,22 +131,16 @@ fn mouse_updates_reach_every_interactive_client_with_a_full_server_queue() {
     }
     let session = propagation.join().unwrap();
     let session = Arc::new(RwLock::new(Some(session)));
-    let state = Arc::new(RwLock::new(SessionState::new()));
-    for _ in 1..=64 {
-        let mut state = state.write().unwrap();
-        let client = state.new_client().unwrap();
-        state.interactive_clients.insert(client);
-    }
     let capture = crate::capturing_os::CapturingOs::default();
     let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
     flush_pending_mouse_updates(&mut os, &state, &session).unwrap();
     flush_pending_mouse_updates(&mut os, &state, &session).unwrap();
     let messages = capture.server_to_client_messages.lock();
     assert_eq!(messages.len(), 64);
-    for id in 1..=64 {
+    for (client, enabled) in &clients {
         assert!(matches!(
-            messages[&ClientId::new(id)].as_slice(),
-            [ServerToClientMsg::SetMouseMode { enabled }] if *enabled == (id % 2 == 0)
+            messages[client].as_slice(),
+            [ServerToClientMsg::SetMouseMode { enabled: sent }] if sent == enabled
         ));
     }
     assert!(
