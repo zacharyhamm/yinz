@@ -14,6 +14,10 @@ pub struct Margins {
     pub bottom: u32,
 }
 
+/// Paints the window padding around the grid. A caller must pass margins
+/// relative to the drawn grid, not the configured padding: `left`/`top` are the
+/// grid origin (including any `padding_balance` offset) and `right`/`bottom` are
+/// the window pixels left after the grid.
 pub fn padding_rects(
     state: &TerminalState,
     paints: &Paints,

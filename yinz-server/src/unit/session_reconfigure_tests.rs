@@ -1778,7 +1778,7 @@ mod ligature_reconfigure {
                 (None, "terminal { font_ligatures true; }"),
                 (Some(false), "terminal { ligatures false; }"),
                 (Some(false), "terminal { font_ligatures false; }"),
-                (Some(false), "terminal { padding 3; }"),
+                (Some(false), "terminal { padding 0; }"),
                 (Some(true), "pane_frames false"),
             ] {
                 for all_clients in [true, false] {
@@ -2237,6 +2237,156 @@ mod baseline_offset_reconfigure {
     }
 }
 
+mod padding_reconfigure {
+    use super::ligature_reconfigure::Fixture;
+    use super::*;
+
+    fn with_current(clients: &[ClientId], current: &str) -> Fixture {
+        let fixture = Fixture::new(clients, None);
+        fixture.with(|session| {
+            let config = Config::from_kdl(
+                &format!("terminal {{ {current} }}"),
+                Some(Config::default()),
+            )
+            .unwrap();
+            session
+                .session_configuration
+                .set_saved_configuration(config.clone());
+            for client in clients {
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(*client, config.clone());
+            }
+            session.session_configuration.pending_editor_reload = Some(config);
+        });
+        fixture
+    }
+
+    /// The refused names, in order, from the save guidance.
+    fn refused(error: &str) -> Vec<String> {
+        for word in ["--write", "configuration/drop-in", "entire fragment"] {
+            assert!(error.contains(word), "{error}");
+        }
+        let names = error
+            .split("changing terminal ")
+            .nth(1)
+            .and_then(|rest| rest.split(" requires a saved configuration").next())
+            .unwrap_or_else(|| panic!("{error}"));
+        names.split(", ").map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn unsaved_padding_changes_refuse_whole_fragment_at_both_entry_points() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (current, settings, names) in [
+                ("", "padding 3;", vec!["padding"]),
+                ("", "padding_left 2;", vec!["padding_left"]),
+                ("padding 4;", "padding_top 1;", vec!["padding_top"]),
+                // Sides from the shorthand change; the explicit left side does not.
+                ("padding_left 2;", "padding 5;", vec!["padding"]),
+                (
+                    "padding 4; padding_left 6;",
+                    "padding_left 0;",
+                    vec!["padding_left"],
+                ),
+                ("", "padding_balance true;", vec!["padding_balance"]),
+                (
+                    "padding_balance true;",
+                    "padding_balance false;",
+                    vec!["padding_balance"],
+                ),
+                (
+                    "",
+                    "padding 2; padding_right 1; padding_balance true;",
+                    vec!["padding", "padding_right", "padding_balance"],
+                ),
+            ] {
+                let fixture = with_current(&clients, current);
+                let before = fixture.snapshot();
+                let fragment = format!("terminal {{ {settings} }}\nmouse_mode false\nkeybinds {{ normal {{ bind \"Ctrl y\" {{ NewPane; }}; }}; }}");
+                let result = fixture.all(&fragment, false);
+                assert_eq!(result.exit_status, Some(1), "{current} -> {settings}");
+                assert_eq!(refused(result.error_message.as_deref().unwrap()), names);
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+                let error =
+                    reconfigure_client(CLIENT, fragment, false, &fixture.state, &fixture.data)
+                        .unwrap_err();
+                assert_eq!(refused(&format!("{error:#}")), names);
+                assert_eq!(fixture.snapshot(), before);
+                fixture.assert_no_propagation();
+            }
+        }
+    }
+
+    #[test]
+    fn unsaved_equivalent_or_omitted_padding_keeps_runtime_changes_available() {
+        for clients in [vec![CLIENT], vec![]] {
+            for (current, requested) in [
+                ("", ""),
+                ("", "padding 0;"),
+                ("", "padding_top 0; padding_balance false;"),
+                ("padding 4;", "padding_left 4;"),
+                ("padding 4;", "padding 4; padding_balance false;"),
+                (
+                    "padding_left 2; padding_balance true;",
+                    "padding_left 2; padding_balance true;",
+                ),
+                ("padding 4; padding_left 6;", "padding 4;"),
+            ] {
+                for all in [true, false] {
+                    let fixture = with_current(&clients, current);
+                    let fragment = format!("terminal {{ {requested} }}\nmouse_mode false");
+                    if all {
+                        let result = fixture.all(&fragment, false);
+                        assert_eq!(
+                            result.exit_status, None,
+                            "{current} -> {requested}: {result:?}"
+                        );
+                    } else {
+                        reconfigure_client(CLIENT, fragment, false, &fixture.state, &fixture.data)
+                            .unwrap();
+                    }
+                    let client = if clients.is_empty() {
+                        ClientId::NONE
+                    } else {
+                        CLIENT
+                    };
+                    fixture.with(|session| {
+                        let config = session
+                            .session_configuration
+                            .get_client_configuration(&client);
+                        assert_eq!(config.options.mouse_mode, Some(false));
+                    });
+                    assert!(!fixture.dir.path().join("config.d").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn written_padding_changes_save_instead_of_unsaved_refusal() {
+        for all in [true, false] {
+            let fixture = with_current(&[CLIENT], "padding 4;");
+            let fragment = "terminal { padding_left 6; padding_balance true; }";
+            if all {
+                assert_eq!(fixture.all(fragment, true).exit_status, None);
+            } else {
+                reconfigure_client(CLIENT, fragment.into(), true, &fixture.state, &fixture.data)
+                    .unwrap();
+            }
+            let managed = fixture.dir.path().join("config.d/yinz-managed.kdl");
+            let saved = Config::from_kdl(&std::fs::read_to_string(managed).unwrap(), None).unwrap();
+            assert_eq!(saved.terminal.padding_left, Some(6.0));
+            assert_eq!(saved.terminal.padding_balance, Some(true));
+            assert_eq!(
+                std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
+                "// unchanged main\n"
+            );
+        }
+    }
+}
+
 mod font_features_reconfigure {
     use super::ligature_reconfigure::Fixture;
     use super::*;
@@ -2345,7 +2495,7 @@ mod font_features_reconfigure {
                     "font_features \"+calt\" \"-zero\";",
                     "font_features \"calt\" \"-zero\";",
                 ),
-                ("font_features \"ss01\";", "padding 3;"),
+                ("font_features \"ss01\";", "padding 0;"),
             ] {
                 for all in [true, false] {
                     let fixture = with_current(&clients, current);

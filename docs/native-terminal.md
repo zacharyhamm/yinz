@@ -48,6 +48,9 @@ terminal {
     underline_offset -2
     underline_thickness 1
     padding 4.0
+    padding_top 2.0
+    padding_left 6.0
+    padding_balance false
     opacity 1.0
     blur false
     cursor_style "block"
@@ -84,6 +87,24 @@ agree. Across layers either spelling overrides the earlier value, including
 explicit `false`; omission inherits. Managed writes replace either spelling as
 one logical setting and preserve sibling settings. Invalid managed writes leave
 the file unchanged.
+
+`padding` sets the logical padding on all four sides (default 0).
+`padding_top`, `padding_right`, `padding_bottom` and `padding_left` override
+single sides. Each side resolves as its own key, then `padding`, then 0. This
+happens after drop-ins merge, field by field, so a side set in any layer beats a
+shorthand from any layer. A later `padding` does not clear an earlier
+`padding_left`; set the side again to change it. All five keys take one plain
+number (integer or decimal) from 0 to 256 logical pixels. Upstream allows up to
+1000; Yinz keeps its existing 256 limit for every padding key. Errors name the
+setting and point at its node. Negative, non-finite, typed (`(px)4`), named or
+string values are rejected, as are repeated keys and unknown spellings such as
+`padding_x`. Serialization writes each set key separately.
+
+`padding_balance true` centers the grid in the space that padding leaves. By
+default (`false`) the grid starts at the top-left padding and every leftover
+pixel goes to the right and bottom. With balancing, half of each axis's
+leftover (rounded down) goes before the grid, and an odd pixel goes after it.
+`padding_balance` takes one plain boolean.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero
 or more string arguments:
@@ -225,27 +246,39 @@ multipliers remain dimensionless. Natural physical cell dimensions round first,
 then the multipliers apply and round again, with a minimum of one physical pixel.
 Glyphs center horizontally in the adjusted cell and the baseline moves by half
 the height change, bounded inside the cell along with decorations. This retains
-the pinned source's rounding, including at fractional scales. Physical padding is
-subtracted before floor-dividing the window by physical cell dimensions; the grid
-is at least one row/column (at most 4096). A minimized zero-size window defers
-geometry updates. Cursor/selection rectangles, hit testing, graphics and reported
+the pinned source's rounding, including at fractional scales. Each padding side
+converts to physical pixels on its own, as `round(logical × scale)`. Left plus
+right padding is subtracted from the width, and top plus bottom from the height,
+before floor-dividing by the physical cell dimensions. The grid is at least one
+row/column (at most 4096). A minimized zero-size window defers geometry updates.
+The grid origin is the left and top padding, plus the balancing offset when
+enabled. Drawing, the IME cursor area, the switch notice, pointer-to-cell
+conversion for mouse reports, selection and link clicks, and the window
+observation log all use that one origin. A pointer inside the padding maps to the
+nearest edge cell. Cursor/selection rectangles, hit testing, graphics and reported
 cell/text-area pixels all use these same cells. Text-area pixels exclude padding
 and unused edge pixels: they equal rows/columns times cell height/width.
+Padding colour and gestures inside the padding belong to separate issues.
 
 Font settings reload automatically with the session's configuration updates,
 including drop-ins. A `config.d` directory first created while the session is
 running is discovered during the normal polling/debounce cycle.
 
 Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
-`underline_thickness`, `ligatures`, `font_ligatures` or `font_features` with
-`action reconfigure` requires
+`underline_thickness`, `ligatures`, `font_ligatures`, `font_features`, effective
+padding (`padding`, `padding_top`, `padding_right`, `padding_bottom`,
+`padding_left`) or `padding_balance` with `action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
 omissions remain valid runtime requests; explicit metric `1.0` equals omission
 when the effective value is already the default. For `font_features`, omission and
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
-counts as a change. An invalid fragment, with or without `--write`, is refused with
+counts as a change. Padding compares the resolved sides and balance, so
+`padding_left 4` with a current `padding 4` is equivalent. The refusal names the
+key that caused each change: `padding` when the shorthand changed a side, or the
+side's own key. Before this change, unsaved padding was accepted but never
+reached native windows, which read padding only from files. An invalid fragment, with or without `--write`, is refused with
 the same per-entry message as file validation, such as the `"ss1"` error above; it
 names the entry rather than drawing the source pointer that `yinz setup --check`
 shows. For example, disable and then restore ligatures:
@@ -355,8 +388,11 @@ is ambiguous (including pane-layout changes), the highlight disappears and Copy
 retains the original text until a new selection, Escape, typing or session switch.
 The structured frames do not identify hard versus soft wraps, so Copy preserves
 the original selection’s newline semantics. Equivalent settings
-and paint-only changes retain font caches. Padding changes update geometry without
-reloading fonts. Zoom and monitor-scale changes use the same path; final raster
+and paint-only changes retain font caches. Padding and balance changes update
+geometry and the grid origin without reloading fonts. Reload, resize, zoom and
+monitor-scale changes recompute the physical sides and origin, so pointer
+targeting follows the drawn cells. An origin-only change, such as toggling
+balance or resizing within one cell, sends no cell, text-area or grid report. Zoom and monitor-scale changes use the same path; final raster
 sizes are bounded to 4–512 physical pixels with a diagnostic when adjusted, without
 changing configured point values. Cell/text-area reports refresh when their values
 change; grid resize reports refresh when rows/columns change. New connections and
@@ -463,8 +499,8 @@ size in `remember` mode, the configured cell count, and the default of 120
 columns or 40 rows. A missing or invalid cache falls back to the configured
 size. The CLI startup mode takes precedence over the configured mode.
 
-Windowed startup adds padding to the requested cells at the display's measured
-scale. Wayland limits the correction to the inner size already granted by the
+Windowed startup adds left plus right padding to the requested columns and top
+plus bottom padding to the requested rows, at the display's measured scale. Wayland limits the correction to the inner size already granted by the
 compositor. At fractional scales Yinz fits cell-based axes to whole logical
 pixels and chooses the closest legal physical extent for each remembered axis.
 The grant can leave fewer cells than requested, even on a large display. X11
@@ -488,8 +524,13 @@ A saved fragment with other live settings still applies those settings to the
 running session.
 
 Run the desktop fixture at an observed 1× scale and again at 2×. It reports the
-granted extent, scale, cell metrics and viewport containing the pane marker for
-each mode. The test checks Wayland's configured state and reads `_NET_WM_STATE`
+granted extent, scale, cell metrics, per-side physical padding, balance, grid
+origin and viewport containing the pane marker for each mode. Its configuration
+uses asymmetric, balanced padding. The test checks each side's rounding at the
+observed scale, and checks that the observed grid and origin match the fit
+formula above. In windowed mode, once the grid settles, it rewrites the
+configuration to move the top padding and turn balancing off. It then expects the
+reload to move the origin without changing the grid. The test checks Wayland's configured state and reads `_NET_WM_STATE`
 with `xprop` on X11. Confirm the mode independently in the desktop when that
 observation is unavailable, including on macOS.
 
@@ -503,6 +544,32 @@ Set `YINZ_NATIVE_TEST_FLOATING=1` for that run. Windowed should settle at 100 by
 30. Remember should fit the saved 800 physical pixels in width, with the explicit
 30 rows checked independently. A tiling grant or a mode the desktop declines
 is reported as limited desktop coverage.
+
+The fixture does not move windows between outputs or send pointer input, so check
+padding by hand for those cases. Use asymmetric, balanced padding (the fixture's
+`padding 4; padding_left 6; padding_top 3; padding_balance true`). Move the window
+between outputs with different scales. After each move, the logged observation's
+sides should match the new scale and its origin should match the fit formula.
+Content must not cross the far padding. Then run a mouse-reporting program such as
+`printf '\033[?1003h'; cat -v` and click cell centres and points just inside each
+cell edge near all four sides. Shift-drag a selection too. The reported cells and
+the highlight should match the cells under the pointer. Repeat after a balance
+reload and after a zoom change.
+
+Issue #110 padding observation (2026-11-22): this worktree's debug binary ran the
+desktop fixture on Linux Wayland, on one 5120×2880 output at scale 2. The
+compositor tiled the windows, so exact floating fit was not checked. The run
+passed with these observations, given as left/top/right/bottom sides:
+
+| Mode | Extent | Sides | Balance | Origin | Grid |
+|---|---|---|---|---|---|
+| Remember, maximized | 5088×2780 | 12/6/8/8 | on | 18, 9 | 316×69 |
+| Fullscreen | 5120×2880 | 12/6/8/8 | on | 18, 19 | 318×71 |
+| Windowed, after reload | 5088×2780 | 12/2/8/8 | off | 12, 2 | 316×69 |
+
+The windowed reload moved the origin without changing the grid. The desktop did
+not apply maximized mode. Mixed-DPI moves, the manual pointer checks above, X11
+and macOS were not exercised.
 
 `cursor_style` accepts `block`, `bar`, and `underline`. `cursor_trail` enables (`true`, the default) or disables (`false`) the swept comet trail drawn behind the cursor when it jumps at least two cells in the native terminal window. `macos_option_as_alt` accepts `none`, `left`, `right`,
 and `both`.

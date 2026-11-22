@@ -2,6 +2,19 @@ use super::*;
 use crate::emulation::selection::Selection;
 use yinz_ipc::ipc::ExitReason;
 
+/// Unbalanced padding with the same physical width on every side.
+fn uniform(padding: u32) -> PaddingLayout {
+    PaddingLayout {
+        margins: Margins {
+            left: padding,
+            top: padding,
+            right: padding,
+            bottom: padding,
+        },
+        balance: false,
+    }
+}
+
 #[test]
 fn a_render_frame_is_applied_after_a_recoverable_error() {
     use yinz_types::structured_render::{FrameBuilder, WireCell};
@@ -228,11 +241,17 @@ fn native_switch_pending_notice_tracks_request_and_resolution() {
     let next_draw = now + app.pacer.interval();
     let target = (768, 384);
     let assert_overlay = |app: &mut App, text| {
-        let expected = notice_scene(Notice::Text(text), &mut app.cache, target, 0);
-        assert_eq!(app.switch_overlay(target, 0), Some(expected));
+        let expected = notice_scene(
+            Notice::Text(text),
+            &mut app.cache,
+            target,
+            (0, 0),
+            crate::render::scene::Margins::default(),
+        );
+        assert_eq!(app.switch_overlay(target, (0, 0)), Some(expected));
     };
     app.pacer.drawn(now);
-    assert!(app.switch_overlay(target, 0).is_none());
+    assert!(app.switch_overlay(target, (0, 0)).is_none());
     let (opened, _events) = begin_test_switch(&mut app, None, now);
     assert_eq!(app.pacer.decide(now), Decision::At(next_draw));
     assert_overlay(
@@ -265,7 +284,7 @@ fn native_switch_pending_notice_tracks_request_and_resolution() {
     app.pacer.drawn(resolved_draw);
     let escape = keyboard::Press::new(Key::Named(NamedKey::Escape), ModifiersState::empty());
     app.key_pressed(&escape, false).unwrap();
-    assert!(app.switch_overlay(target, 0).is_none());
+    assert!(app.switch_overlay(target, (0, 0)).is_none());
     assert_eq!(
         app.pacer.decide(resolved_draw),
         Decision::At(resolved_draw + app.pacer.interval())
@@ -282,22 +301,23 @@ fn native_switch_before_source_repaint_shows_destination_and_keeps_input_gated()
     let (source, mut peer) = switch_peer();
     app.sender = Some(source);
     let target = (768, 384);
-    let waiting = app.switch_overlay(target, 0).unwrap();
+    let waiting = app.switch_overlay(target, (0, 0)).unwrap();
     let (_opened, _events) = begin_test_switch(&mut app, Some("destination"), Instant::now());
     let expected = notice_scene(
         Notice::Text("Esc cancels\nOpening: destination\nInput: waiting for first repaint"),
         &mut app.cache,
         target,
-        0,
+        (0, 0),
+        crate::render::scene::Margins::default(),
     );
-    assert_eq!(app.switch_overlay(target, 0), Some(expected));
+    assert_eq!(app.switch_overlay(target, (0, 0)), Some(expected));
 
     for key in [Key::Character("x".into()), Key::Named(NamedKey::Escape)] {
         app.key_pressed(&keyboard::Press::new(key, ModifiersState::empty()), false)
             .unwrap();
     }
     assert!(app.pending_switch.is_none());
-    assert_eq!(app.switch_overlay(target, 0), Some(waiting));
+    assert_eq!(app.switch_overlay(target, (0, 0)), Some(waiting));
     drop(app);
     assert!(matches!(
         peer.recv_client_msg().msg(),
@@ -315,7 +335,8 @@ fn native_switch_pending_escape_cancels_without_detaching_source() {
     let (source, mut source_peer) = switch_peer();
     app.sender = Some(source);
     app.focused = false;
-    let reported_geometry = Geometry::calculate(768, 384, 0, app.cache.metrics());
+    let reported_geometry =
+        Geometry::calculate(768, 384, PaddingLayout::default(), app.cache.metrics());
     assert!(reported_geometry.is_some());
     app.connection_geometry.reported = reported_geometry;
     let geometry = app.state.geometry().clone();
@@ -430,7 +451,7 @@ fn native_switch_pending_escape_discards_late_open_and_allows_retry() {
     assert_eq!(app.connection_id, 2);
     assert_eq!(app.args.session_name.as_deref(), Some("retry"));
     assert!(app.pending_switch.is_none());
-    assert!(app.switch_overlay((768, 384), 0).is_none());
+    assert!(app.switch_overlay((768, 384), (0, 0)).is_none());
     assert_eq!(app.state.screen().cell(0, 0).character(), 'D');
     assert!(matches!(
         source_peer.recv_client_msg().msg(),
@@ -960,7 +981,7 @@ fn geometry_reports_cell_changes_even_with_same_grid_and_forces_new_connections(
         .stack(1.0)
         .unwrap()
         .metrics();
-    let first = Geometry::calculate(80, 40, 0, metrics).unwrap();
+    let first = Geometry::calculate(80, 40, PaddingLayout::default(), metrics).unwrap();
     assert_eq!(
         first.messages(None).len(),
         2,
@@ -978,12 +999,14 @@ fn geometry_reports_cell_changes_even_with_same_grid_and_forces_new_connections(
         &changed_cell.messages(Some(first))[..],
         [ClientToServerMsg::TerminalPixelDimensions { .. }]
     ));
-    let padded = Geometry::calculate(80, 40, 10, metrics).unwrap();
+    let padded = Geometry::calculate(80, 40, uniform(10), metrics).unwrap();
     assert_eq!(padded.messages(Some(first)).len(), 2);
-    assert!(Geometry::calculate(0, 40, 0, metrics).is_none());
-    assert!(Geometry::calculate(80, 0, 0, metrics).is_none());
+    assert!(Geometry::calculate(0, 40, PaddingLayout::default(), metrics).is_none());
+    assert!(Geometry::calculate(80, 0, PaddingLayout::default(), metrics).is_none());
     assert_eq!(
-        Geometry::calculate(1, 1, 256, metrics).unwrap().grid,
+        Geometry::calculate(1, 1, uniform(256), metrics)
+            .unwrap()
+            .grid,
         Size { rows: 1, cols: 1 }
     );
 }
@@ -1092,7 +1115,8 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
     let initial_metrics = initial.stack(1.0).unwrap().metrics();
     let width = initial_metrics.width * 80;
     let height = initial_metrics.height * 8;
-    let first = Geometry::calculate(width, height, 0, initial_metrics).unwrap();
+    let first =
+        Geometry::calculate(width, height, PaddingLayout::default(), initial_metrics).unwrap();
     let changed = TerminalConfig {
         font_family: Some("Noto Sans Mono CJK SC".into()),
         system_fonts: Some(true),
@@ -1117,7 +1141,13 @@ fn font_reload_zoom_and_scale_geometry_share_selection_frame_and_copy_transition
             };
             *cache
         };
-        let geometry = Geometry::calculate(width, height, 0, replacement.metrics()).unwrap();
+        let geometry = Geometry::calculate(
+            width,
+            height,
+            PaddingLayout::default(),
+            replacement.metrics(),
+        )
+        .unwrap();
         assert!(geometry.grid.cols < 70);
         let text = format!("{}ABCD end", "x".repeat(70));
         let mut state = Painter::state(first.grid.rows, first.grid.cols, |p| p.text(0, 0, &text));
@@ -1282,7 +1312,8 @@ fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geomet
     };
     refresh(&mut retained, &mut cache);
     let joined = retained.flatten();
-    let original_geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let original_geometry =
+        Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics()).unwrap();
     let generation = cache.generation();
     let font = cache.primary_of(crate::text::font::FaceStyle::Regular);
     let joined_ids = cache.shape(font, "->");
@@ -1328,10 +1359,12 @@ fn ligature_reload_from_files_preserves_warmed_caches_cells_selection_and_geomet
             cache.primary_of(crate::text::font::FaceStyle::Regular),
             font
         );
-        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
-            .unwrap()
-            .messages(Some(original_geometry))
-            .is_empty());
+        assert!(
+            Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics())
+                .unwrap()
+                .messages(Some(original_geometry))
+                .is_empty()
+        );
         refresh(&mut retained, &mut cache);
         if previous != enabled {
             assert!(retained.rebuilt_everything());
@@ -1478,7 +1511,8 @@ fn font_feature_reload_from_files_reshapes_runs_and_preserves_caches_cells_selec
         ..active.clone()
     });
     assert_ne!(joined, unjoined);
-    let original_geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let original_geometry =
+        Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics()).unwrap();
     let generation = cache.generation();
     let font = cache.primary_of(crate::text::font::FaceStyle::Regular);
     for (text, is_joined, shapes) in [
@@ -1524,10 +1558,12 @@ fn font_feature_reload_from_files_reshapes_runs_and_preserves_caches_cells_selec
             cache.primary_of(crate::text::font::FaceStyle::Regular),
             font
         );
-        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
-            .unwrap()
-            .messages(Some(original_geometry))
-            .is_empty());
+        assert!(
+            Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics())
+                .unwrap()
+                .messages(Some(original_geometry))
+                .is_empty()
+        );
         refresh(&mut retained, &mut cache);
         assert!(retained.rebuilt_everything(), "{text}");
         let live = normalize(retained.flatten());
@@ -1648,7 +1684,7 @@ fn cell_metrics_fractional_dpi_zoom_rounding_grid_edges_and_hit_testing() {
                     let exact = Geometry::calculate(
                         17 * w + 2 * padding,
                         7 * h + 2 * padding,
-                        padding,
+                        uniform(padding),
                         metrics,
                     )
                     .unwrap();
@@ -1656,31 +1692,52 @@ fn cell_metrics_fractional_dpi_zoom_rounding_grid_edges_and_hit_testing() {
                     let below = Geometry::calculate(
                         17 * w + 2 * padding - 1,
                         7 * h + 2 * padding - 1,
-                        padding,
+                        uniform(padding),
                         metrics,
                     )
                     .unwrap();
                     assert_eq!(below.grid, Size { cols: 16, rows: 6 });
                     assert_eq!(
-                        Geometry::calculate(1, 1, padding, metrics).unwrap().grid,
+                        Geometry::calculate(1, 1, uniform(padding), metrics)
+                            .unwrap()
+                            .grid,
                         Size { cols: 1, rows: 1 }
                     );
-                    assert!(Geometry::calculate(0, 20, padding, metrics).is_none());
-                    assert!(Geometry::calculate(20, 0, padding, metrics).is_none());
+                    assert!(Geometry::calculate(0, 20, uniform(padding), metrics).is_none());
+                    assert!(Geometry::calculate(20, 0, uniform(padding), metrics).is_none());
                     let size = crate::emulation::screen_buffer::TermSize { cols: 17, rows: 7 };
                     let edge = (
                         padding as f64 + 3.0 * w as f64,
                         padding as f64 + 2.0 * h as f64,
                     );
-                    assert_eq!(pointer_cell(edge, padding, metrics, size), (2, 3));
                     assert_eq!(
-                        pointer_cell((edge.0 - 0.01, edge.1 - 0.01), padding, metrics, size),
+                        pointer_cell(edge, (padding as i32, padding as i32), metrics, size),
+                        (2, 3)
+                    );
+                    assert_eq!(
+                        pointer_cell(
+                            (edge.0 - 0.01, edge.1 - 0.01),
+                            (padding as i32, padding as i32),
+                            metrics,
+                            size
+                        ),
                         (1, 2)
                     );
-                    assert_eq!(pointer_cell((-10.0, -10.0), padding, metrics, size), (0, 0));
-                    assert_eq!(pointer_cell((1e6, 1e6), padding, metrics, size), (6, 16));
-                    let tiny = Geometry::calculate(1, 1, padding, metrics).unwrap();
-                    let old_tiny = Geometry::calculate(1, 1, padding, natural).unwrap();
+                    assert_eq!(
+                        pointer_cell(
+                            (-10.0, -10.0),
+                            (padding as i32, padding as i32),
+                            metrics,
+                            size
+                        ),
+                        (0, 0)
+                    );
+                    assert_eq!(
+                        pointer_cell((1e6, 1e6), (padding as i32, padding as i32), metrics, size),
+                        (6, 16)
+                    );
+                    let tiny = Geometry::calculate(1, 1, uniform(padding), metrics).unwrap();
+                    let old_tiny = Geometry::calculate(1, 1, uniform(padding), natural).unwrap();
                     if tiny.cell != old_tiny.cell {
                         assert!(matches!(
                             &tiny.messages(Some(old_tiny))[..],
@@ -1811,7 +1868,7 @@ fn baseline_offset_and_cell_metrics_file_reload_uses_metric_path_and_preserves_c
         let generation = cache.generation();
         let atlas = cache.atlases().mask.stamp();
         let clusters = cache.shaped_clusters();
-        let old = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+        let old = Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics()).unwrap();
         apply_fonts(
             &mut active,
             &mut cache,
@@ -1820,7 +1877,7 @@ fn baseline_offset_and_cell_metrics_file_reload_uses_metric_path_and_preserves_c
             update,
         );
         assert_eq!(cache.shaped_clusters(), clusters);
-        let new = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+        let new = Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics()).unwrap();
         if (width > 1.0 && width < 1.01) || offset == 63 || offset == -63 {
             assert_eq!(cache.generation(), generation);
             assert_eq!(cache.atlases().mask.stamp(), atlas);
@@ -1935,7 +1992,7 @@ fn cell_metrics_emulation_graphics_and_wide_hit_cells_use_the_measured_cache() {
                 (pad + 2 * metrics.width) as f64,
                 (pad + metrics.height) as f64,
             ),
-            pad,
+            (pad as i32, pad as i32),
             metrics,
             state.size(),
         );
@@ -1944,7 +2001,7 @@ fn cell_metrics_emulation_graphics_and_wide_hit_cells_use_the_measured_cache() {
                 (pad + 4 * metrics.width) as f64 - 0.01,
                 (pad + 2 * metrics.height) as f64 - 0.01,
             ),
-            pad,
+            (pad as i32, pad as i32),
             metrics,
             state.size(),
         );
@@ -1994,7 +2051,7 @@ fn baseline_offset_production_options_scale_round_clamp_and_keep_geometry() {
                 .stack(1.0)
                 .unwrap()
                 .metrics();
-            let geometry = Geometry::calculate(400, 200, 4, zero).unwrap();
+            let geometry = Geometry::calculate(400, 200, uniform(4), zero).unwrap();
             for offset in [-64, -2, 0, 2, 64] {
                 let options = effective_font_options(
                     &TerminalConfig {
@@ -2017,12 +2074,12 @@ fn baseline_offset_production_options_scale_round_clamp_and_keep_geometry() {
                     .clamp(1, zero.height as i32) as u32;
                 assert_eq!(metrics.baseline, expected, "{offset}, {zoom}, {scale}");
                 assert_eq!((metrics.width, metrics.height), (zero.width, zero.height));
-                let changed = Geometry::calculate(400, 200, 4, metrics).unwrap();
+                let changed = Geometry::calculate(400, 200, uniform(4), metrics).unwrap();
                 assert!(changed.messages(Some(geometry)).is_empty());
                 let size = crate::emulation::screen_buffer::TermSize { cols: 16, rows: 8 };
                 assert_eq!(
-                    pointer_cell((35.0, 42.0), 4, metrics, size),
-                    pointer_cell((35.0, 42.0), 4, zero, size)
+                    pointer_cell((35.0, 42.0), (4, 4), metrics, size),
+                    pointer_cell((35.0, 42.0), (4, 4), zero, size)
                 );
                 for query in [b"\x1b[16t".as_slice(), b"\x1b[14t"] {
                     assert_eq!(
@@ -2129,7 +2186,7 @@ fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Opti
     refresh(&mut retained, &mut cache, &settings, &paints);
     let original = retained.flatten();
     let metrics = cache.metrics();
-    let geometry = Geometry::calculate(400, 200, 0, metrics).unwrap();
+    let geometry = Geometry::calculate(400, 200, PaddingLayout::default(), metrics).unwrap();
     let resources = (
         cache.generation(),
         cache.atlases().mask.stamp(),
@@ -2181,10 +2238,12 @@ fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Opti
                 resources,
                 "metrics, placement and style fitting must all remain equivalent"
             );
-            assert!(Geometry::calculate(400, 200, 0, cache.metrics())
-                .unwrap()
-                .messages(Some(geometry))
-                .is_empty());
+            assert!(
+                Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics())
+                    .unwrap()
+                    .messages(Some(geometry))
+                    .is_empty()
+            );
             assert_eq!(selection.text(state.screen()), copied);
             assert_eq!(state.cursor_position(), cursor);
             for (index, cell) in cells.iter().enumerate() {
@@ -2217,7 +2276,14 @@ fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Opti
     }
     // Keep the baseline equivalent while changing each unrelated visual input.
     // The cursor/opacity inputs use the same values passed by the window draw.
-    for field in ["paints", "cursor", "opacity", "padding"] {
+    for field in [
+        "paints",
+        "cursor",
+        "opacity",
+        "padding",
+        "padding_sides",
+        "padding_balance",
+    ] {
         let mut next = settings.clone();
         next.baseline_offset = Some(if settings.baseline_offset == Some(63) {
             64
@@ -2232,6 +2298,11 @@ fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Opti
             },
             "opacity" => next.opacity = Some(0.5),
             "padding" => next.padding = Some(8.0),
+            "padding_sides" => {
+                next.padding_left = Some(6.0);
+                next.padding_top = Some(1.5);
+            },
+            "padding_balance" => next.padding_balance = Some(!settings.padding_balance_enabled()),
             _ => unreachable!(),
         }
         let requested = effective_font_options(&next, 1.0, 1.0);
@@ -2334,7 +2405,8 @@ fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() 
     refresh(&mut retained, &mut cache);
     let original = retained.flatten();
     assert_eq!(original.images.len(), 2);
-    let geometry = Geometry::calculate(400, 200, 0, cache.metrics()).unwrap();
+    let geometry =
+        Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics()).unwrap();
     let baseline = cache.metrics().baseline;
     for offset in [2, -2, 0] {
         std::fs::write(
@@ -2369,10 +2441,12 @@ fn baseline_offset_saved_file_reload_retains_inline_images_through_full_apply() 
         assert_eq!(retained.all_images(), original.images);
         assert_eq!(retained.resident_images(), original.resident_images);
         assert_eq!(cache.metrics().baseline as i32, baseline as i32 + offset);
-        assert!(Geometry::calculate(400, 200, 0, cache.metrics())
-            .unwrap()
-            .messages(Some(geometry))
-            .is_empty());
+        assert!(
+            Geometry::calculate(400, 200, PaddingLayout::default(), cache.metrics())
+                .unwrap()
+                .messages(Some(geometry))
+                .is_empty()
+        );
         assert_eq!(settings, next);
         assert_eq!(selection.text(state.screen()), copied);
         assert_eq!(state.cursor_position(), cursor);
@@ -2499,7 +2573,7 @@ fn native_startup_dimensions_precedence() {
         let remembered = remembered_size(startup_mode(args, settings), &path);
         StartupSize::resolve(args, settings, remembered).extent(
             metrics,
-            4,
+            uniform(4),
             PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT),
         )
     };
@@ -2588,8 +2662,10 @@ fn native_startup_dimensions_geometry() {
                 .unwrap(),
         );
         let metrics = cache.metrics();
-        let padding = scaled_padding(&settings, scale);
-        let extent = target.extent(metrics, padding, monitor);
+        let layout = padding_layout(&settings, scale);
+        assert_eq!(layout, uniform((3.5 * scale).round() as u32));
+        let padding = layout.margins.left;
+        let extent = target.extent(metrics, layout, monitor);
         assert_eq!(
             extent,
             PhysicalSize::new(
@@ -2598,7 +2674,7 @@ fn native_startup_dimensions_geometry() {
             )
         );
         assert_eq!(
-            Geometry::calculate(extent.width, extent.height, padding, metrics)
+            Geometry::calculate(extent.width, extent.height, uniform(padding), metrics)
                 .unwrap()
                 .grid,
             expected_grid
@@ -2606,10 +2682,10 @@ fn native_startup_dimensions_geometry() {
         let smaller =
             PhysicalSize::new(extent.width - metrics.width, extent.height - metrics.height);
         let ceiling = correction_bounds(smaller, extent, monitor);
-        let corrected = target.extent(metrics, padding, ceiling);
+        let corrected = target.extent(metrics, layout, ceiling);
         assert_eq!(corrected, smaller);
         assert_eq!(
-            Geometry::calculate(corrected.width, corrected.height, padding, metrics)
+            Geometry::calculate(corrected.width, corrected.height, uniform(padding), metrics)
                 .unwrap()
                 .grid,
             Size { cols: 99, rows: 29 }
@@ -2633,7 +2709,7 @@ fn native_startup_dimensions_remember_budget() {
     };
     let boundary = PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT);
     let raw = PhysicalSize::new(7680, 4320);
-    let raw_grid = Geometry::grid_size(raw.width, raw.height, 0, metrics);
+    let raw_grid = Geometry::grid_size(raw.width, raw.height, PaddingLayout::default(), metrics);
     assert!(raw.width as usize * raw.height as usize <= STARTUP_PIXEL_LIMIT);
     assert!(raw_grid.cols * raw_grid.rows > STARTUP_CELL_LIMIT);
     let dir = tempfile::tempdir().unwrap();
@@ -2649,26 +2725,39 @@ fn native_startup_dimensions_remember_budget() {
         height: 6,
         ..metrics
     };
-    let estimate = target.extent(large_metrics, 0, boundary);
+    let estimate = target.extent(large_metrics, PaddingLayout::default(), boundary);
     assert_eq!(estimate, raw);
     assert!(check_startup_extent(
         estimate,
-        Geometry::grid_size(estimate.width, estimate.height, 0, large_metrics)
+        Geometry::grid_size(
+            estimate.width,
+            estimate.height,
+            PaddingLayout::default(),
+            large_metrics
+        )
     )
     .is_ok());
 
     let safe = |extent: PhysicalSize<u32>, padding| {
-        let geometry = Geometry::calculate(extent.width, extent.height, padding, metrics).unwrap();
+        let geometry =
+            Geometry::calculate(extent.width, extent.height, uniform(padding), metrics).unwrap();
         check_startup_extent(extent, geometry.grid).unwrap();
         geometry
     };
-    let corrected = target.extent(metrics, 0, boundary);
+    let corrected = target.extent(metrics, PaddingLayout::default(), boundary);
     assert!(corrected.width < raw.width && corrected.height < raw.height);
     let geometry = safe(corrected, 0);
     assert_eq!(geometry.messages(None).len(), 2);
-    let rounded = wayland_correction(&target, corrected, corrected, 0, metrics, 1.5)
-        .unwrap()
-        .to_physical(1.5);
+    let rounded = wayland_correction(
+        &target,
+        corrected,
+        corrected,
+        PaddingLayout::default(),
+        metrics,
+        1.5,
+    )
+    .unwrap()
+    .to_physical(1.5);
     assert!(rounded.width <= corrected.width && rounded.height <= corrected.height);
     safe(rounded, 0);
 
@@ -2676,11 +2765,15 @@ fn native_startup_dimensions_remember_budget() {
         cols: Some(4096),
         ..args.clone()
     };
-    let mixed = StartupSize::resolve(&mixed, &settings, remembered).extent(metrics, 8, boundary);
+    let mixed =
+        StartupSize::resolve(&mixed, &settings, remembered).extent(metrics, uniform(8), boundary);
     assert!(mixed.width < 4096 * metrics.width + 16);
     safe(mixed, 8);
-    let residual =
-        StartupSize::resolve(&args, &settings, Some((801, 721))).extent(metrics, 8, boundary);
+    let residual = StartupSize::resolve(&args, &settings, Some((801, 721))).extent(
+        metrics,
+        uniform(8),
+        boundary,
+    );
     assert_eq!(residual, PhysicalSize::new(801, 721));
     safe(residual, 8);
 
@@ -2688,7 +2781,12 @@ fn native_startup_dimensions_remember_budget() {
     for extent in [raw, insufficient] {
         assert!(check_startup_extent(
             extent,
-            Geometry::grid_size(extent.width, extent.height, 0, metrics)
+            Geometry::grid_size(
+                extent.width,
+                extent.height,
+                PaddingLayout::default(),
+                metrics
+            )
         )
         .is_err());
     }
@@ -2701,7 +2799,8 @@ fn native_startup_dimensions_resize_order() {
         .unwrap()
         .metrics();
     let first = PhysicalSize::new(100 * metrics.width, 30 * metrics.height);
-    let geometry = Geometry::calculate(first.width, first.height, 0, metrics).unwrap();
+    let geometry =
+        Geometry::calculate(first.width, first.height, PaddingLayout::default(), metrics).unwrap();
     let mut connection = ConnectionGeometry::new(
         Size {
             cols: 120,
@@ -2717,9 +2816,15 @@ fn native_startup_dimensions_resize_order() {
             if pixel_dimensions.text_area_grid_size == Some(geometry.grid) && *new_size == geometry.grid
     ));
     assert!(geometry.messages(Some(geometry)).is_empty());
-    assert!(Geometry::calculate(0, first.height, 0, metrics).is_none());
+    assert!(Geometry::calculate(0, first.height, PaddingLayout::default(), metrics).is_none());
     let queued = PhysicalSize::new(first.width - metrics.width, first.height);
-    let resize = Geometry::calculate(queued.width, queued.height, 0, metrics).unwrap();
+    let resize = Geometry::calculate(
+        queued.width,
+        queued.height,
+        PaddingLayout::default(),
+        metrics,
+    )
+    .unwrap();
     connection.reported = Some(geometry);
     assert!(matches!(connection.messages(resize).as_slice(),
         [ClientToServerMsg::TerminalPixelDimensions { .. }, ClientToServerMsg::TerminalResize { new_size }]
@@ -2783,7 +2888,7 @@ fn native_startup_dimensions_save_without_resize() {
     let current = Geometry::calculate(
         grant.width,
         grant.height,
-        scaled_padding(&settings, 1.0),
+        padding_layout(&settings, 1.0),
         metrics,
     )
     .unwrap();
@@ -2805,7 +2910,7 @@ fn native_startup_dimensions_save_without_resize() {
     assert_eq!(retained.flatten(), before_scene);
     assert_eq!(cache.generation(), generation);
     assert_eq!(selection.text(state.screen()), before_copy);
-    let padding = scaled_padding(&settings, 1.0);
+    let padding = padding_layout(&settings, 1.0);
     let open_geometry =
         Geometry::calculate(grant.width, grant.height, padding, cache.metrics()).unwrap();
     assert!(open_geometry.messages(Some(current)).is_empty());
@@ -2841,7 +2946,7 @@ fn native_startup_x11_placement_settles_before_geometry() {
     };
     let target = StartupSize::resolve(&TerminalArgs::default(), &settings, None);
     let monitor = PhysicalSize::new(2560, 1440);
-    let hint = target.extent(metrics(1.0), 4, monitor);
+    let hint = target.extent(metrics(1.0), uniform(4), monitor);
     assert_eq!(hint.width, 488);
     let mut opening = OpeningGeometry::new(
         WindowBackend::X11,
@@ -2862,7 +2967,7 @@ fn native_startup_x11_placement_settles_before_geometry() {
         panic!("placement consumed early")
     };
     let (_, expected) = correction
-        .request(hint, monitor, 2.0, 8, metrics(2.0))
+        .request(hint, monitor, 2.0, uniform(8), metrics(2.0))
         .unwrap();
     // The writer leaves the physical extent at 488 during the DPI callback.
     // The measured request uses 9px cells rather than Winit's ratio width of 976.
@@ -2889,8 +2994,9 @@ fn native_startup_validates_late_opening_grants() {
         strikeout_top: 1,
         stroke: 1,
     };
-    let measure =
-        |size: PhysicalSize<u32>| Geometry::calculate(size.width, size.height, 0, metrics).unwrap();
+    let measure = |size: PhysicalSize<u32>| {
+        Geometry::calculate(size.width, size.height, PaddingLayout::default(), metrics).unwrap()
+    };
     let opening = OpeningGeometry {
         backend: WindowBackend::X11,
         phase: OpeningPhase::Grant {
@@ -2942,7 +3048,7 @@ fn native_startup_wayland_configure_fit() {
     };
     correction.observe_wayland_grant(PhysicalSize::new(488, 808), 1.0);
     let actual = PhysicalSize::new(976, 1616);
-    let request = correction.request(actual, monitor, 2.0, 8, metrics(&settings, 2.0));
+    let request = correction.request(actual, monitor, 2.0, uniform(8), metrics(&settings, 2.0));
     assert!(request.is_none_or(|(_, size)| size.width <= actual.width));
     correction.observe_wayland_grant(PhysicalSize::new(960, 1616), 2.0);
     assert_eq!(correction.wayland_ceiling.unwrap().width, 480);
@@ -2955,12 +3061,13 @@ fn native_startup_wayland_configure_fit() {
     assert_eq!(metrics.width, 17);
     for (width, expected) in [(1715, (980, 100)), (1713, (970, 99))] {
         let bounds = PhysicalSize::new(width, 1800);
-        let fitted = target.extent(metrics, 7, bounds);
-        let logical = wayland_correction(&target, fitted, bounds, 7, metrics, scale).unwrap();
+        let fitted = target.extent(metrics, uniform(7), bounds);
+        let logical =
+            wayland_correction(&target, fitted, bounds, uniform(7), metrics, scale).unwrap();
         let actual: PhysicalSize<u32> = logical.to_physical(scale);
         assert!(actual.width <= width);
         assert_eq!(
-            Geometry::grid_size(actual.width, actual.height, 7, metrics).cols,
+            Geometry::grid_size(actual.width, actual.height, uniform(7), metrics).cols,
             expected.1
         );
         assert_eq!(logical.width, expected.0);
@@ -2969,8 +3076,8 @@ fn native_startup_wayland_configure_fit() {
         width: StartupAxis::Pixels(1714),
         ..target
     };
-    let fitted = cached.extent(metrics, 7, monitor);
-    let logical = wayland_correction(&cached, fitted, monitor, 7, metrics, scale).unwrap();
+    let fitted = cached.extent(metrics, uniform(7), monitor);
+    let logical = wayland_correction(&cached, fitted, monitor, uniform(7), metrics, scale).unwrap();
     assert_eq!(logical.width, 979); // Equally distant physical pixels favor the smaller grant.
 }
 
@@ -3367,7 +3474,7 @@ fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
         zero_stroke > 2,
         "fixture must exercise unclamped negative thickness"
     );
-    let geometry = Geometry::calculate(940, 440, 4, zero).unwrap();
+    let geometry = Geometry::calculate(940, 440, uniform(4), zero).unwrap();
     let unadjusted = retained.flatten();
     let generation = cache.generation();
     let stamps = (cache.atlases().mask.stamp(), cache.atlases().color.stamp());
@@ -3430,12 +3537,12 @@ fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
             },
             zero
         );
-        let changed = Geometry::calculate(940, 440, 4, metrics).unwrap();
+        let changed = Geometry::calculate(940, 440, uniform(4), metrics).unwrap();
         assert_eq!(changed, geometry);
         assert!(changed.messages(Some(geometry)).is_empty());
         assert_eq!(
-            pointer_cell((52.0, 87.0), 4, zero, state.size()),
-            pointer_cell((52.0, 87.0), 4, metrics, state.size())
+            pointer_cell((52.0, 87.0), (4, 4), zero, state.size()),
+            pointer_cell((52.0, 87.0), (4, 4), metrics, state.size())
         );
         for query in [b"\x1b[16t".as_slice(), b"\x1b[14t"] {
             let reply = |geometry, metrics| {
@@ -3586,7 +3693,7 @@ fn underline_metrics_saved_reload_scales_once_and_keeps_cells_and_copy() {
     assert_ne!(cache.generation(), generation);
     assert!(!cache.shapes_runs());
     assert_ne!(adjusted.baseline, zero.baseline);
-    let changed = Geometry::calculate(940, 440, 4, adjusted).unwrap();
+    let changed = Geometry::calculate(940, 440, uniform(4), adjusted).unwrap();
     assert!(changed
         .messages(Some(geometry))
         .iter()
@@ -4011,7 +4118,7 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
         .unwrap();
     };
     let waiting = |app: &mut App| {
-        assert!(app.switch_overlay((800, 400), 0).is_some());
+        assert!(app.switch_overlay((800, 400), (0, 0)).is_some());
         input(app);
         assert_eq!(std::fs::read(&capture).unwrap(), b"earlier capture");
     };
@@ -4055,7 +4162,7 @@ fn render_negotiation_first_repaint_enables_pane_input_and_recording() {
     assert!(app
         .duration_elapsed(app.started + Duration::from_secs(1))
         .unwrap());
-    assert!(app.switch_overlay((800, 400), 0).is_none());
+    assert!(app.switch_overlay((800, 400), (0, 0)).is_none());
     mouse(&mut app, MouseButton::Left, ElementState::Released);
     mouse(&mut app, MouseButton::Right, ElementState::Released);
     input(&mut app);
@@ -4380,4 +4487,458 @@ fn native_refusal_prefix_window() {
             .to_string(),
         reason
     );
+}
+
+fn padding_test_metrics(width: u32, height: u32) -> crate::text::font::CellMetrics {
+    crate::text::font::CellMetrics {
+        width,
+        height,
+        baseline: height * 3 / 4,
+        underline_top: height * 3 / 4 + 1,
+        strikeout_top: height / 2,
+        stroke: 1,
+    }
+}
+
+/// Upstream `fit_grid`, written out independently of `PaddingLayout`.
+/// `sides` is (left, top, right, bottom) in physical pixels.
+fn padding_expected_fit(
+    window: (u32, u32),
+    cell: (u32, u32),
+    sides: (u32, u32, u32, u32),
+    balance: bool,
+) -> (Size, (i32, i32)) {
+    let (left, top, right, bottom) = sides;
+    let room_x = window.0.saturating_sub(left + right);
+    let room_y = window.1.saturating_sub(top + bottom);
+    let cols = (room_x / cell.0).clamp(1, 4096);
+    let rows = (room_y / cell.1).clamp(1, 4096);
+    let (mut x, mut y) = (left, top);
+    if balance {
+        x += room_x.saturating_sub(cols * cell.0) / 2;
+        y += room_y.saturating_sub(rows * cell.1) / 2;
+    }
+    (
+        Size {
+            cols: cols as usize,
+            rows: rows as usize,
+        },
+        (x as i32, y as i32),
+    )
+}
+
+fn padding_sides_settings(
+    padding: Option<f32>,
+    sides: [Option<f32>; 4],
+    balance: bool,
+) -> TerminalConfig {
+    let [top, right, bottom, left] = sides;
+    TerminalConfig {
+        padding,
+        padding_top: top,
+        padding_right: right,
+        padding_bottom: bottom,
+        padding_left: left,
+        padding_balance: Some(balance),
+        ..embedded_settings()
+    }
+}
+
+#[test]
+fn padding_layout_rounds_each_side_independently_at_fractional_scales() {
+    let settings = padding_sides_settings(
+        Some(9.0),
+        [Some(1.5), Some(2.25), Some(0.5), Some(3.0)],
+        true,
+    );
+    for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+        let round = |logical: f64| (logical * scale).round() as u32;
+        let layout = padding_layout(&settings, scale);
+        assert_eq!(
+            layout.margins,
+            Margins {
+                top: round(1.5),
+                right: round(2.25),
+                bottom: round(0.5),
+                left: round(3.0),
+            },
+            "scale {scale}"
+        );
+        assert!(layout.balance);
+        assert_eq!(layout.horizontal(), round(2.25) + round(3.0));
+        assert_eq!(layout.vertical(), round(1.5) + round(0.5));
+    }
+    // The shorthand fills unset sides; nothing set means no padding.
+    let shorthand = padding_sides_settings(Some(2.5), [None, Some(0.0), None, None], false);
+    assert_eq!(
+        padding_layout(&shorthand, 1.5),
+        PaddingLayout {
+            margins: Margins {
+                top: 4,
+                right: 0,
+                bottom: 4,
+                left: 4
+            },
+            balance: false
+        }
+    );
+    assert_eq!(
+        padding_layout(&embedded_settings(), 2.0),
+        PaddingLayout::default()
+    );
+}
+
+#[test]
+fn padding_fit_grid_balance() {
+    let metrics = padding_test_metrics(9, 17);
+    let margins = Margins {
+        left: 6,
+        top: 3,
+        right: 2,
+        bottom: 5,
+    };
+    for balance in [false, true] {
+        let layout = PaddingLayout { margins, balance };
+        // Leftover: odd (7) horizontally, even (10) vertically.
+        for window in [
+            (6 + 2 + 10 * 9 + 7, 3 + 5 + 4 * 17 + 10),
+            (6 + 2 + 10 * 9 + 8, 3 + 5 + 4 * 17 + 11),
+            (6 + 2 + 10 * 9, 3 + 5 + 4 * 17),
+        ] {
+            let geometry = Geometry::calculate(window.0, window.1, layout, metrics).unwrap();
+            let (grid, origin) = padding_expected_fit(window, (9, 17), (6, 3, 2, 5), balance);
+            assert_eq!(geometry.grid, grid);
+            assert_eq!(grid, Size { cols: 10, rows: 4 });
+            assert_eq!(
+                layout.origin(window.0, window.1, geometry.grid, metrics),
+                origin
+            );
+            let leftover = (window.0 - 8 - 90, window.1 - 8 - 68);
+            let expected = if balance {
+                (6 + leftover.0 / 2, 3 + leftover.1 / 2)
+            } else {
+                (6, 3)
+            };
+            assert_eq!(origin, (expected.0 as i32, expected.1 as i32));
+            // Leftover beyond the configured padding on each side of the grid;
+            // balancing splits it with the odd pixel on the right/bottom.
+            let near = (origin.0 as u32 - 6, origin.1 as u32 - 3);
+            let far = (
+                window.0 - (origin.0 as u32 + 90) - 2,
+                window.1 - (origin.1 as u32 + 68) - 5,
+            );
+            if balance {
+                assert_eq!(far, (near.0 + leftover.0 % 2, near.1 + leftover.1 % 2));
+            } else {
+                assert_eq!((near, far), ((0, 0), leftover));
+            }
+        }
+        // A window smaller than its padding keeps a 1x1 grid at a nonnegative origin.
+        for window in [(1, 1), (5, 2), (8, 8)] {
+            let geometry = Geometry::calculate(window.0, window.1, layout, metrics).unwrap();
+            assert_eq!(geometry.grid, Size { cols: 1, rows: 1 });
+            let origin = layout.origin(window.0, window.1, geometry.grid, metrics);
+            assert_eq!(origin, (6, 3));
+        }
+    }
+}
+
+#[test]
+fn padding_pointer_cell_uses_asymmetric_balanced_origin() {
+    let settings = padding_sides_settings(Some(4.0), [Some(3.0), Some(1.5), None, Some(6.0)], true);
+    for scale in [1.25, 1.5, 1.75] {
+        let metrics = padding_test_metrics((8.0 * scale) as u32, (16.0 * scale) as u32);
+        let layout = padding_layout(&settings, scale);
+        assert_ne!(layout.margins.left, layout.margins.right);
+        assert_ne!(layout.margins.top, layout.margins.bottom);
+        let window = (
+            layout.horizontal() + 7 * metrics.width + 5,
+            layout.vertical() + 3 * metrics.height + 3,
+        );
+        let geometry = Geometry::calculate(window.0, window.1, layout, metrics).unwrap();
+        assert_eq!(geometry.grid, Size { cols: 7, rows: 3 });
+        let origin = layout.origin(window.0, window.1, geometry.grid, metrics);
+        assert_eq!(
+            origin,
+            (
+                layout.margins.left as i32 + 2,
+                layout.margins.top as i32 + 1
+            )
+        );
+        let size = crate::emulation::screen_buffer::TermSize { cols: 7, rows: 3 };
+        for row in 0..3 {
+            for col in 0..7 {
+                let centre = (
+                    f64::from(origin.0) + (col as f64 + 0.5) * f64::from(metrics.width),
+                    f64::from(origin.1) + (row as f64 + 0.5) * f64::from(metrics.height),
+                );
+                assert_eq!(pointer_cell(centre, origin, metrics, size), (row, col));
+                // Probes half a pixel either side of the cell's top-left corner
+                // fail if the origin is off by even one pixel.
+                let corner = (
+                    f64::from(origin.0) + (col as u32 * metrics.width) as f64,
+                    f64::from(origin.1) + (row as u32 * metrics.height) as f64,
+                );
+                assert_eq!(
+                    pointer_cell((corner.0 + 0.5, corner.1 + 0.5), origin, metrics, size),
+                    (row, col)
+                );
+                assert_eq!(
+                    pointer_cell((corner.0 - 0.5, corner.1 - 0.5), origin, metrics, size),
+                    (row.saturating_sub(1), col.saturating_sub(1))
+                );
+            }
+        }
+        // Pointers in the leading padding clamp to the first cell.
+        assert_eq!(pointer_cell((0.0, 0.0), origin, metrics, size), (0, 0));
+        let far = (f64::from(window.0) - 0.5, f64::from(window.1) - 0.5);
+        assert_eq!(pointer_cell(far, origin, metrics, size), (2, 6));
+    }
+}
+
+#[test]
+fn padding_startup_extent_uses_axis_sums() {
+    let metrics = padding_test_metrics(9, 17);
+    let layout = PaddingLayout {
+        margins: Margins {
+            left: 6,
+            top: 3,
+            right: 2,
+            bottom: 11,
+        },
+        balance: true,
+    };
+    let target = StartupSize {
+        width: StartupAxis::Cells(40),
+        height: StartupAxis::Cells(12),
+    };
+    let ceiling = PhysicalSize::new(STARTUP_AXIS_LIMIT, STARTUP_AXIS_LIMIT);
+    let extent = target.extent(metrics, layout, ceiling);
+    assert_eq!(extent, PhysicalSize::new(40 * 9 + 6 + 2, 12 * 17 + 3 + 11));
+    assert_eq!(
+        Geometry::calculate(extent.width, extent.height, layout, metrics)
+            .unwrap()
+            .grid,
+        Size { cols: 40, rows: 12 }
+    );
+    // Remembered pixels are used as-is.
+    let remembered = StartupSize {
+        width: StartupAxis::Pixels(501),
+        height: StartupAxis::Pixels(303),
+    };
+    assert_eq!(
+        remembered.extent(metrics, layout, ceiling),
+        PhysicalSize::new(501, 303)
+    );
+    // The cell-limit shrink keeps the asymmetric axis sums.
+    let tiny = padding_test_metrics(2, 3);
+    let huge = StartupSize {
+        width: StartupAxis::Pixels(16_000),
+        height: StartupAxis::Pixels(2_000),
+    };
+    let shrunk = huge.extent(tiny, layout, ceiling);
+    let grid = Geometry::grid_size(shrunk.width, shrunk.height, layout, tiny);
+    assert!(grid.cols * grid.rows <= STARTUP_CELL_LIMIT);
+    let full = Geometry::grid_size(16_000, 2_000, layout, tiny);
+    let fitted = fit_size(full, STARTUP_CELL_LIMIT);
+    assert_ne!(fitted, full);
+    assert_eq!(
+        shrunk,
+        PhysicalSize::new(
+            (fitted.cols as u32 * 2 + 8).min(16_000),
+            (fitted.rows as u32 * 3 + 14).min(2_000)
+        )
+    );
+    // Wayland logical correction keeps cells plus the axis sums.
+    for scale in [1.0, 1.5, 2.0] {
+        let bounds = PhysicalSize::new(4000, 3000);
+        let fitted = target.extent(metrics, layout, bounds);
+        let logical = wayland_correction(&target, fitted, bounds, layout, metrics, scale).unwrap();
+        let physical: PhysicalSize<u32> = logical.to_physical(scale);
+        assert!(physical.width >= 40 * 9 + 8, "{scale}: {physical:?}");
+        assert!(physical.height >= 12 * 17 + 14, "{scale}: {physical:?}");
+        assert_eq!(
+            Geometry::grid_size(physical.width, physical.height, layout, metrics),
+            Size { cols: 40, rows: 12 },
+            "{scale}"
+        );
+    }
+}
+
+#[test]
+fn padding_notice_stays_inside_far_margin() {
+    let mut cache = GlyphCache::new(
+        effective_font_options(&embedded_settings(), 1.0, 1.0)
+            .stack(1.0)
+            .unwrap(),
+    );
+    let metrics = cache.metrics();
+    let inset = metrics.stroke.max(2);
+    let text = "x".repeat(400);
+    let target = (40 * metrics.width + 37, 6 * metrics.height + 23);
+    let background = |scene: &RowScene| {
+        let rect = scene.rects[0];
+        (rect.width, rect.height)
+    };
+    // Symmetric unbalanced padding keeps the previous `2 * (padding + inset)` room.
+    for padding in [0, 4, 9] {
+        let scene = notice_scene(
+            Notice::Text(&text),
+            &mut cache,
+            target,
+            (padding as i32, padding as i32),
+            uniform(padding).margins,
+        );
+        let columns = (target.0 - 2 * (padding + inset)) / metrics.width;
+        let rows = ((target.1 - 2 * (padding + inset)) / metrics.height).min(12);
+        assert_eq!(
+            background(&scene),
+            (
+                columns * metrics.width + 2 * inset,
+                rows * metrics.height + 2 * inset
+            )
+        );
+    }
+    let margins = Margins {
+        left: 3,
+        top: 2,
+        right: 2 * metrics.width + 5,
+        bottom: metrics.height + 7,
+    };
+    for origin in [(3, 2), (3 + metrics.width as i32 - 1, 2 + 9)] {
+        let scene = notice_scene(Notice::Text(&text), &mut cache, target, origin, margins);
+        let (width, height) = background(&scene);
+        let room_x = target.0 - origin.0 as u32 - margins.right - 2 * inset;
+        let room_y = target.1 - origin.1 as u32 - margins.bottom - 2 * inset;
+        assert_eq!(width, room_x / metrics.width * metrics.width + 2 * inset);
+        assert_eq!(height, room_y / metrics.height * metrics.height + 2 * inset);
+        assert!(origin.0 as u32 + width + margins.right <= target.0);
+        assert!(origin.1 as u32 + height + margins.bottom <= target.1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn padding_app_origin_tracks_reload_scale_and_balance() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.kdl");
+    std::fs::create_dir(directory.path().join("config.d")).unwrap();
+    let base = "terminal { system_fonts false; padding 4; padding_left 6; padding_top 3; }";
+    std::fs::write(&path, base).unwrap();
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(directory.path().to_owned()),
+        ..Default::default()
+    };
+    let mut app = switch_app(opts);
+    app.reload().unwrap();
+    // Logical (left, top, right, bottom) as configured.
+    let logical = (6.0, 3.0, 4.0, 4.0);
+    let state_size = app.state.size();
+    let expected = |app: &App, window: (u32, u32), balance: bool| {
+        let round = |value: f64| (value * app.scale).round() as u32;
+        let metrics = app.cache.metrics();
+        padding_expected_fit(
+            window,
+            (metrics.width, metrics.height),
+            (
+                round(logical.0),
+                round(logical.1),
+                round(logical.2),
+                round(logical.3),
+            ),
+            balance,
+        )
+    };
+    // A window that fits the app's grid with odd leftover on both axes.
+    let window_for = |app: &App| {
+        let metrics = app.cache.metrics();
+        let layout = app.padding_layout();
+        (
+            layout.horizontal() + state_size.cols as u32 * metrics.width + 5,
+            layout.vertical() + state_size.rows as u32 * metrics.height + 3,
+        )
+    };
+    let assert_hits = |app: &mut App, window: (u32, u32), origin: (i32, i32), grid: Size| {
+        let metrics = app.cache.metrics();
+        for row in 0..grid.rows.min(state_size.rows) {
+            for col in 0..grid.cols.min(state_size.cols) {
+                app.pointer = (
+                    f64::from(origin.0) + (col as f64 + 0.5) * f64::from(metrics.width),
+                    f64::from(origin.1) + (row as f64 + 0.5) * f64::from(metrics.height),
+                );
+                assert_eq!(app.cell_at(window), (row, col), "{window:?} {origin:?}");
+                let corner = (
+                    f64::from(origin.0) + (col as u32 * metrics.width) as f64,
+                    f64::from(origin.1) + (row as u32 * metrics.height) as f64,
+                );
+                app.pointer = (corner.0 + 0.5, corner.1 + 0.5);
+                assert_eq!(app.cell_at(window), (row, col), "{window:?} {origin:?}");
+                app.pointer = (corner.0 - 0.5, corner.1 - 0.5);
+                assert_eq!(
+                    app.cell_at(window),
+                    (row.saturating_sub(1), col.saturating_sub(1)),
+                    "{window:?} {origin:?}"
+                );
+            }
+        }
+    };
+
+    let window = window_for(&app);
+    let (grid, origin) = expected(&app, window, false);
+    assert_eq!(app.content_origin(window), origin);
+    assert_eq!(origin, (6, 3));
+    assert_hits(&mut app, window, origin, grid);
+    let generation = app.cache.generation();
+    let selection = app.selection.range();
+    assert!(selection.is_some());
+    let geometry = Geometry::calculate(
+        window.0,
+        window.1,
+        app.padding_layout(),
+        app.cache.metrics(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; padding 4; padding_left 6; padding_top 3; padding_balance true; }",
+    )
+    .unwrap();
+    app.reload().unwrap();
+    assert!(app.settings.padding_balance_enabled());
+    assert_eq!(app.cache.generation(), generation, "no font rebuild");
+    let balanced_geometry = Geometry::calculate(
+        window.0,
+        window.1,
+        app.padding_layout(),
+        app.cache.metrics(),
+    )
+    .unwrap();
+    assert_eq!(balanced_geometry, geometry);
+    assert!(balanced_geometry.messages(Some(geometry)).is_empty());
+    let (balanced_grid, balanced) = expected(&app, window, true);
+    assert_eq!(balanced_grid, grid);
+    assert_eq!(balanced, (origin.0 + 5 / 2, origin.1 + 3 / 2));
+    assert_eq!(app.content_origin(window), balanced);
+    assert_hits(&mut app, window, balanced, grid);
+    assert_eq!(app.selection.range(), selection);
+
+    app.change_scale(app.zoom, 1.25).unwrap();
+    assert_eq!(app.scale, 1.25);
+    assert_eq!(
+        app.padding_layout().margins,
+        Margins {
+            left: 8,
+            top: 4,
+            right: 5,
+            bottom: 5
+        }
+    );
+    for window in [window, window_for(&app)] {
+        let (grid, origin) = expected(&app, window, true);
+        assert_eq!(app.content_origin(window), origin, "{window:?}");
+        assert_hits(&mut app, window, origin, grid);
+    }
+    assert_eq!(app.selection.range(), selection);
 }

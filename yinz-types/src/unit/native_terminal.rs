@@ -286,3 +286,81 @@ fn cursor_trail_optional_boolean_roundtrips() {
         );
     }
 }
+
+#[test]
+fn padding_sides_prefer_side_then_shorthand_then_zero() {
+    let config = TerminalConfig::default();
+    assert_eq!(config.padding_sides(), PaddingSides::default());
+    assert!(!config.padding_balance_enabled());
+
+    let shorthand = TerminalConfig {
+        padding: Some(4.0),
+        ..Default::default()
+    };
+    assert_eq!(
+        shorthand.padding_sides(),
+        PaddingSides {
+            top: 4.0,
+            right: 4.0,
+            bottom: 4.0,
+            left: 4.0
+        }
+    );
+
+    let side_only = TerminalConfig {
+        padding_left: Some(2.5),
+        ..Default::default()
+    };
+    assert_eq!(
+        side_only.padding_sides(),
+        PaddingSides {
+            left: 2.5,
+            ..Default::default()
+        }
+    );
+
+    let mixed = TerminalConfig {
+        padding: Some(4.0),
+        padding_top: Some(1.0),
+        padding_right: Some(0.0),
+        padding_bottom: Some(7.5),
+        ..Default::default()
+    };
+    assert_eq!(
+        mixed.padding_sides(),
+        PaddingSides {
+            top: 1.0,
+            right: 0.0,
+            bottom: 7.5,
+            left: 4.0
+        }
+    );
+
+    for (value, enabled) in [(None, false), (Some(false), false), (Some(true), true)] {
+        let config = TerminalConfig {
+            padding_balance: value,
+            ..Default::default()
+        };
+        assert_eq!(config.padding_balance_enabled(), enabled);
+    }
+}
+
+#[test]
+fn padding_keys_serialize_independently() {
+    let config = TerminalConfig {
+        padding: Some(4.0),
+        padding_left: Some(0.0),
+        padding_balance: Some(true),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&config).unwrap();
+    assert_eq!(value["padding"], 4.0);
+    assert_eq!(value["padding_left"], 0.0);
+    assert!(value["padding_top"].is_null());
+    assert_eq!(value["padding_balance"], true);
+    assert_eq!(
+        serde_json::from_value::<TerminalConfig>(value).unwrap(),
+        config
+    );
+    assert!(serde_json::from_str::<TerminalConfig>(r#"{"padding_x":1}"#).is_err());
+}

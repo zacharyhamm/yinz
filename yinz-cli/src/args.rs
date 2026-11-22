@@ -2390,8 +2390,9 @@ pub enum CliAction {
     /// require --write or a host configuration edit, even when the values already match.
     /// Changing effective native terminal cell_width,
     /// line_height, baseline_offset, underline_offset, underline_thickness,
-    /// cursor_trail, ligatures/font_ligatures or font_features requires --write or editing the
-    /// saved configuration/drop-in for file reload. An unsupported unsaved change refuses the
+    /// cursor_trail, ligatures/font_ligatures, font_features, padding (padding, padding_top,
+    /// padding_right, padding_bottom, padding_left) or padding_balance requires --write or
+    /// editing the saved configuration/drop-in for file reload. An unsupported unsaved change refuses the
     /// entire fragment, including sibling settings. Omissions and equivalent values remain valid
     /// runtime requests. Underline values are compared with the session's effective saved files.
     /// Invalid fragments and write failures are errors. Native windows apply a saved change
@@ -2406,7 +2407,9 @@ pub enum CliAction {
         /// Persist the change. Required for explicit native initial_columns and initial_rows and
         /// effective native cell_width, line_height,
         /// baseline_offset, underline_offset, underline_thickness, cursor_trail,
-        /// ligatures/font_ligatures or font_features changes. Writes the session's managed drop-in.
+        /// ligatures/font_ligatures, font_features, padding (padding, padding_top, padding_right,
+        /// padding_bottom, padding_left) or padding_balance changes. Writes the session's managed
+        /// drop-in.
         /// Native windows apply the live change when file reload succeeds and the edited layer
         /// wins. Startup dimensions apply to new windows.
         #[clap(long)]

@@ -46,6 +46,45 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if matches!(
+            name,
+            "padding" | "padding_top" | "padding_right" | "padding_bottom" | "padding_left"
+        ) {
+            let numeric = node.entries().first().and_then(|entry| {
+                let value = entry.value();
+                value
+                    .as_i64()
+                    .map(|value| value as f64)
+                    .or_else(|| value.as_f64())
+            });
+            let typed = node.ty().is_some()
+                || node
+                    .entries()
+                    .first()
+                    .is_some_and(|entry| entry.ty().is_some());
+            if !plain_positional
+                || typed
+                || !numeric.is_some_and(|value| value.is_finite() && (0.0..=256.0).contains(&value))
+            {
+                return Err(kdl_parsing_error!(
+                    format!(
+                        "terminal {name} must be a plain number between 0 and 256 logical pixels"
+                    ),
+                    node
+                ));
+            }
+        }
+        if name == "padding_balance"
+            && (!plain_positional
+                || node.ty().is_some()
+                || node.entries()[0].ty().is_some()
+                || node.entries()[0].value().as_bool().is_none())
+        {
+            return Err(kdl_parsing_error!(
+                "terminal padding_balance must be a plain boolean true or false".to_owned(),
+                node
+            ));
+        }
         if !plain_positional {
             return Err(kdl_parsing_error!(
                 format!("terminal {} takes one plain value", node.name().value()),
@@ -144,7 +183,6 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
         .map_err(|error| kdl_parsing_error!(error.to_string(), block))?;
     for (name, value, min, max) in [
         ("font_size", config.font_size, 3.0, 384.0),
-        ("padding", config.padding, 0.0, 256.0),
         ("opacity", config.opacity, 0.0, 1.0),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < min || value > max) {

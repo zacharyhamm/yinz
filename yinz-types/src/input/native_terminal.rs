@@ -54,7 +54,15 @@ pub struct TerminalConfig {
     pub underline_offset: Option<i32>,
     /// Logical pixels added to the font stroke; KDL accepts -64..=64.
     pub underline_thickness: Option<i32>,
+    /// Logical pixels on every side; KDL accepts 0..=256. A per-side value
+    /// overrides it, see [`TerminalConfig::padding_sides`].
     pub padding: Option<f32>,
+    pub padding_top: Option<f32>,
+    pub padding_right: Option<f32>,
+    pub padding_bottom: Option<f32>,
+    pub padding_left: Option<f32>,
+    /// Centers the grid in the space left after padding; unset means `false`.
+    pub padding_balance: Option<bool>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
@@ -66,6 +74,35 @@ pub struct TerminalConfig {
     pub cursor_trail: Option<bool>,
     pub open_links: Option<bool>,
     pub middle_click_paste: Option<bool>,
+}
+
+/// Logical padding per side after precedence: side override, then the
+/// `padding` shorthand, then 0.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PaddingSides {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl TerminalConfig {
+    /// Resolves each side as `padding_<side>`, else `padding`, else 0. Call it
+    /// on the merged configuration so a side from any layer beats a shorthand
+    /// from any layer.
+    pub fn padding_sides(&self) -> PaddingSides {
+        let side = |value: Option<f32>| value.or(self.padding).unwrap_or(0.0);
+        PaddingSides {
+            top: side(self.padding_top),
+            right: side(self.padding_right),
+            bottom: side(self.padding_bottom),
+            left: side(self.padding_left),
+        }
+    }
+
+    pub fn padding_balance_enabled(&self) -> bool {
+        self.padding_balance.unwrap_or(false)
+    }
 }
 
 /// Parses one `font_features` entry: an optional single leading `+` (on, the

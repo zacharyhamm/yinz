@@ -12,7 +12,7 @@ use crate::render::pacing::{Decision, Pacer};
 use crate::render::renderer::{Frame, Renderer};
 use crate::render::retained::RetainedScene;
 use crate::render::scene::{
-    notice_scene, BlinkPhase, CursorOptions, Notice, RowContext, RowScene, SceneInputs,
+    notice_scene, BlinkPhase, CursorOptions, Margins, Notice, RowContext, RowScene, SceneInputs,
 };
 use crate::session::{self, Recorder, Sender};
 use crate::text::font::{points_to_pixels, CellChange, FontOptions};
@@ -678,11 +678,12 @@ impl StartupAxis {
             .unwrap_or_else(|| Self::Cells(configured.unwrap_or(default)))
     }
 
+    /// `padding` is the axis sum: left + right for width, top + bottom for height.
     fn extent(self, cell: u32, padding: u32) -> u32 {
         match self {
             Self::Cells(cells) => u32::from(cells)
                 .saturating_mul(cell)
-                .saturating_add(2 * padding),
+                .saturating_add(padding),
             Self::Pixels(pixels) => pixels,
         }
     }
@@ -723,16 +724,16 @@ impl StartupSize {
     fn extent(
         &self,
         metrics: crate::text::font::CellMetrics,
-        padding: u32,
+        padding: PaddingLayout,
         ceiling: PhysicalSize<u32>,
     ) -> PhysicalSize<u32> {
         let width = self
             .width
-            .extent(metrics.width, padding)
+            .extent(metrics.width, padding.horizontal())
             .clamp(1, ceiling.width);
         let height = self
             .height
-            .extent(metrics.height, padding)
+            .extent(metrics.height, padding.vertical())
             .clamp(1, ceiling.height);
         let pixels = fit_size(
             Size {
@@ -749,12 +750,12 @@ impl StartupSize {
             if fitted.cols == cols {
                 width
             } else {
-                width.min(fitted.cols as u32 * metrics.width + 2 * padding)
+                width.min(fitted.cols as u32 * metrics.width + padding.horizontal())
             },
             if fitted.rows == rows {
                 height
             } else {
-                height.min(fitted.rows as u32 * metrics.height + 2 * padding)
+                height.min(fitted.rows as u32 * metrics.height + padding.vertical())
             },
         )
     }
@@ -792,7 +793,7 @@ impl StartupCorrection {
         granted: PhysicalSize<u32>,
         monitor: PhysicalSize<u32>,
         scale: f64,
-        padding: u32,
+        padding: PaddingLayout,
         metrics: crate::text::font::CellMetrics,
     ) -> Option<(WindowSize, PhysicalSize<u32>)> {
         let bounds = if let Some(ceiling) = self.wayland_ceiling {
@@ -958,8 +959,57 @@ fn remembered_size(mode: StartupMode, path: &std::path::Path) -> Option<(u32, u3
     (valid.contains(&size.0) && valid.contains(&size.1)).then_some(size)
 }
 
-fn scaled_padding(settings: &TerminalConfig, scale: f64) -> u32 {
-    (f64::from(settings.padding.unwrap_or(0.0)) * scale).round() as u32
+/// Physical padding for one scale: each side resolved by
+/// [`TerminalConfig::padding_sides`] and rounded on its own, plus balancing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaddingLayout {
+    margins: Margins,
+    balance: bool,
+}
+
+impl PaddingLayout {
+    fn horizontal(self) -> u32 {
+        self.margins.left.saturating_add(self.margins.right)
+    }
+
+    fn vertical(self) -> u32 {
+        self.margins.top.saturating_add(self.margins.bottom)
+    }
+
+    /// Top-left pixel of the grid inside a `width`×`height` window. Balancing
+    /// adds half of the leftover room on each axis; integer division leaves
+    /// an odd pixel on the right or bottom.
+    fn origin(
+        self,
+        width: u32,
+        height: u32,
+        grid: Size,
+        metrics: crate::text::font::CellMetrics,
+    ) -> (i32, i32) {
+        let (mut x, mut y) = (self.margins.left, self.margins.top);
+        if self.balance {
+            let room_x = width.saturating_sub(self.horizontal());
+            let room_y = height.saturating_sub(self.vertical());
+            x += room_x.saturating_sub((grid.cols as u32).saturating_mul(metrics.width.max(1))) / 2;
+            y +=
+                room_y.saturating_sub((grid.rows as u32).saturating_mul(metrics.height.max(1))) / 2;
+        }
+        (x as i32, y as i32)
+    }
+}
+
+fn padding_layout(settings: &TerminalConfig, scale: f64) -> PaddingLayout {
+    let sides = settings.padding_sides();
+    let physical = |logical: f32| (f64::from(logical) * scale).round().max(0.0) as u32;
+    PaddingLayout {
+        margins: Margins {
+            left: physical(sides.left),
+            top: physical(sides.top),
+            right: physical(sides.right),
+            bottom: physical(sides.bottom),
+        },
+        balance: settings.padding_balance_enabled(),
+    }
 }
 
 fn correction_bounds(
@@ -987,7 +1037,7 @@ fn wayland_correction(
     target: &StartupSize,
     size: PhysicalSize<u32>,
     bounds: PhysicalSize<u32>,
-    padding: u32,
+    padding: PaddingLayout,
     metrics: crate::text::font::CellMetrics,
     scale: f64,
 ) -> Option<LogicalSize<u32>> {
@@ -1008,10 +1058,10 @@ fn wayland_correction(
         let next = at_least(pixels + 1);
         next - 1
     };
-    let options = |axis, pixels, bound, cell: u32, cells: usize| {
+    let options = |axis, pixels, bound, cell: u32, cells: usize, padding: u32| {
         let lower = at_most(pixels);
         let preferred = match axis {
-            StartupAxis::Cells(_) => at_least((cells as u32 * cell + 2 * padding).min(pixels)),
+            StartupAxis::Cells(_) => at_least((cells as u32 * cell + padding).min(pixels)),
             StartupAxis::Pixels(_) => {
                 let upper = at_least(pixels);
                 if lower > 0 && pixels - physical(lower) <= physical(upper) - pixels {
@@ -1030,6 +1080,7 @@ fn wayland_correction(
         bounds.width,
         metrics.width,
         grid.cols,
+        padding.horizontal(),
     );
     let heights = options(
         target.height,
@@ -1037,6 +1088,7 @@ fn wayland_correction(
         bounds.height,
         metrics.height,
         grid.rows,
+        padding.vertical(),
     );
     widths
         .into_iter()
@@ -1072,7 +1124,7 @@ impl Geometry {
     fn calculate(
         width: u32,
         height: u32,
-        padding: u32,
+        padding: PaddingLayout,
         metrics: crate::text::font::CellMetrics,
     ) -> Option<Self> {
         if width == 0 || height == 0 {
@@ -1090,13 +1142,13 @@ impl Geometry {
     fn grid_size(
         width: u32,
         height: u32,
-        padding: u32,
+        padding: PaddingLayout,
         metrics: crate::text::font::CellMetrics,
     ) -> Size {
         Size {
-            cols: (width.saturating_sub(2 * padding) / metrics.width.max(1)).clamp(1, 4096)
+            cols: (width.saturating_sub(padding.horizontal()) / metrics.width.max(1)).clamp(1, 4096)
                 as usize,
-            rows: (height.saturating_sub(2 * padding) / metrics.height.max(1)).clamp(1, 4096)
+            rows: (height.saturating_sub(padding.vertical()) / metrics.height.max(1)).clamp(1, 4096)
                 as usize,
         }
     }
@@ -1124,14 +1176,17 @@ impl Geometry {
     }
 }
 
+/// Maps a pointer position to a grid cell. `origin` is the grid's top-left
+/// pixel ([`App::content_origin`]); positions in the padding clamp to the
+/// nearest edge cell.
 fn pointer_cell(
     pointer: (f64, f64),
-    padding: u32,
+    origin: (i32, i32),
     metrics: crate::text::font::CellMetrics,
     size: crate::emulation::screen_buffer::TermSize,
 ) -> (usize, usize) {
-    let row = ((pointer.1 - padding as f64).max(0.0) / metrics.height.max(1) as f64) as usize;
-    let col = ((pointer.0 - padding as f64).max(0.0) / metrics.width.max(1) as f64) as usize;
+    let row = ((pointer.1 - f64::from(origin.1)).max(0.0) / metrics.height.max(1) as f64) as usize;
+    let col = ((pointer.0 - f64::from(origin.0)).max(0.0) / metrics.width.max(1) as f64) as usize;
     (
         row.min(size.rows.saturating_sub(1)),
         col.min(size.cols.saturating_sub(1)),
@@ -1324,7 +1379,7 @@ impl App {
         };
         let hint = target.extent(
             metrics,
-            self.padding(),
+            self.padding_layout(),
             PhysicalSize::new(hint_limit, hint_limit),
         );
         let mut attrs = WindowAttributes::default()
@@ -1491,7 +1546,7 @@ impl App {
         if scale_changed {
             self.update_fonts(self.zoom, scale);
         }
-        let padding = self.padding();
+        let padding = self.padding_layout();
         let metrics = self.cache.metrics();
         self.measure_geometry(size)?;
         let Some(opening) = &mut self.opening else {
@@ -1548,11 +1603,12 @@ impl App {
         let window = &surfaces.window;
         let extent = window.inner_size();
         let metrics = self.cache.metrics();
-        let padding = self.padding();
+        let padding = self.padding_layout();
         let Some(geometry) = Geometry::calculate(extent.width, extent.height, padding, metrics)
         else {
             return;
         };
+        let origin = self.content_origin((extent.width, extent.height));
         let Ok(handle) = window.window_handle() else {
             return;
         };
@@ -1573,7 +1629,13 @@ impl App {
             "height": extent.height,
             "cell_width": metrics.width,
             "cell_height": metrics.height,
-            "padding": padding,
+            "padding_left": padding.margins.left,
+            "padding_top": padding.margins.top,
+            "padding_right": padding.margins.right,
+            "padding_bottom": padding.margins.bottom,
+            "padding_balance": padding.balance,
+            "origin_x": origin.0,
+            "origin_y": origin.1,
             "cols": geometry.grid.cols,
             "rows": geometry.grid.rows,
             // Winit's Wayland getters read the compositor's last configure.
@@ -1611,7 +1673,7 @@ impl App {
         let geometry = Geometry::calculate(
             size.width,
             size.height,
-            self.padding(),
+            self.padding_layout(),
             self.cache.metrics(),
         );
         if let (Some(opening), Some(geometry)) = (&self.opening, geometry) {
@@ -1650,16 +1712,34 @@ impl App {
             None => Ok(None),
         }
     }
-    fn padding(&self) -> u32 {
-        scaled_padding(&self.settings, self.scale)
+    fn padding_layout(&self) -> PaddingLayout {
+        padding_layout(&self.settings, self.scale)
     }
-    fn cell(&self) -> (usize, usize) {
+    /// The grid's top-left pixel in a `window`-sized drawable. Drawing, the
+    /// IME area, the window observation and pointer conversion all use this,
+    /// so they cannot disagree. It derives the grid the same way
+    /// `measure_geometry` does, so it follows reload, scale and resize on the
+    /// next call.
+    fn content_origin(&self, window: (u32, u32)) -> (i32, i32) {
+        let layout = self.padding_layout();
+        let metrics = self.cache.metrics();
+        match Geometry::calculate(window.0, window.1, layout, metrics) {
+            Some(geometry) => layout.origin(window.0, window.1, geometry.grid, metrics),
+            None => (layout.margins.left as i32, layout.margins.top as i32),
+        }
+    }
+    fn cell_at(&self, window: (u32, u32)) -> (usize, usize) {
         pointer_cell(
             self.pointer,
-            self.padding(),
+            self.content_origin(window),
             self.cache.metrics(),
             self.state.size(),
         )
+    }
+    fn cell(&self) -> (usize, usize) {
+        // Without a window there are no pointer events to convert.
+        let window = self.surfaces.as_ref().map_or((0, 0), Surfaces::size);
+        self.cell_at(window)
     }
 
     fn mouse(&self, kind: MouseEventType, wheel: (bool, bool, bool, bool)) -> Result<()> {
@@ -2007,7 +2087,7 @@ impl App {
         Ok(())
     }
 
-    fn switch_overlay(&mut self, size: (u32, u32), padding: u32) -> Option<RowScene> {
+    fn switch_overlay(&mut self, size: (u32, u32), origin: (i32, i32)) -> Option<RowScene> {
         let notice = if let Some(text) = self.switch_notice.as_deref() {
             Notice::Text(text)
         } else if let Some(pending) = &self.pending_switch {
@@ -2027,7 +2107,8 @@ impl App {
         } else {
             return None;
         };
-        Some(notice_scene(notice, &mut self.cache, size, padding))
+        let margins = self.padding_layout().margins;
+        Some(notice_scene(notice, &mut self.cache, size, origin, margins))
     }
 
     fn draw(&mut self) -> Result<()> {
@@ -2062,8 +2143,8 @@ impl App {
         ) else {
             return Ok(());
         };
-        let padding = self.padding() as i32;
-        let notice = self.switch_overlay(size, padding as u32);
+        let origin = self.content_origin(size);
+        let notice = self.switch_overlay(size, origin);
         let trail_active = self.sample_cursor_trail(Instant::now(), preedit.as_ref());
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.draw_retained(
@@ -2071,7 +2152,7 @@ impl App {
                 self.cache.atlases(),
                 size,
                 Frame {
-                    origin: (padding, padding),
+                    origin,
                     trail: trail_active.then_some(&self.trail_mesh),
                     notice: notice.as_ref(),
                     ..Default::default()
@@ -2081,8 +2162,8 @@ impl App {
             let metrics = self.cache.metrics();
             surfaces.window.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new(
-                    padding + (col as u32 * metrics.width) as i32,
-                    padding + (row as u32 * metrics.height) as i32,
+                    origin.0 + (col as u32 * metrics.width) as i32,
+                    origin.1 + (row as u32 * metrics.height) as i32,
                 ),
                 winit::dpi::PhysicalSize::new(metrics.width, metrics.height),
             );

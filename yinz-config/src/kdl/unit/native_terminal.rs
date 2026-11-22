@@ -144,6 +144,10 @@ fn documented_native_terminal_example_loads() {
     assert_eq!(config.terminal.cell_width, Some(1.0));
     assert_eq!(config.terminal.line_height, Some(1.0));
     assert_eq!(config.terminal.baseline_offset, Some(2));
+    assert_eq!(config.terminal.padding, Some(4.0));
+    assert_eq!(config.terminal.padding_top, Some(2.0));
+    assert_eq!(config.terminal.padding_left, Some(6.0));
+    assert_eq!(config.terminal.padding_balance, Some(false));
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -673,4 +677,190 @@ fn cursor_trail_validates_roundtrips_and_overlays() {
             "{input}: {error:?}"
         );
     }
+}
+
+const PADDING_KEYS: [&str; 5] = [
+    "padding",
+    "padding_top",
+    "padding_right",
+    "padding_bottom",
+    "padding_left",
+];
+
+#[test]
+fn padding_sides_parse_resolve_and_roundtrip_independently() {
+    use yinz_types::input::native_terminal::PaddingSides;
+    for key in PADDING_KEYS {
+        for (literal, expected) in [("0", 0.0), ("3", 3.0), ("2.5", 2.5), ("256", 256.0)] {
+            let config =
+                Config::from_kdl(&format!("terminal {{ {key} {literal}; }}"), None).unwrap();
+            let value = match key {
+                "padding" => config.terminal.padding,
+                "padding_top" => config.terminal.padding_top,
+                "padding_right" => config.terminal.padding_right,
+                "padding_bottom" => config.terminal.padding_bottom,
+                _ => config.terminal.padding_left,
+            };
+            assert_eq!(value, Some(expected), "{key} {literal}");
+        }
+    }
+    let config = Config::from_kdl(
+        "terminal { padding 4; padding_left 0; padding_top 1.5; padding_balance true; }",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        config.terminal.padding_sides(),
+        PaddingSides {
+            top: 1.5,
+            right: 4.0,
+            bottom: 4.0,
+            left: 0.0
+        }
+    );
+    assert!(config.terminal.padding_balance_enabled());
+    let text = config.to_string(false).unwrap();
+    for key in [
+        "padding 4",
+        "padding_left 0",
+        "padding_top 1.5",
+        "padding_balance true",
+    ] {
+        assert!(text.contains(key), "{key} missing from {text}");
+    }
+    for key in ["padding_right", "padding_bottom"] {
+        assert!(!text.contains(key), "{key} should stay unset in {text}");
+    }
+    let roundtrip = Config::from_kdl(&text, None).unwrap();
+    assert_eq!(roundtrip.terminal, config.terminal);
+    for balance in ["true", "false"] {
+        let config =
+            Config::from_kdl(&format!("terminal {{ padding_balance {balance}; }}"), None).unwrap();
+        assert_eq!(config.terminal.padding_balance, Some(balance == "true"));
+        assert_eq!(
+            Config::from_kdl(&config.to_string(false).unwrap(), None)
+                .unwrap()
+                .terminal,
+            config.terminal
+        );
+    }
+}
+
+#[test]
+fn padding_overlays_keep_sides_from_any_layer_over_shorthand() {
+    use yinz_types::input::native_terminal::PaddingSides;
+    // A later shorthand does not clear an earlier side.
+    let base = Config::from_kdl("terminal { padding_left 2; }", None).unwrap();
+    let merged = Config::from_kdl("terminal { padding 5; }", Some(base)).unwrap();
+    assert_eq!(
+        merged.terminal.padding_sides(),
+        PaddingSides {
+            top: 5.0,
+            right: 5.0,
+            bottom: 5.0,
+            left: 2.0
+        }
+    );
+    // A later side overrides only that side of an earlier shorthand.
+    let base = Config::from_kdl("terminal { padding 5; padding_balance true; }", None).unwrap();
+    let merged = Config::from_kdl("terminal { padding_bottom 1; }", Some(base)).unwrap();
+    assert_eq!(
+        merged.terminal.padding_sides(),
+        PaddingSides {
+            top: 5.0,
+            right: 5.0,
+            bottom: 1.0,
+            left: 5.0
+        }
+    );
+    assert!(merged.terminal.padding_balance_enabled());
+    let toggled = Config::from_kdl("terminal { padding_balance false; }", Some(merged)).unwrap();
+    assert!(!toggled.terminal.padding_balance_enabled());
+    assert_eq!(toggled.terminal.padding_bottom, Some(1.0));
+
+    // Drop-in fragments use the same per-field precedence; invalid fragments are skipped.
+    let dir = tempfile::tempdir().unwrap();
+    for (file, text) in [
+        ("10-side.kdl", "terminal { padding_right 7; }"),
+        (
+            "20-shorthand.kdl",
+            "terminal { padding 3; padding_balance true; }",
+        ),
+        ("30-invalid.kdl", "terminal { padding_top 300; padding 9; }"),
+        (
+            "40-invalid.kdl",
+            "terminal { padding_balance 1; padding 9; }",
+        ),
+    ] {
+        std::fs::write(dir.path().join(file), text).unwrap();
+    }
+    let base = Config::from_kdl("terminal { padding_top 1; }", None).unwrap();
+    let config = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(
+        config.terminal.padding_sides(),
+        PaddingSides {
+            top: 1.0,
+            right: 7.0,
+            bottom: 3.0,
+            left: 3.0
+        }
+    );
+    assert!(config.terminal.padding_balance_enabled());
+}
+
+#[test]
+fn invalid_padding_values_name_the_setting_at_its_node() {
+    let mut cases: Vec<(String, &str, String)> = Vec::new();
+    for key in PADDING_KEYS {
+        for value in [
+            "-1", "-0.5", "256.5", "257", "1000", "1e999", "\"4\"", "(px)4", "true", "n=4", "4 5",
+            "4 { x; }",
+        ] {
+            cases.push((
+                format!("terminal {{ opacity 0.5; {key} {value}; }}"),
+                key,
+                format!("terminal {key} must be a plain number between 0 and 256 logical pixels"),
+            ));
+        }
+        cases.push((
+            format!("terminal {{ ({key}){key} 4; }}"),
+            key,
+            format!("terminal {key} must be a plain number between 0 and 256 logical pixels"),
+        ));
+        cases.push((
+            format!("terminal {{ {key} 4; {key} 4; }}"),
+            key,
+            format!("duplicate terminal setting {key}"),
+        ));
+    }
+    for value in ["\"true\"", "1", "(flag)true", "n=true", "true false"] {
+        cases.push((
+            format!("terminal {{ opacity 0.5; padding_balance {value}; }}"),
+            "padding_balance",
+            "terminal padding_balance must be a plain boolean true or false".to_owned(),
+        ));
+    }
+    cases.push((
+        "terminal { padding_balance true; padding_balance true; }".to_owned(),
+        "padding_balance",
+        "duplicate terminal setting padding_balance".to_owned(),
+    ));
+    for (text, key, message) in cases {
+        let ConfigError::KdlError(error) = Config::from_kdl(&text, None).unwrap_err() else {
+            panic!("expected a KDL diagnostic for {text}");
+        };
+        assert_eq!(error.error_message, message, "{text}");
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let span = &text[offset..offset + len];
+        assert!(
+            span.contains(key) && !span.starts_with("terminal"),
+            "{text}: span {span:?}"
+        );
+    }
+    let error = Config::from_kdl("terminal { padding_x 4; }", None).unwrap_err();
+    assert!(
+        crate::editor::validation_error(error).contains("padding_x"),
+        "unknown spellings stay rejected"
+    );
 }

@@ -34,6 +34,10 @@ fn validate_unsaved_native_settings(
     if effective_font_features(&current.terminal) != effective_font_features(&requested.terminal) {
         changed.push("font_features");
     }
+    changed.extend(changed_padding_settings(
+        &current.terminal,
+        &requested.terminal,
+    ));
     if !changed.is_empty() {
         return Err(anyhow!(
             "changing terminal {} requires a saved configuration: \
@@ -43,6 +47,56 @@ fn validate_unsaved_native_settings(
         ));
     }
     Ok(())
+}
+
+/// Names the padding keys behind a change in effective padding. Native windows
+/// read padding only from files, so an unsaved change would be a silent no-op.
+/// A changed side is named by its own key when that key differs, otherwise by
+/// the `padding` shorthand that produced it.
+fn changed_padding_settings(
+    current: &TerminalConfig,
+    requested: &TerminalConfig,
+) -> Vec<&'static str> {
+    let (before, after) = (current.padding_sides(), requested.padding_sides());
+    let sides = [
+        (
+            "padding_top",
+            before.top != after.top,
+            current.padding_top != requested.padding_top,
+        ),
+        (
+            "padding_right",
+            before.right != after.right,
+            current.padding_right != requested.padding_right,
+        ),
+        (
+            "padding_bottom",
+            before.bottom != after.bottom,
+            current.padding_bottom != requested.padding_bottom,
+        ),
+        (
+            "padding_left",
+            before.left != after.left,
+            current.padding_left != requested.padding_left,
+        ),
+    ];
+    let mut changed = Vec::new();
+    if sides
+        .iter()
+        .any(|&(_, effective, explicit)| effective && !explicit)
+    {
+        changed.push("padding");
+    }
+    changed.extend(
+        sides
+            .iter()
+            .filter(|&&(_, effective, explicit)| effective && explicit)
+            .map(|&(name, ..)| name),
+    );
+    if current.padding_balance_enabled() != requested.padding_balance_enabled() {
+        changed.push("padding_balance");
+    }
+    changed
 }
 
 fn changed_saved_terminal_settings(

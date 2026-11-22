@@ -236,7 +236,8 @@ fn native_switch_notice_draws_and_dismisses_over_source_content() {
             ),
             &mut cache,
             target,
-            0,
+            (0, 0),
+            crate::render::scene::Margins::default(),
         );
         assert!(!notice.glyphs.is_empty());
         renderer.draw_retained(
@@ -317,11 +318,18 @@ fn native_switch_pending_notice_draws_and_clears_over_source_content() {
                 },
                 &mut cache,
                 target,
-                0,
+                (0, 0),
+                crate::render::scene::Margins::default(),
             );
             assert_eq!(
                 notice,
-                notice_scene(Notice::Text(expected), &mut cache, target, 0)
+                notice_scene(
+                    Notice::Text(expected),
+                    &mut cache,
+                    target,
+                    (0, 0),
+                    crate::render::scene::Margins::default()
+                )
             );
             renderer.draw_retained(
                 &retained,

@@ -46,10 +46,7 @@ impl NativeFixture {
         }
         yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &path.join("data"))
             .unwrap();
-        fs::write(
-            &config,
-            "detachable_panes false\nload_plugins clear-defaults=true\nterminal { initial_columns 100; initial_rows 30; padding 4; system_fonts false; }\n",
-        ).unwrap();
+        fs::write(&config, native_config(NATIVE_PADDING)).unwrap();
         fs::write(&layout, r#"layout { pane command="/bin/sh" { args "-c" "stty -echo; printf native-frame-marker; exec /bin/sh"; }; }"#).unwrap();
         Self {
             fixture,
@@ -596,6 +593,19 @@ fn native_startup_axes_save_preserves_live_frame() {
     assert_success(child.wait_with_output().unwrap());
 }
 
+/// Asymmetric, balanced padding so the exact-fit startup cases exercise the
+/// per-side axis sums and the balanced origin.
+const NATIVE_PADDING: &str = "padding 4; padding_left 6; padding_top 3; padding_balance true;";
+/// The windowed case rewrites the config to this mid-run. The grid stays the
+/// same (the top shrinks by less than a cell), so only the origin moves.
+const RELOADED_PADDING: &str = "padding 4; padding_left 6; padding_top 1; padding_balance false;";
+
+fn native_config(padding: &str) -> String {
+    format!(
+        "detachable_panes false\nload_plugins clear-defaults=true\nterminal {{ {padding} initial_columns 100; initial_rows 30; system_fonts false; }}\n"
+    )
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct WindowObservation {
     backend: String,
@@ -606,7 +616,13 @@ struct WindowObservation {
     height: u32,
     cell_width: u32,
     cell_height: u32,
-    padding: u32,
+    padding_left: u32,
+    padding_top: u32,
+    padding_right: u32,
+    padding_bottom: u32,
+    padding_balance: bool,
+    origin_x: i32,
+    origin_y: i32,
     cols: u16,
     rows: u16,
     maximized: bool,
@@ -632,6 +648,29 @@ impl WindowObservation {
             "fullscreen" => fullscreen,
             _ => !maximized && !fullscreen,
         })
+    }
+
+    /// The grid and origin the observed extent, cell and padding imply
+    /// (upstream `fit_grid`): balancing adds half the leftover per axis.
+    fn fit(&self) -> ((u16, u16), (i32, i32)) {
+        let room_x = self
+            .width
+            .saturating_sub(self.padding_left + self.padding_right);
+        let room_y = self
+            .height
+            .saturating_sub(self.padding_top + self.padding_bottom);
+        let cols = (room_x / self.cell_width).clamp(1, 4096);
+        let rows = (room_y / self.cell_height).clamp(1, 4096);
+        let (mut x, mut y) = (self.padding_left, self.padding_top);
+        if self.padding_balance {
+            x += room_x.saturating_sub(cols * self.cell_width) / 2;
+            y += room_y.saturating_sub(rows * self.cell_height) / 2;
+        }
+        ((cols as u16, rows as u16), (x as i32, y as i32))
+    }
+
+    fn physical(&self, logical: f64) -> u32 {
+        (logical * self.scale).round() as u32
     }
 
     fn has_settled_content(&self, recording: &Recording) -> bool {
@@ -661,7 +700,8 @@ impl WindowObservation {
                 saved
             };
             (
-                ((physical as u32).saturating_sub(2 * self.padding) / self.cell_width) as u16,
+                ((physical as u32).saturating_sub(self.padding_left + self.padding_right)
+                    / self.cell_width) as u16,
                 30,
             )
         } else {
@@ -694,6 +734,9 @@ fn native_graphical_startup_fits_configured_grid() {
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut recording = Recording::default();
         let mut x11_state = None;
+        // Windowed: once the configured grid settles, rewrite the config and
+        // expect the reload to move the origin without changing the grid.
+        let mut reloaded = false;
         let read_observation = || {
             fixture.log_text().lines().rev().find_map(|line| {
                 let (_, json) = line.split_once("native window observation ")?;
@@ -708,6 +751,15 @@ fn native_graphical_startup_fits_configured_grid() {
                 break;
             }
             recording.read(&path);
+            if mode == "windowed"
+                && !reloaded
+                && let Some(observation) = read_observation()
+                && observation.has_settled_content(&recording)
+                && observation.padding_balance
+            {
+                fs::write(&fixture.config, native_config(RELOADED_PADDING)).unwrap();
+                reloaded = true;
+            }
             if let Some(observation) = read_observation()
                 && observation.has_settled_content(&recording)
                 && let Some(id) = observation.x11_id.as_ref()
@@ -762,16 +814,40 @@ fn native_graphical_startup_fits_configured_grid() {
             ));
             continue;
         }
+        let (fitted, origin) = observation.fit();
+        assert_eq!(observed, fitted, "{mode}: {observation:?}");
         assert_eq!(
-            observed,
-            (
-                (observation.width.saturating_sub(2 * observation.padding) / observation.cell_width)
-                    .clamp(1, 4096) as u16,
-                (observation.height.saturating_sub(2 * observation.padding)
-                    / observation.cell_height)
-                    .clamp(1, 4096) as u16,
-            )
+            (observation.origin_x, observation.origin_y),
+            origin,
+            "{mode}: {observation:?}"
         );
+        // Each side is rounded on its own at the observed scale.
+        let (top, balance) = if reloaded { (1.0, false) } else { (3.0, true) };
+        let sides = (
+            observation.physical(6.0),
+            observation.physical(top),
+            observation.physical(4.0),
+            observation.physical(4.0),
+        );
+        if (
+            observation.padding_left,
+            observation.padding_top,
+            observation.padding_right,
+            observation.padding_bottom,
+            observation.padding_balance,
+        ) != (sides.0, sides.1, sides.2, sides.3, balance)
+        {
+            outcomes.push(format!(
+                "{mode}: padding {observation:?} does not match {sides:?} balance={balance} (reloaded={reloaded})"
+            ));
+            continue;
+        }
+        if mode == "windowed" && !reloaded {
+            outcomes.push(format!(
+                "{mode}: the grid never settled, so reload was not exercised"
+            ));
+            continue;
+        }
         let exact_requested = std::env::var_os("YINZ_NATIVE_TEST_FLOATING").is_some();
         let exact_case = matches!(mode, "windowed" | "remember");
         let expected = observation.expected_grid(mode);
@@ -822,12 +898,32 @@ fn native_graphical_observation_requires_settled_content_and_mode() {
         height: 1216,
         cell_width: 16,
         cell_height: 40,
-        padding: 8,
+        padding_left: 12,
+        padding_top: 6,
+        padding_right: 8,
+        padding_bottom: 8,
+        padding_balance: true,
+        origin_x: 12,
+        origin_y: 6,
         cols: 100,
         rows: 30,
         maximized: false,
         fullscreen: false,
     };
+    // 1625 - 20 = 1605 leaves 5 pixels after 100 cells; 1219 - 14 = 1205 leaves 5
+    // after 30 rows. Balancing puts 2 before the grid and 3 after on each axis.
+    observed.width = 1625;
+    observed.height = 1219;
+    assert_eq!(observed.fit(), ((100, 30), (14, 8)));
+    assert_eq!(observed.expected_grid("windowed"), (100, 30));
+    // Remember: 800 physical at 2x, less left + right, in 16px cells.
+    assert_eq!(observed.expected_grid("remember"), ((800 - 20) / 16, 30));
+    observed.padding_balance = false;
+    assert_eq!(observed.fit(), ((100, 30), (12, 6)));
+    assert_eq!(observed.physical(3.0), 6);
+    observed.padding_balance = true;
+    observed.width = 1616;
+    observed.height = 1216;
     assert!(!observed.has_settled_content(&recording));
     let mut settled = FrameBuilder::new(100, 30, 2);
     settled.set_full_repaint(true);

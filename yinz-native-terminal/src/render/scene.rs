@@ -124,13 +124,22 @@ pub(crate) fn notice_scene(
     notice: Notice<'_>,
     cache: &mut GlyphCache,
     target: (u32, u32),
-    padding: u32,
+    origin: (i32, i32),
+    margins: Margins,
 ) -> RowScene {
     let metrics = cache.metrics();
     let inset = metrics.stroke.max(2);
-    let available = |pixels: u32| pixels.saturating_sub(2 * (padding + inset));
-    let columns = (available(target.0) / metrics.width.max(1)).min(100);
-    let rows = (available(target.1) / metrics.height.max(1)).min(12);
+    // The notice is drawn at the grid origin and must stop before the far
+    // padding, so it fits whatever balancing or asymmetric padding leaves.
+    let available = |pixels: u32, origin: i32, far: u32| {
+        pixels.saturating_sub(
+            (origin.max(0) as u32)
+                .saturating_add(far)
+                .saturating_add(2 * inset),
+        )
+    };
+    let columns = (available(target.0, origin.0, margins.right) / metrics.width.max(1)).min(100);
+    let rows = (available(target.1, origin.1, margins.bottom) / metrics.height.max(1)).min(12);
     let mut scene = RowScene::default();
     if columns < 2 || rows == 0 {
         return scene;
