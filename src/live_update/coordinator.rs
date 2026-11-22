@@ -1720,7 +1720,7 @@ fn recreate_source(store: &mut Store) -> Result<Connection> {
         ensure_process_dead(identity)?;
     }
     release_cold_snapshot(store)?;
-    forget_agent_tracking(store, true)?;
+    forget_agent_tracking(store, true).context("omit agent tracking from a cold recovery")?;
     let server_host = store
         .journal
         .participants
@@ -2603,7 +2603,8 @@ fn recover(
                 serde_json::from_value(source.request(&operation, Command::Inventory)?)
                     .context("inspect source endpoint before restoration")?;
             if current.session != original {
-                forget_agent_tracking(store, true)?;
+                forget_agent_tracking(store, true)
+                    .context("omit agent tracking the retired source cannot use")?;
             }
             source.request(
                 &operation,
