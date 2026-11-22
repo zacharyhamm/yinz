@@ -1142,7 +1142,7 @@ cannot be unarmed; later events are harmless.
 ```
 
 `yinz-web-agent-error->status` accepts the decoded hash or encoded error:
-invalid=400, not_found=404, target_changed=409, paused/unavailable=503,
+invalid=400, not_found=404, target_changed=409, paused/unavailable/launch_unknown=503,
 failed/unknown=502. Native unavailable for focus=409; SDK timeout for focus=503.
 An uncaught rejection still returns generic 500; explicit catches opt into
 expected-error mapping without exposing arbitrary exception text.
@@ -1200,6 +1200,7 @@ as JSON, with only the listed `*html` fields added.
 | `GET /api/tools` | `run` (required), exactly one of `revisions` or `range`, `before` (range only), `tz` | `tools` | `html`; range mode keeps `page` unchanged |
 | `GET /api/usage` | `agent` (required) | `usage` | none |
 | `GET /api/prompts` | none | `prompts` | none |
+| `POST /api/agent/assistant-reply` | `agent`, `run`, `filter` | `assistant_reply` | none |
 | `GET /api/agent/launch-choices` | optional `project` | `launch_choices` | none |
 | `POST /api/agent/launch` | `submission_id`, `kind`, `project`, `checkout` | `launch` | none |
 | `POST /api/agent/launch-status` | `submission_id`, `agent` | `launch_status` | none |
@@ -1266,6 +1267,7 @@ because a Scheme hash would keep only the last value.
 | Wrong media type or malformed JSON | `400 bad_json` (from `yinz-web-body-json`) |
 | Native `invalid`, `not_found`, `target_changed` | `400`, `404`, `409` with the native message |
 | Native `paused` or `unavailable` | `503` with `Retry-After: 5` |
+| Native `launch_unknown` (uncertain launch; resend the same body) | `503` with the native message |
 | Native `failed` or unknown codes | `502` |
 | Focus with no attached terminal (native `unavailable`) | `409` with the native message |
 | SDK agent-view timeout or cancellation (`unavailable`) | `503` with `Retry-After: 5`, for focus too, and a fixed message |

@@ -861,7 +861,13 @@ fn launch(
                 json!({"session":senders.session.current(), "pane_id":spawned.pane_id.to_string(), "kind":kind}),
             )
         },
-        LaunchOutcome::Unknown => Err(error("launch_unknown", "Launch outcome is uncertain.")),
+        // Keep the transaction's guidance, such as "do not spawn again", for the browser.
+        LaunchOutcome::Unknown => Err(error(
+            "launch_unknown",
+            response
+                .message
+                .unwrap_or_else(|| "Launch outcome is uncertain.".into()),
+        )),
         LaunchOutcome::Pending => Err(error(
             "unavailable",
             response

@@ -321,10 +321,14 @@ pub(super) fn reading(d: &mut Dialogue, text: &str) -> String {
         if ch.is_whitespace() {
             whitespace = Some(offset);
             if text[offset..].starts_with("\n\n") {
-                paragraph = Some(offset);
+                paragraph = Some((offset, count));
             }
         }
         if count == CONTENT_LIMIT {
+            // Prefer a paragraph break unless it would leave only a short opening line.
+            let paragraph = paragraph
+                .filter(|&(_, at)| at >= CONTENT_LIMIT / 2)
+                .map(|(offset, _)| offset);
             let boundary = paragraph.or(whitespace).unwrap_or(offset);
             let chunk = text[..boundary].trim_end();
             let remaining = text[boundary..].trim_start();

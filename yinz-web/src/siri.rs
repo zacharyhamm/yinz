@@ -33,6 +33,17 @@ fn json_response(value: Value) -> Response<Body> {
 fn unavailable() -> Response<Body> {
     error(StatusCode::SERVICE_UNAVAILABLE, "siri_unavailable")
 }
+/// Unwrap a pairing-store operation, logging a store failure the client only sees as 503.
+fn stored<T>(what: &str, result: std::result::Result<anyhow::Result<T>, ()>) -> Option<T> {
+    match result {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(error)) => {
+            log::warn!("Siri {what}: {error:#}");
+            None
+        },
+        Err(()) => None,
+    }
+}
 
 pub(crate) async fn handle(
     state: &State,
@@ -51,13 +62,13 @@ pub(crate) async fn handle(
                 return unauthenticated();
             };
             let revoke = path.ends_with("/revoke");
-            match file_work(state, move || {
+            let result = file_work(state, move || {
                 store::configure(&dir, &owner, &instance, revoke)
             })
-            .await
-            {
-                Ok(Ok(code)) => json_response(json!({"code":code})),
-                _ => unavailable(),
+            .await;
+            match stored("pairing setup", result) {
+                Some(code) => json_response(json!({"code":code})),
+                None => unavailable(),
             }
         },
         "/api/siri/pair" => {
@@ -67,10 +78,11 @@ pub(crate) async fn handle(
             let Ok(pair) = serde_json::from_slice::<Pair>(bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_pairing");
             };
-            match file_work(state, move || store::redeem(&dir, &instance, &pair.code)).await {
-                Ok(Ok(Some(token))) => json_response(json!({"token":token,"request_id":"first"})),
-                Ok(Ok(None)) => unauthenticated(),
-                _ => unavailable(),
+            let result = file_work(state, move || store::redeem(&dir, &instance, &pair.code)).await;
+            match stored("pairing", result) {
+                Some(Some(token)) => json_response(json!({"token":token,"request_id":"first"})),
+                Some(None) => unauthenticated(),
+                None => unavailable(),
             }
         },
         "/api/siri/command" => {
@@ -88,13 +100,16 @@ pub(crate) async fn handle(
             let hash = sessions::hash(token);
             // A retry waits for the first request to publish its receipt. The durable
             // revision also fences requests racing revocation or a listener restart.
-            let bucket = usize::from(hash.as_bytes()[0]) % state.siri_commands.len();
+            // The hash is lowercase hex: bucket by the digit's value, not its ASCII byte.
+            let bucket = usize::from(u8::from_str_radix(&hash[..1], 16).unwrap_or(0))
+                % state.siri_commands.len();
             let _command = state.siri_commands[bucket].lock().await;
             let key = hash.clone();
-            let phone = match file_work(state, move || store::load(&dir, &instance, &key)).await {
-                Ok(Ok(Some(phone))) => phone,
-                Ok(Ok(None)) => return unauthenticated(),
-                _ => return unavailable(),
+            let result = file_work(state, move || store::load(&dir, &instance, &key)).await;
+            let phone = match stored("credential lookup", result) {
+                Some(Some(phone)) => phone,
+                Some(None) => return unauthenticated(),
+                None => return unavailable(),
             };
             if let Err(limit) = state.auth.touch(&phone.session) {
                 return super::service::auth_response(crate::auth::AuthResponse::limited(limit));
@@ -147,13 +162,11 @@ impl Context<'_> {
         let hash = self.hash.clone();
         let rev = self.phone.revision;
         let dialogue = self.phone.dialogue.clone();
-        file_work(self.state, move || {
+        let result = file_work(self.state, move || {
             store::save(&dir, &instance, &hash, rev, dialogue)
         })
-        .await
-        .ok()
-        .and_then(std::result::Result::ok)
-        .ok_or(Failure::Retry)?;
+        .await;
+        stored("dialogue checkpoint", result).ok_or(Failure::Retry)?;
         self.phone.revision += 1;
         Ok(())
     }
@@ -598,8 +611,11 @@ impl Context<'_> {
         self.save().await?;
         self.wait_for_reply().await
     }
-    async fn prepare(&mut self, input: &str, action: Mutation) -> Result<Value> {
-        if matches!(action, Mutation::Send { .. }) {
+    async fn prepare(&mut self, input: &str, mut action: Mutation) -> Result<Value> {
+        if let Mutation::Send { agent, .. } = &mut action {
+            // Verify the target before the checkpoint. A failure here has sent nothing,
+            // so a retry interprets again instead of recovering an unsent submission.
+            *agent = self.current(agent).await?;
             self.phone.dialogue.pending = None;
         }
         self.phone.dialogue.prepared = Some(Prepared {
@@ -617,7 +633,7 @@ impl Context<'_> {
                 text,
                 after,
             } => {
-                let agent = self.current(&agent).await?;
+                // `prepare` verified this target before persisting the submission.
                 let result = self
                     .api(
                         "/api/agent/prompt",
@@ -667,7 +683,11 @@ impl Context<'_> {
         let (provider, location) = rest
             .split_once(" agent in ")
             .ok_or_else(|| spoken("Name a provider and project."))?;
-        let location = location.trim_start_matches("a ").trim_start_matches("the ");
+        // "in a swamp worktree" drops the article, but a project may itself start with one.
+        let article = ["a ", "the "]
+            .into_iter()
+            .find_map(|a| location.strip_prefix(a).map(|rest| (a, rest)));
+        let location = article.map_or(location, |(_, rest)| rest);
         let (project, branch) = location
             .split_once(" on ")
             .map_or((location, None), |(p, b)| {
@@ -691,7 +711,12 @@ impl Context<'_> {
             }
         };
         let kind = exact("providers", provider)?;
-        let project = exact("projects", project)?;
+        let project = match (exact("projects", project), article) {
+            (Err(error), Some((article, _))) => {
+                exact("projects", &format!("{article}{project}")).map_err(|_| error)?
+            },
+            (found, _) => found?,
+        };
         let nonce = password::random_id().map_err(|_| Failure::Retry)?;
         let checkout = if let Some(branch) = branch {
             let c = self

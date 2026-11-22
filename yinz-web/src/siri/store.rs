@@ -23,20 +23,22 @@ fn access<T>(
     data: &Path,
     f: impl FnOnce(&mut Vec<Device>, &[sessions::Row], i64) -> Result<(T, bool)>,
 ) -> Result<T> {
-    let dir = password::private_dir(data)?;
-    let _lock = password::lock(&dir)?;
+    let dir = password::private_dir(data).context("open Siri store directory")?;
+    let _lock = password::lock(&dir).context("lock Siri store")?;
     let password::PasswordState::Ready(verifier) = password::read_state(data) else {
         bail!("web sign-in unavailable")
     };
     let now = SystemClock.now_ms();
-    let sessions = sessions::read(data, &verifier.verifier_id)?.sessions;
-    let mut devices: Vec<Device> = match OpenOptions::new()
+    let sessions = sessions::read(data, &verifier.verifier_id)
+        .context("read web sessions for Siri")?
+        .sessions;
+    let rows: Vec<serde_json::Value> = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(dir.join("siri.json"))
     {
         Ok(file) => {
-            password::validate_private(&file)?;
+            password::validate_private(&file).context("validate Siri store")?;
             let mut bytes = Vec::new();
             file.take(MAX_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
@@ -47,7 +49,17 @@ fn access<T>(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("open Siri devices"),
     };
-    let count = devices.len();
+    let count = rows.len();
+    // A row from another release can fail to decode. Revoke only that pairing, so its
+    // phone pairs again, instead of failing every phone's commands, setup and revocation.
+    let mut devices: Vec<Device> = rows
+        .into_iter()
+        .filter_map(|row| {
+            serde_json::from_value(row)
+                .map_err(|e| log::warn!("dropping an undecodable Siri pairing: {e}"))
+                .ok()
+        })
+        .collect();
     devices.retain(|d| {
         !d.listener_instance.is_empty() && sessions.iter().any(|s| s.id == d.owner && s.valid(now))
     });
@@ -55,7 +67,7 @@ fn access<T>(
     if changed || count != devices.len() {
         let bytes = serde_json::to_vec(&devices).context("encode Siri devices")?;
         anyhow::ensure!(bytes.len() <= MAX_BYTES, "Siri store too large");
-        password::atomic_write(&dir, "siri.json", &bytes)?;
+        password::atomic_write(&dir, "siri.json", &bytes).context("write Siri devices")?;
     }
     Ok(result)
 }
@@ -75,7 +87,7 @@ pub(super) fn configure(
             devices.retain(|d| d.owner != owner);
             return Ok((None, true));
         }
-        let code = password::random_id()?;
+        let code = password::random_id().context("generate Siri pairing code")?;
         let pairing = Some((sessions::hash(&code), now + 5 * 60_000));
         if let Some(device) = devices
             .iter_mut()
@@ -108,7 +120,10 @@ pub(super) fn redeem(data: &Path, listener_instance: &str, code: &str) -> Result
         }) else {
             return Ok((None, false));
         };
-        let token = format!("yzs1_{}", password::random_id()?);
+        let token = format!(
+            "yzs1_{}",
+            password::random_id().context("generate Siri credential")?
+        );
         device.code = None;
         device.token_hash = Some(sessions::hash(&token));
         device.dialogue = Dialogue::default();

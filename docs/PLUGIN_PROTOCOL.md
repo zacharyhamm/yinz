@@ -949,7 +949,9 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `tools` | `run`, either `revisions` (1–30) or `range` with optional `before`, optional `tz` | Reader; range mode also includes `page` |
 | `usage` | `agent` (live lookup) | `{usage:ProviderUsage}` |
 | `prompts` | none | `{prompts:[{text,description}]}` (at most 500) |
+| `assistant_reply` | `agent:AgentRef`, `run` (the live agent's current run), `filter` with optional `main_only`, `query` (at most 1024 bytes), `revision`, `after`, `turn` | `{reply:{revision,text}}`, or a null `reply` |
 | `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |
+| `submission_status` | `agent:AgentRef`, `submission_id` | `{response:AgentResponse}` |
 | `screen` | `agent:AgentRef`, `lines` (1–200, default 80) | `{response:AgentResponse}` |
 | `terminal` | `agent:AgentRef`, optional opaque `after` | `{response:AgentResponse}` |
 | `terminal_input` | `agent:AgentRef`, `data` as base64 keyboard bytes, a native `KeyWithModifier`, or `{"mouse":"<base64>"}` (1–32768 encoded bytes per batch) | `{response:AgentResponse}` |
@@ -1114,7 +1116,8 @@ No restart, interrupt, pane close or spawn action is exposed.
 Errors use `{error:{code,message}}`: `invalid` for request validation,
 `not_found` for missing usage targets/retained events, `target_changed` for
 missing/stale action refs, `paused` during update pause, `unavailable` for
-snapshot/focus timeout or detached focus (`No terminal attached`), and `failed`
+snapshot/focus timeout or detached focus (`No terminal attached`),
+`launch_unknown` for a launch whose outcome is uncertain, and `failed`
 for routing/storage failures. Snapshot/focus replies have 5 s bounds; peer
 controls share one 32 s send/receive/cleanup deadline. Non-success native
 `AgentResponse` outcomes remain under `ok.response`, including uncertain prompt

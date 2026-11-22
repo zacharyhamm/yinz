@@ -590,6 +590,16 @@ fn siri_reading_keeps_paragraphs_and_unicode_intact() {
     assert!(matches!(parse("what did say?"), Command::Choice(_)));
 }
 
+#[test]
+fn siri_reading_does_not_stop_at_an_early_paragraph_break() {
+    let mut dialogue = Dialogue::default();
+    let body = "word ".repeat(200);
+    let spoken = reading(&mut dialogue, &format!("Done.\n\n{body}"));
+    assert!(spoken.starts_with("Done.\n\nword word"), "{spoken}");
+    assert!(spoken.ends_with(" Say continue to hear more."));
+    assert!(!dialogue.reading.is_empty());
+}
+
 #[tokio::test]
 async fn siri_continue_reads_every_word_in_bounded_chunks() {
     let mut phone = Phone::new();
@@ -866,6 +876,46 @@ async fn siri_uncertain_send_retires_previous_reply() {
         phone.say("Did it reply?").await["speech"],
         "There is no pending Siri message."
     );
+}
+
+#[test]
+fn siri_undecodable_pairing_is_revoked_without_failing_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let verifier = password::tests::ready(data);
+    let owner = sign_in(data, &verifier.verifier_id);
+    let other = sign_in(data, &verifier.verifier_id);
+    let code = store::configure(data, &owner.id, "listener", false)
+        .unwrap()
+        .unwrap();
+    let token = store::redeem(data, "listener", &code).unwrap().unwrap();
+    let path = data.join("web/siri.json");
+    let mut rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut future = rows[0].clone();
+    future["owner"] = json!(other.id);
+    future["token_hash"] = json!(sessions::hash("future token"));
+    future["dialogue"]["offset"] = json!("from another release");
+    rows.push(future);
+    password::atomic_write(
+        &data.join("web"),
+        "siri.json",
+        &serde_json::to_vec(&rows).unwrap(),
+    )
+    .unwrap();
+    let phone = store::load(data, "listener", &sessions::hash(&token))
+        .unwrap()
+        .unwrap();
+    assert_eq!(phone.session.id, owner.id);
+    assert!(
+        store::load(data, "listener", &sessions::hash("future token"))
+            .unwrap()
+            .is_none()
+    );
+    let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(store::configure(data, &other.id, "listener", false)
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
