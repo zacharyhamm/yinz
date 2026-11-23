@@ -618,7 +618,9 @@ pub(crate) fn transparency_available(
 }
 
 /// The manager selection an X11 compositing manager owns for `screen`
-/// (EWMH `_NET_WM_CM_Sn`).
+/// (EWMH `_NET_WM_CM_Sn`). Only the Linux X11 check and the unit tests use it,
+/// so other library builds leave it out instead of reporting dead code.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn compositing_manager_selection(screen: usize) -> String {
     format!("_NET_WM_CM_S{screen}")
 }
