@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "project-data"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "serde",
  "serde_json",
@@ -6948,7 +6948,7 @@ checksum = "ac366ea532fa8ee6a992cec9dea525b1dc284e69702f36c2ab5fbebadc81ec86"
 
 [[package]]
 name = "yinz"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7009,7 +7009,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-agent-control"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "base64 0.22.1",
  "log",
@@ -7027,7 +7027,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-bus"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "ansi_term",
  "anyhow",
@@ -7060,7 +7060,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-cli"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "clap",
@@ -7091,7 +7091,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-client"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7127,7 +7127,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-codex"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -7149,7 +7149,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-config"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "directories",
@@ -7179,7 +7179,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-host-protocol"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "base64 0.22.1",
  "prost",
@@ -7188,7 +7188,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-integration-tests"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "agent-proto",
  "anyhow",
@@ -7227,7 +7227,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-ipc"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "hegeltest",
@@ -7250,7 +7250,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-key-codec"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "bitflags 2.11.0",
  "hegeltest",
@@ -7259,7 +7259,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-muse"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "nix",
@@ -7275,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-native-terminal"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "arboard",
@@ -7310,7 +7310,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-panes"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "agent-proto",
  "ansi_term",
@@ -7340,7 +7340,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-plugin-api"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "hegeltest",
  "log",
@@ -7355,7 +7355,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-plugin-authoring"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "libc",
@@ -7372,7 +7372,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-plugin-host"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "agent-proto",
  "anyhow",
@@ -7431,7 +7431,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-plugin-location"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "log",
  "percent-encoding",
@@ -7443,7 +7443,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-process"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7478,7 +7478,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-process-api"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "async-trait",
  "serde",
@@ -7489,7 +7489,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-project-config"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "kdl",
  "libc",
@@ -7504,7 +7504,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-pty"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7526,7 +7526,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-routing"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "crossbeam",
  "log",
@@ -7541,7 +7541,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-runtime"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -7573,7 +7573,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-screen"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7609,7 +7609,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-server"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7646,7 +7646,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-server-os"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7670,7 +7670,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-session"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "expect-test",
@@ -7691,7 +7691,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-steel"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "agent-proto",
  "anyhow",
@@ -7718,7 +7718,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-steel-builtins"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "regex",
@@ -7736,7 +7736,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-storage"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "hegeltest",
@@ -7751,7 +7751,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-tab"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7778,7 +7778,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-terminal"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7800,7 +7800,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-terminal-graphics"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "base64 0.22.1",
  "base64-simd",
@@ -7819,11 +7819,11 @@ dependencies = [
 
 [[package]]
 name = "yinz-test-support"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 
 [[package]]
 name = "yinz-tile"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "base64 0.22.1",
  "fuzzy-matcher",
@@ -7839,7 +7839,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-tile-markdown"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "pulldown-cmark",
  "unicode-width 0.2.2",
@@ -7848,7 +7848,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-tile-utils"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "ansi_term",
  "unicode-width 0.2.2",
@@ -7856,7 +7856,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-types"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "base64 0.22.1",
  "colorsys",
@@ -7876,7 +7876,7 @@ dependencies = [
 
 [[package]]
 name = "yinz-web"
-version = "0.1.2-alpha.26"
+version = "0.1.2-alpha.27"
 dependencies = [
  "anyhow",
  "argon2",
