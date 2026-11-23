@@ -1529,6 +1529,11 @@ struct SharedViewer {
     state: TerminalState,
     root: Arc<MediaRoot>,
     _probe: yinz_runtime::native_media::Probe,
+    /// Every shared file and the highest sequence this viewer has read. Follow-on renders
+    /// (debounced attach, mode, plugin or removal work) may add frames at any point, so
+    /// assertions about this attachment's leases use these rather than frame counts.
+    received: Vec<PathBuf>,
+    last: u64,
 }
 
 impl SharedViewer {
@@ -1545,6 +1550,8 @@ impl SharedViewer {
             state: TerminalState::new(40, 120),
             root,
             _probe: probe,
+            received: Vec::new(),
+            last: 0,
         };
         viewer.send(Client::NativeRenderRequest(caps::Request::Offer(offer)));
         let first = viewer.frame();
@@ -1604,6 +1611,8 @@ impl SharedViewer {
                     }
                 }
                 self.state.apply_frame(&frame).unwrap();
+                self.received.extend(seen.shared.iter().cloned());
+                self.last = self.last.max(seen.seq);
                 return Some(Event::Frame(seen));
             },
             Server::Exit {
@@ -1642,7 +1651,8 @@ impl SharedViewer {
     }
 
     /// A rejected duplicate offer is an ordered screen roundtrip after anything sent
-    /// before it on this connection. Frames that arrive first are returned.
+    /// before it on this connection. Frames that arrive first are returned; they may
+    /// include follow-on renders unrelated to what was sent.
     fn roundtrip(&mut self) -> Vec<Seen> {
         let offer = caps::Offer::reader(Some(self._probe.offer.clone()));
         self.send(Client::NativeRenderRequest(caps::Request::Offer(offer)));
@@ -1713,15 +1723,25 @@ fn native_media_budget_defers_withheld_acks_and_releases_on_resume() {
     assert_eq!(staged(&fixture).len(), per_viewer);
     assert_eq!(staged(&fixture).values().sum::<u64>(), VIEWER_BYTES);
     // Duplicate, stale, future and foreign-generation ACKs leave every file in place.
+    // The future ACK is beyond any frame the server could have written: a trailing
+    // render after the marker may already sit unread in the socket, and an ACK for a
+    // written frame is legitimate.
     let anomalies: [(&[u8], u64); 4] = [
         (&viewer.tag.clone(), first.seq),
         (&viewer.tag.clone(), first.seq - 1),
-        (&viewer.tag.clone(), last + 1),
+        (&viewer.tag.clone(), u64::MAX),
         (&foreign, last),
     ];
     for (tag, seq) in anomalies {
         send_tagged(&mut viewer.stream, tag, Client::RenderFrameAck { seq });
-        assert!(viewer.roundtrip().is_empty(), "no retry without a release");
+        // Follow-on renders may arrive, but none of them retries the deferred image.
+        let frames = viewer.roundtrip();
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.shared.is_empty() && f.inline == 0 && f.placements == 0),
+            "no retry without a release: {frames:?}"
+        );
         assert!(held.iter().all(|path| path.is_file()), "ACK {seq} released");
     }
     assert!(fixture
@@ -1876,7 +1896,6 @@ fn native_media_reattach_keeps_leases_apart() {
         panic!("expected A's second file")
     };
     let a2 = a2.clone();
-    let high = frames.last().unwrap().seq;
     wait_text(&mut text, "REPLACED-002");
     seal_with_oversized_presentation(&mut a.stream, &a.tag.clone());
     let reason = loop {
@@ -1888,6 +1907,10 @@ fn native_media_reattach_keeps_leases_apart() {
         reason.contains("send queue limit of 67108864 bytes"),
         "{reason}"
     );
+    // The writer delivers its whole admitted prefix before Exit, so the last frame A
+    // read is the sealed high mark, including any trailing render after the marker.
+    let high = a.last;
+    assert_eq!(a.received, [a1.clone(), a2.clone()]);
     assert!(a1.is_file() && a2.is_file());
     // B's full repaint stages its own copy of the visible image.
     let (mut b, b_first) = SharedViewer::attach(&fixture);
@@ -1896,14 +1919,21 @@ fn native_media_reattach_keeps_leases_apart() {
     };
     let b1 = b1.clone();
     assert!(b1 != a1 && b1 != a2);
-    // A's generation on B's connection is ignored.
+    // A's generation on B's connection is ignored. Follow-on renders of B's attachment
+    // may arrive before the roundtrip completes; whatever B holds must survive.
     send_tagged(
         &mut b.stream,
         &a.tag.clone(),
         Client::RenderFrameAck { seq: b_first.seq },
     );
-    assert!(b.roundtrip().is_empty());
-    assert!(b1.is_file() && a1.is_file() && a2.is_file());
+    b.roundtrip();
+    let b_holds = |b: &SharedViewer| {
+        !b.received.contains(&a1)
+            && !b.received.contains(&a2)
+            && b.received.iter().all(|path| path.is_file())
+    };
+    assert!(b_holds(&b), "A's ACK released B's media");
+    assert!(a1.is_file() && a2.is_file());
     // Above A's sealed high mark releases nothing; inside it, exactly the covered file.
     a.ack(high + 1);
     a.ack(a_first.seq);
@@ -1912,16 +1942,19 @@ fn native_media_reattach_keeps_leases_apart() {
         a2.is_file(),
         "an ACK above the sealed prefix released media"
     );
-    assert!(b1.is_file(), "A's ACK released B's file");
+    assert!(b_holds(&b), "A's ACK released B's media");
     // Closing A releases the rest of its prefix and nothing of B's.
     drop(a);
     wait_until("A's prefix unlinked at removal", || {
         (!a2.exists()).then_some(())
     });
-    assert!(b.roundtrip().is_empty());
-    assert!(b1.is_file());
-    b.ack(b_first.seq);
-    wait_until("B's file unlinked", || (!b1.exists()).then_some(()));
+    b.roundtrip();
+    assert!(b_holds(&b), "A's removal released B's media");
+    // B's own ACK releases everything it consumed.
+    b.ack(b.last);
+    wait_until("B's files unlinked", || {
+        b.received.iter().all(|path| !path.exists()).then_some(())
+    });
     replace(&fixture, &mut text, 3);
 }
 
