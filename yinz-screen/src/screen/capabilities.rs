@@ -2,6 +2,7 @@ use super::Screen;
 use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::panes::terminal_character::AnsiCode;
+use crate::panes::PaneId;
 use crate::ClientId;
 use yinz_bus::plugins::PluginInstruction;
 use yinz_ipc::ipc::PixelDimensions;
@@ -298,7 +299,7 @@ impl Screen {
         request: caps::Request,
     ) -> Result<()> {
         use caps::{Decision, Request};
-        use yinz_runtime::native_media::{self, MediaRoot};
+        use yinz_runtime::native_media::{self, MediaBudget, MediaRoot};
         if !self.core.client_sizes.contains_key(&client)
             && !self.connected_clients_contains(&client)
         {
@@ -324,9 +325,15 @@ impl Screen {
                 match offer.select(response) {
                     Ok(agreement) => {
                         let root = root.filter(|_| agreement.media & caps::SHARED != 0);
+                        // Every negotiated viewer gets its own budget: shared staging draws on
+                        // it now, and portable transfer buffers and assembled images will.
                         self.core.native_render_clients.insert(
                             client,
-                            NativeRenderState::negotiated(agreement.clone(), root),
+                            NativeRenderState::negotiated(
+                                agreement.clone(),
+                                root,
+                                Some(MediaBudget::viewer()),
+                            ),
                         );
                         Decision::Selected(agreement)
                     },
@@ -370,6 +377,38 @@ impl Screen {
             self.render()?;
         }
         Ok(())
+    }
+
+    /// Apply an accepted native ACK. When it releases media that deferred images were
+    /// waiting for, re-render those panes so the images can be staged.
+    pub(super) fn acknowledge_native_frame(&mut self, client: ClientId, seq: u64) -> Result<()> {
+        let deferred = NativeRenderState::acknowledge_recipient(
+            &mut self.core.native_render_clients,
+            &mut self.core.retired_native_clients,
+            client,
+            seq,
+        );
+        if self.retry_deferred_panes(deferred) {
+            self.render().context("retry deferred native images")?;
+        }
+        Ok(())
+    }
+
+    /// Mark each still-open pane for render. Returns whether any was marked.
+    pub(super) fn retry_deferred_panes(&mut self, panes: impl IntoIterator<Item = PaneId>) -> bool {
+        let mut marked = false;
+        for pane_id in panes {
+            // A pane closed since its frame has nothing left to show.
+            let Some(tab) = self.core.tab_containing_pane_mut(pane_id) else {
+                continue;
+            };
+            match tab.get_pane_with_id_mut(pane_id) {
+                Some(pane) => pane.set_should_render(true),
+                None => tab.set_force_render(),
+            }
+            marked = true;
+        }
+        marked
     }
 
     /// Remember whether this client's host presents each frame atomically (DECSET 2026).

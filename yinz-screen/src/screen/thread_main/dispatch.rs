@@ -694,12 +694,7 @@ pub(super) fn dispatch(
             screen.negotiate_render(client, request)?
         },
         ScreenInstruction::RenderFrameAck { client_id, seq } => {
-            yinz_terminal::output::NativeRenderState::acknowledge_recipient(
-                &mut screen.core.native_render_clients,
-                &mut screen.core.retired_native_clients,
-                client_id,
-                seq,
-            );
+            screen.acknowledge_native_frame(client_id, seq)?;
         },
         ScreenInstruction::SetSixelSupport {
             client_id,

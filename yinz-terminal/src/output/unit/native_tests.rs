@@ -786,6 +786,7 @@ fn render_negotiation_text_profile_blanks_kitty_placeholders_and_omits_geometry(
                     proof_response: vec![],
                 },
                 None,
+                None,
             ),
         ),
     ]);
@@ -818,7 +819,7 @@ fn render_negotiation_text_profile_blanks_kitty_placeholders_and_omits_geometry(
 #[test]
 fn render_negotiation_simultaneous_shared_portable_text_and_ansi_output() {
     use super::output_tests::{kitty_chunk, store_test_kitty_image};
-    use yinz_runtime::native_media::MediaRoot;
+    use yinz_runtime::native_media::{MediaBudget, MediaRoot};
     use yinz_types::{
         render_negotiation as caps,
         structured_render::{GeometryRecord, GraphicsMedium, GraphicsRecord, PaneRect},
@@ -835,11 +836,12 @@ fn render_negotiation_simultaneous_shared_portable_text_and_ansi_output() {
                     ..Default::default()
                 },
                 Some(root),
+                Some(MediaBudget::viewer()),
             ),
         ),
         (
             portable,
-            NativeRenderState::negotiated(Default::default(), None),
+            NativeRenderState::negotiated(Default::default(), None, Some(MediaBudget::viewer())),
         ),
         (
             text,
@@ -850,6 +852,7 @@ fn render_negotiation_simultaneous_shared_portable_text_and_ansi_output() {
                     ..Default::default()
                 },
                 None,
+                Some(MediaBudget::viewer()),
             ),
         ),
     ]);

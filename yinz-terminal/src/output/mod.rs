@@ -1,5 +1,5 @@
 mod native;
-pub use native::NativeRenderState;
+pub use native::{NativeRenderState, Staging};
 mod presentation;
 pub use presentation::Presentation;
 mod translucency;

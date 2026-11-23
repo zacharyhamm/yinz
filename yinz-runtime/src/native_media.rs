@@ -13,13 +13,146 @@ use std::{
     io::{Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 use yinz_types::render_negotiation::MediaProof;
 
 const PROBE_PREFIX: &str = "yinz-native-probe-";
 pub const IMAGE_PREFIX: &str = "yinz-native-image-";
 const TOKEN_LEN: usize = 16;
+
+/// Smaller images travel inline; staging a file costs more than copying them.
+pub const SHARED_MEDIA_MIN_BYTES: usize = 256 * 1024;
+/// The largest decoded image either peer stages or reads, equal to the Kitty decode limit.
+pub const MAX_SHARED_IMAGE_BYTES: usize = 104_857_600;
+/// Entries one viewer may retain at once, across its active and retired streams.
+pub const VIEWER_MEDIA_ENTRIES: usize = 32;
+/// Bytes one viewer may retain at once, across its active and retired streams.
+pub const VIEWER_MEDIA_BYTES: usize = 128 * 1024 * 1024;
+
+// A viewer with nothing outstanding can always take any image the reader would accept.
+const _: () = assert!(VIEWER_MEDIA_BYTES >= MAX_SHARED_IMAGE_BYTES && VIEWER_MEDIA_ENTRIES > 0);
+
+/// Retained media held against one viewer's budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MediaUsage {
+    pub entries: usize,
+    pub bytes: usize,
+}
+
+/// Why a budget declined a reservation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The viewer already retains its maximum number of entries.
+    Entries,
+    /// The reservation would exceed the viewer's remaining bytes.
+    Bytes,
+    /// The reservation can never fit, even with nothing retained.
+    TooLarge,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refusal::Entries => "entry limit reached",
+            Refusal::Bytes => "byte limit reached",
+            Refusal::TooLarge => "larger than the shared media limit",
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BudgetInner {
+    limit: MediaUsage,
+    used: Mutex<MediaUsage>,
+}
+
+/// One viewer's accounting for retained media: staged files today, and the transfer
+/// buffers and assembled images of portable delivery. Reserve before allocating; the
+/// returned lease gives its share back when dropped.
+#[derive(Clone, Debug)]
+pub struct MediaBudget(Arc<BudgetInner>);
+
+impl MediaBudget {
+    pub fn new(limit_entries: usize, limit_bytes: usize) -> Self {
+        Self(Arc::new(BudgetInner {
+            limit: MediaUsage {
+                entries: limit_entries,
+                bytes: limit_bytes,
+            },
+            used: Mutex::new(MediaUsage::default()),
+        }))
+    }
+
+    /// The production per-viewer budget.
+    pub fn viewer() -> Self {
+        Self::new(VIEWER_MEDIA_ENTRIES, VIEWER_MEDIA_BYTES)
+    }
+
+    fn used(&self) -> MutexGuard<'_, MediaUsage> {
+        // Usage is updated in single assignments, so a poisoned value is still consistent.
+        self.0.used.lock().unwrap_or_else(|poisoned| {
+            self.0.used.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
+    pub fn try_reserve(&self, bytes: usize) -> std::result::Result<MediaLease, Refusal> {
+        let limit = self.0.limit;
+        if bytes > limit.bytes.min(MAX_SHARED_IMAGE_BYTES) || limit.entries == 0 {
+            return Err(Refusal::TooLarge);
+        }
+        let mut used = self.used();
+        if used.entries >= limit.entries {
+            return Err(Refusal::Entries);
+        }
+        if bytes > limit.bytes - used.bytes {
+            return Err(Refusal::Bytes);
+        }
+        *used = MediaUsage {
+            entries: used.entries + 1,
+            bytes: used.bytes + bytes,
+        };
+        Ok(MediaLease {
+            budget: self.clone(),
+            bytes,
+        })
+    }
+
+    pub fn usage(&self) -> MediaUsage {
+        *self.used()
+    }
+
+    pub fn limit(&self) -> MediaUsage {
+        self.0.limit
+    }
+}
+
+/// One retained entry's share of a viewer budget, returned exactly once on drop.
+#[derive(Debug)]
+pub struct MediaLease {
+    budget: MediaBudget,
+    bytes: usize,
+}
+
+impl MediaLease {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Drop for MediaLease {
+    fn drop(&mut self) {
+        let mut used = self.budget.used();
+        let released = used
+            .entries
+            .checked_sub(1)
+            .zip(used.bytes.checked_sub(self.bytes));
+        debug_assert!(released.is_some(), "media lease released twice");
+        let (entries, bytes) = released.unwrap_or_default();
+        *used = MediaUsage { entries, bytes };
+    }
+}
 
 pub fn directory() -> PathBuf {
     std::env::temp_dir()
@@ -70,7 +203,10 @@ impl MediaRoot {
     }
 
     pub fn read_image(&self, path: &[u8], len: usize) -> Result<Vec<u8>> {
-        ensure!(len <= 104_857_600, "native image exceeds size limit");
+        ensure!(
+            len <= MAX_SHARED_IMAGE_BYTES,
+            "native image exceeds size limit"
+        );
         let path = std::str::from_utf8(path).context("invalid native image path")?;
         let (parent, basename) = path
             .rsplit_once('/')
@@ -111,6 +247,7 @@ impl MediaRoot {
                         root: self.clone(),
                         basename,
                         file: fd.into(),
+                        _lease: None,
                     })
                 },
                 Err(Errno::EEXIST) => continue,
@@ -122,10 +259,19 @@ impl MediaRoot {
         bail!("unable to allocate a unique native media basename")
     }
 
-    pub fn write_image(&self, bytes: &[u8]) -> Result<MediaFile> {
+    /// Stage `bytes` under a lease reserved for exactly that length. On failure the
+    /// partial file is unlinked and the lease returned before the error is.
+    pub fn write_image(&self, bytes: &[u8], lease: MediaLease) -> Result<MediaFile> {
+        ensure!(
+            lease.bytes() == bytes.len(),
+            "native image lease covers {} bytes, not {}",
+            lease.bytes(),
+            bytes.len()
+        );
         let mut image = self
             .create_file(IMAGE_PREFIX)
             .context("create native image")?;
+        image._lease = Some(lease);
         // The server's umask can differ from the client that created the probe.
         let metadata = image
             .file
@@ -141,10 +287,14 @@ impl MediaRoot {
 }
 
 /// Owns a staging entry in the pinned directory until its probe or frame is released.
+/// An image also owns its budget lease, released only after the file is unlinked.
 pub struct MediaFile {
     root: MediaRoot,
     basename: String,
     file: File,
+    // Fields drop after `Drop::drop` unlinks the file, so the budget never covers less
+    // than what is on disk.
+    _lease: Option<MediaLease>,
 }
 
 impl MediaFile {

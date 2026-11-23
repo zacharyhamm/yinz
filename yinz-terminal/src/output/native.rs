@@ -1,7 +1,10 @@
 //! Structured counterpart of the ANSI serializer. Both consume the same composed chunks.
 use super::*;
 use crate::panes::terminal_character::{AnsiStyledUnderline, NamedColor};
-use yinz_runtime::native_media::{MediaFile, MediaRoot};
+use std::collections::BTreeSet;
+use yinz_runtime::native_media::{
+    MediaBudget, MediaFile, MediaRoot, MediaUsage, Refusal, SHARED_MEDIA_MIN_BYTES,
+};
 use yinz_types::render_negotiation as caps;
 use yinz_types::{data::PaletteColor, structured_render::*};
 
@@ -10,9 +13,14 @@ pub struct NativeRenderState {
     pub agreement: caps::Agreement,
     pub negotiated: bool,
     root: Option<MediaRoot>,
+    budget: Option<MediaBudget>,
     pub seq: u64,
     pub acknowledged: u64,
     media: Vec<(u64, MediaFile)>,
+    /// Panes whose image this viewer's budget refused, retried after a releasing ACK.
+    deferred_panes: BTreeSet<PaneId>,
+    /// Set by the first refusal of an overload episode; cleared by the next staged file.
+    overloaded: bool,
     cursor: CursorState,
     links: Vec<String>,
     viewport_links: Vec<u8>,
@@ -20,11 +28,29 @@ pub struct NativeRenderState {
     presentation: Option<Presentation>,
 }
 
+/// How a frame carries one image residency.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Staging {
+    /// A file staged under this viewer's budget, released by the consuming frame's ACK.
+    Shared(std::path::PathBuf),
+    /// Bytes on the connection: no shared root, a small image, or a failed write.
+    Inline,
+    /// The budget is exhausted; the image waits for a releasing ACK.
+    Deferred,
+    /// The image exceeds the shared limit and is never sent.
+    Dropped,
+}
+
 impl NativeRenderState {
-    pub fn negotiated(agreement: caps::Agreement, root: Option<MediaRoot>) -> Self {
+    pub fn negotiated(
+        agreement: caps::Agreement,
+        root: Option<MediaRoot>,
+        budget: Option<MediaBudget>,
+    ) -> Self {
         Self {
             agreement,
             root,
+            budget,
             negotiated: true,
             ..Default::default()
         }
@@ -37,35 +63,94 @@ impl NativeRenderState {
     pub fn retain_prefix(&mut self, high: u64) {
         self.seq = self.seq.min(high);
         self.media.retain(|(seq, _)| *seq <= high);
+        self.deferred_panes.clear();
+    }
+
+    /// The viewer's retained-media budget. Portable transfer buffers and assembled images
+    /// reserve from it under the same deferral rule as staged files.
+    pub fn media_budget(&self) -> Option<&MediaBudget> {
+        self.budget.as_ref()
+    }
+
+    pub fn media_usage(&self) -> MediaUsage {
+        self.budget
+            .as_ref()
+            .map(MediaBudget::usage)
+            .unwrap_or_default()
     }
 
     /// Keep a large image available until the recipient consumes the referencing frame.
-    pub fn stage_image(&mut self, rgba: &[u8]) -> Option<std::path::PathBuf> {
-        if rgba.len() < 256 * 1024 || self.media.len() >= 32 {
-            return None;
+    pub fn stage_image(&mut self, rgba: &[u8]) -> Staging {
+        let (Some(root), Some(budget)) = (self.root.as_ref(), self.budget.as_ref()) else {
+            return Staging::Inline;
+        };
+        if rgba.len() < SHARED_MEDIA_MIN_BYTES {
+            return Staging::Inline;
         }
-        let file = self.root.as_ref()?.write_image(rgba).ok()?;
+        let lease = match budget.try_reserve(rgba.len()) {
+            Ok(lease) => lease,
+            Err(refusal) => {
+                if !self.overloaded {
+                    self.overloaded = true;
+                    let action = match refusal {
+                        Refusal::TooLarge => "dropping",
+                        Refusal::Entries | Refusal::Bytes => "deferring",
+                    };
+                    log::warn!(
+                        "native viewer media budget {refusal}: {action} a {} byte image (retained {:?} of {:?})",
+                        rgba.len(),
+                        budget.usage(),
+                        budget.limit()
+                    );
+                }
+                return match refusal {
+                    Refusal::TooLarge => Staging::Dropped,
+                    Refusal::Entries | Refusal::Bytes => Staging::Deferred,
+                };
+            },
+        };
+        // A failed write is an environment fault, not overload; keep the inline fallback.
+        let Ok(file) = root
+            .write_image(rgba, lease)
+            .context("stage shared native image")
+            .to_log()
+        else {
+            return Staging::Inline;
+        };
+        self.overloaded = false;
         let path = file.path();
         self.media.push((self.seq, file));
-        Some(path)
+        Staging::Shared(path)
     }
 
+    /// Route an accepted ACK to the owner's active or retired stream. Returns the panes to
+    /// re-render when it released media that an active stream's deferred images need.
     pub fn acknowledge_recipient(
         active: &mut HashMap<ClientId, Self>,
         retired: &mut HashMap<ClientId, Self>,
         owner: ClientId,
         seq: u64,
-    ) {
-        if let Some(state) = active.get_mut(&owner).or_else(|| retired.get_mut(&owner)) {
+    ) -> BTreeSet<PaneId> {
+        if let Some(state) = active.get_mut(&owner) {
+            if state.acknowledge(seq) {
+                return std::mem::take(&mut state.deferred_panes);
+            }
+        } else if let Some(state) = retired.get_mut(&owner) {
             state.acknowledge(seq);
         }
+        BTreeSet::new()
     }
 
-    pub fn acknowledge(&mut self, seq: u64) {
-        if seq <= self.seq {
-            self.acknowledged = self.acknowledged.max(seq);
-            self.media.retain(|(frame, _)| *frame > self.acknowledged);
+    /// Release media consumed through `seq`. Duplicate, stale and future ACKs release
+    /// nothing. Returns whether any media was released.
+    pub fn acknowledge(&mut self, seq: u64) -> bool {
+        if seq > self.seq {
+            return false;
         }
+        self.acknowledged = self.acknowledged.max(seq);
+        let retained = self.media.len();
+        self.media.retain(|(frame, _)| *frame > self.acknowledged);
+        self.media.len() < retained
     }
 }
 
@@ -586,6 +671,9 @@ fn flatten_kitty_frame(
     rendered.sort_unstable();
     rendered.dedup();
     rendered.sort_by_key(|pane_id| pane_sort_key(*pane_id));
+    // Images this frame could not carry, and whether each was deferred rather than dropped,
+    // so their other placements skip a second attempt but still retry with their pane.
+    let mut withheld: HashMap<HostImageKey, bool> = HashMap::new();
     for pane_id in rendered {
         let chunks = chunks_by_pane.remove(&pane_id).unwrap_or_default();
         let mut by_uid: BTreeMap<u64, Vec<KittyImageChunk>> = BTreeMap::new();
@@ -635,11 +723,16 @@ fn flatten_kitty_frame(
             let host_image_id = match host_state.transmitted.get(&image_key) {
                 Some(record) => record.host_image_id,
                 None => {
+                    if let Some(&deferred) = withheld.get(&image_key) {
+                        if deferred {
+                            state.deferred_panes.insert(pane_id);
+                        }
+                        withhold_placement(host_state, &key, out);
+                        continue;
+                    }
                     if let Some(variant) = variant {
                         kitty_image_store.ensure_scaled_variant(chunk.internal_image_id, variant);
                     }
-                    let host_image_id = host_state.next_host_image_id;
-                    host_state.next_host_image_id += 1;
                     let Some(image) = kitty_image_store.get(chunk.internal_image_id) else {
                         continue;
                     };
@@ -654,12 +747,26 @@ fn flatten_kitty_frame(
                         (image.width, image.height, image.displayed_rgba())
                     };
                     let (medium, data) = match state.stage_image(rgba) {
-                        Some(path) => (
+                        Staging::Shared(path) => (
                             GraphicsMedium::SharedFile,
                             path.to_string_lossy().into_owned().into_bytes(),
                         ),
-                        None => (GraphicsMedium::Inline, rgba.to_vec()),
+                        Staging::Inline => (GraphicsMedium::Inline, rgba.to_vec()),
+                        staging @ (Staging::Deferred | Staging::Dropped) => {
+                            // Everything else in the frame proceeds in order; only this
+                            // image waits. Nothing is recorded as transmitted, so the next
+                            // render of the pane tries again.
+                            let deferred = staging == Staging::Deferred;
+                            if deferred {
+                                state.deferred_panes.insert(pane_id);
+                            }
+                            withheld.insert(image_key, deferred);
+                            withhold_placement(host_state, &key, out);
+                            continue;
+                        },
                     };
+                    let host_image_id = host_state.next_host_image_id;
+                    host_state.next_host_image_id += 1;
                     out.push(GraphicsRecord::Residency {
                         id: host_image_id as u64,
                         width,
@@ -734,6 +841,21 @@ fn flatten_kitty_frame(
         }
     }
     Ok(())
+}
+
+/// Take down any placement shown at `key` whose image this frame withholds, so a stale
+/// image is not left at the new geometry.
+fn withhold_placement(
+    host_state: &mut HostKittyState,
+    key: &KittyChunkKey,
+    out: &mut Vec<GraphicsRecord>,
+) {
+    if let Some(record) = host_state.live_placements.remove(key) {
+        out.push(GraphicsRecord::DeletePlacement {
+            image_id: record.host_image_id as u64,
+            placement_id: record.host_placement_id as u64,
+        });
+    }
 }
 
 #[cfg(test)]

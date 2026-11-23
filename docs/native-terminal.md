@@ -878,9 +878,10 @@ basename and first token. The server checks the file under its own pinned
 directory and returns the second token. Both peers validate the proof. A failed
 probe selects portable output. A forwarded client always offers portable media.
 
-For an agreed shared transfer the server can stage a Kitty upload of at least
-256 KiB while fewer than 32 files are retained for the viewer. Otherwise it
-sends inline bytes. The reader requires a generated image basename directly
+For an agreed shared transfer the server stages a Kitty upload of at least
+256 KiB as a file when the viewer's media budget has room (see
+[Pacing, budgets and cleanup](#pacing-budgets-and-cleanup)). Smaller uploads,
+and viewers without shared media, receive inline bytes. The reader requires a generated image basename directly
 beneath its pinned directory. It opens without following symlinks and verifies
 ownership, private mode, regular-file type and exact RGBA length before copying.
 A failing live read fails the frame. A placement needs an owned image and a
@@ -889,6 +890,63 @@ meter. Image and placement identifiers are unsigned 64-bit values throughout the
 scene. Row shifts apply to fully contained rectangles on incremental frames of
 the same grid size. A clear, full repaint or resize starts a new baseline.
 Media failure requires a new attachment and full repaint.
+
+### Pacing, budgets and cleanup
+
+Frames are paced by the writer: each client has a bounded send queue of 5000
+messages and 64 MiB of render allocations, and the screen defers rendering a
+tab while every recipient's writer is behind. A slow viewer among healthy ones
+is not waited for. The native client applies frames through a bounded queue,
+so slow application backs up its socket. There is no one-frame-in-flight
+window.
+
+Shared media is paced by ACKs. Every negotiated viewer has its own media
+budget: at most 32 retained entries and 128 MiB, including any withdrawn or
+sealed prefix that viewer still holds. Staging reserves from the budget before
+creating a file. A refused reservation never creates one. Budgets are not
+shared, so a stalled viewer can never delay another viewer's images. Any image
+up to the 100 MiB shared limit fits a viewer with nothing outstanding.
+
+When the budget is exhausted, the image is deferred. That frame omits the
+image's residency and placement and takes down any placement that showed
+another image at the same position. Cells, links, cursor, geometry, sideband
+and deletes are still delivered in order. The server logs one warning per
+overload episode. When the viewer's next ACK releases media, the screen
+re-renders the deferred panes and the image arrives as a shared file. A budget
+refusal never falls back to inline bytes. An image above the 100 MiB shared
+limit is dropped with a warning. Inline fallback remains only for viewers
+without shared media, images below 256 KiB and a failed file write.
+
+A viewer that reads frames but never ACKs keeps at most its budget and sees
+later large images deferred. No ACK deadline applies outside a sealed drain. A
+viewer that stops reading while another viewer of its tab stays current keeps
+receiving queued frames until its writer limit disconnects it. When every viewer of a
+tab is behind, including a sole viewer that stops reading, the screen defers
+rendering that tab. Such a viewer neither reaches the writer limit nor stages
+more media, and keeps what it holds until it resumes or closes.
+
+The server classifies each ACK before the screen sees it. A future ACK, above
+the last written frame or the sealed high mark, is rejected and releases
+nothing. Duplicate and stale ACKs are accepted and release nothing more. An
+ACK carrying another attachment's generation is ignored, so a reused client
+number never releases the current attachment's files.
+
+Staged files are unlinked when their consuming frame is ACKed, and otherwise
+when the viewer detaches, its peer disappears, a write to it fails, it
+withdraws and then ACKs or closes, its sealed drain is abandoned, or the
+session exits. Each file returns its share of the budget only after it is
+unlinked.
+
+Limitations: a crash, `SIGKILL` or panic exit can leave `yinz-native-image-*`
+files in the temporary directory. Budgets are per viewer, so the total grows
+with the number of attached shared viewers. A frame carrying more than 64 MiB
+of sub-threshold inline images still ends native output as described below.
+
+Portable delivery must charge the same budget.
+`yinz_runtime::native_media::MediaBudget` reserves `MediaLease`s, and each
+lease returns its entry and bytes when dropped. Portable transfer buffers and
+assembled images reserve from the viewer's budget
+(`NativeRenderState::media_budget`) under the same deferral rule.
 
 ### Sequence, withdrawal and oversized frames
 
@@ -905,8 +963,8 @@ Duplicate frames have no repeated side effects. Duplicate and stale ACKs are
 idempotent. Future ACKs cannot release files. A missing predecessor or failed
 consuming frame ends the stream at the last successfully applied sequence.
 Reattach for a fresh full repaint. ACKs never cross attachments. Implementations
-adding credit accounting or chunked transfers must
-preserve these ownership and consumption rules.
+adding credit accounting or chunked transfers must preserve these ownership and
+consumption rules and reserve from the viewer's media budget.
 
 A revision-1 withdrawal stops production at the screen transition. The ordered
 Withdrawn result names the last emitted sequence H. The client can apply and ACK

@@ -23,8 +23,27 @@ def sized():
         "HHHH", fcntl.ioctl(1, termios.TIOCGWINSZ, bytes(8)))
     return rows > 0 and cols > 0 and width == cols * 8 and height == rows * 16
 
+def transmit(n, width, height, params=""):
+    rgba = bytes((n % 256, 72, 13, 255)) * (width * height)
+    payload = base64.b64encode(zlib.compress(rgba, 1))
+    for start in range(0, len(payload), 4096):
+        more = int(start + 4096 < len(payload))
+        head = f"a=T,f=32,s={width},v={height},{params}C=1,o=z," if start == 0 else ""
+        sys.stdout.buffer.write(f"\033_G{head}q=2,m={more};".encode() + payload[start:start+4096] + b"\033\\")
+    sys.stdout.buffer.flush()
+
 wait_for(sized)
 print("PIXELS-READY", flush=True)
+if sys.argv[1] == "replace":
+    # Each replace-N retransmits image 1 as a new 16 MiB raster, shown through a small
+    # source rectangle, then names the replacement in text for liveness waits.
+    n = 0
+    while True:
+        n += 1
+        wait_for(lambda: (root / f"replace-{n}").exists())
+        os.write(1, b"\033[5;1H")
+        transmit(n, 2048, 2048, "i=1,x=0,y=0,w=64,h=64,")
+        print(f"\033[1;1HREPLACED-{n:03}", flush=True)
 for n in range(1, int(sys.argv[1]) + 1):
     wait_for(lambda: (root / f"image-{n}").exists())
     width, height = (256, 256) if n < 33 else (4096, 4097)

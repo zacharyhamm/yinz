@@ -1444,6 +1444,58 @@ fn render_negotiation_profiles_survive_reload_withdraw_and_detach() {
 }
 
 #[test]
+fn render_negotiation_deferred_image_retry_marks_open_panes_in_any_tab() {
+    use yinz_types::render_negotiation::{Offer, Request};
+    let size = Size { cols: 80, rows: 24 };
+    let (mut screen, _, receiver) = create_new_screen_with_capture(size, true, true, true, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let client = CLIENT_1;
+    screen
+        .negotiate_render(client, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    // Every negotiated viewer owns a budget, even without a shared root.
+    let state = &screen.core.native_render_clients[&client];
+    assert!(state.media_budget().is_some());
+    screen.render_to_clients().unwrap();
+    receiver.try_iter().for_each(drop);
+    let [background, active] = [1, 2].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    let should_render = |screen: &mut Screen, pane: PaneId| {
+        screen
+            .core
+            .tab_containing_pane_mut(pane)
+            .and_then(|tab| tab.get_pane_with_id_mut(pane))
+            .map(|pane| pane.should_render())
+    };
+    for pane in [background, active] {
+        screen
+            .core
+            .tab_containing_pane_mut(pane)
+            .and_then(|tab| tab.get_pane_with_id_mut(pane))
+            .unwrap()
+            .set_should_render(false);
+    }
+    // Nothing to retry, or only closed panes: no render is requested.
+    assert!(!screen.retry_deferred_panes([]));
+    assert!(!screen.retry_deferred_panes([PaneId::Terminal(TerminalId::new(99))]));
+    assert_eq!(should_render(&mut screen, background), Some(false));
+    // A pane in a tab the viewer is not looking at is still marked in its own tab.
+    assert!(screen.retry_deferred_panes([background, PaneId::Terminal(TerminalId::new(99))]));
+    assert_eq!(should_render(&mut screen, background), Some(true));
+    assert_eq!(should_render(&mut screen, active), Some(false));
+    // An ACK that releases nothing retries nothing and sends no frame.
+    let seq = screen.core.native_render_clients[&client].seq;
+    screen.acknowledge_native_frame(client, seq).unwrap();
+    screen
+        .acknowledge_native_frame(ClientId::new(9), seq)
+        .unwrap();
+    assert!(!receiver
+        .try_iter()
+        .any(|(event, _)| matches!(event, ServerInstruction::RenderFrames(_))));
+    assert_eq!(should_render(&mut screen, active), Some(false));
+}
+
+#[test]
 fn watcher_sixel_change_repaints_and_removal_forgets_the_answer() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     let watcher = ClientId::new(2);

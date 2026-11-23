@@ -1931,12 +1931,61 @@ mod client_writer_flush {
         assert!(os.accept_native_ack(id, h));
         let progress = os.native_drain(id).unwrap().1;
         assert!(progress > start);
+        // An exact duplicate is accepted without refreshing drain progress.
+        assert!(os.accept_native_ack(id, h));
+        assert_eq!(os.native_drain(id).unwrap().1, progress);
         assert!(!os.abort_native_drain(id, Some(start)));
         assert!(os.accept_native_ack(id, 3));
         assert_eq!(os.native_drain(id).unwrap().1, progress);
         assert!(os.abort_native_drain(id, Some(progress)));
         os.remove_client(id).unwrap();
         assert!(os.native_drain(id).is_none());
+    }
+
+    #[test]
+    fn render_negotiation_native_ack_gate_bounds_live_acks() {
+        use std::os::fd::AsFd;
+        use yinz_bus::os_input_output::ClientTransport;
+        let (_dir, server, peer) = socket_pair();
+        let interprocess::local_socket::Stream::UdSocket(uds) = &server;
+        let fd = uds.as_fd().try_clone_to_owned().unwrap();
+        let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+        rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+        let mut os = super::make_server();
+        let id = crate::ClientId::new(1);
+        let writer = ClientSender::new(
+            id,
+            IpcSenderWithContext::new(server),
+            os.live_writers.clone(),
+            fd,
+        )
+        .unwrap();
+        os.lock_client_senders().insert(id, writer);
+        for seq in [1, 2] {
+            let frame = yinz_types::structured_render::FrameBuilder::new(2, 1, seq).finish();
+            os.send_to_client(
+                id,
+                ServerToClientMsg::RenderFrame {
+                    frame: frame.clone(),
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                rx.recv_server_msg().msg(),
+                Some((ServerToClientMsg::RenderFrame { frame: written }, _)) if written == frame
+            ));
+        }
+        // Both frames reached the peer, so the writable prefix covers them.
+        assert!(os.native_drain(id).is_none());
+        // Above the last emitted frame: rejected before it can reach the screen.
+        assert!(!os.accept_native_ack(id, 3));
+        // Advancing, duplicate and stale ACKs are accepted; the screen ignores the latter two.
+        for seq in [2, 2, 1] {
+            assert!(os.accept_native_ack(id, seq));
+        }
+        assert!(!os.accept_native_ack(crate::ClientId::new(2), 1));
+        os.remove_client(id).unwrap();
+        assert!(!os.accept_native_ack(id, 1));
     }
 
     #[test]

@@ -1232,8 +1232,8 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
     use interprocess::{local_socket::traits::Listener, TryClone};
     use yinz_bus::os_input_output::ClientTransport;
     use yinz_ipc::ipc::IpcSenderWithContext;
-    use yinz_runtime::native_media::MediaRoot;
-    use yinz_terminal::output::NativeRenderState;
+    use yinz_runtime::native_media::{MediaBudget, MediaRoot, MediaUsage};
+    use yinz_terminal::output::{NativeRenderState, Staging};
     use yinz_types::{
         render_negotiation::{Decision, Offer, Request},
         structured_render::FrameBuilder,
@@ -1342,12 +1342,16 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
                 next_native(&mut reader),
                 Some(ServerToClientMsg::NativeRenderResult(Decision::Selected(_)))
             ));
+            // Each attachment owns its budget, so only its own ACKs can return it.
             let mut render = NativeRenderState::negotiated(
                 agreement,
                 Some(MediaRoot::open(dir.path()).unwrap()),
+                Some(MediaBudget::viewer()),
             );
             render.seq = 1;
-            let path = render.stage_image(&vec![3; 256 * 1024]).unwrap();
+            let Staging::Shared(path) = render.stage_image(&vec![3; 256 * 1024]) else {
+                panic!("expected a staged image")
+            };
             let mut frame = FrameBuilder::new(1, 1, 1);
             frame.set_full_repaint(true);
             os.send_to_client(
@@ -1393,6 +1397,13 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
         let mut retired = HashMap::from([(old, old_render)]);
         let (new, mut sender, mut reader, mut wire, router, render, new_path) = attach();
         let mut active = HashMap::from([(new, render)]);
+        let held = MediaUsage {
+            entries: 1,
+            bytes: 256 * 1024,
+        };
+        let usage = |states: &HashMap<_, NativeRenderState>, id| states[&id].media_usage();
+        assert_eq!(usage(&active, new), held);
+        assert_eq!(usage(&retired, old), held);
         assert_eq!(old.get(), new.get());
         assert_ne!(old, new);
         let before = os.native_drain(old).unwrap();
@@ -1417,6 +1428,7 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
         assert!(threads.screen_receiver.try_recv().is_err());
         assert_eq!(os.native_drain(old), Some(before));
         assert!(old_path.exists() && new_path.exists());
+        assert_eq!(usage(&active, new), held);
         if acknowledge_source {
             old_sender
                 .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 1 })
@@ -1427,8 +1439,16 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
             else {
                 panic!("missing A ACK")
             };
-            NativeRenderState::acknowledge_recipient(&mut active, &mut retired, client_id, seq);
+            assert!(NativeRenderState::acknowledge_recipient(
+                &mut active,
+                &mut retired,
+                client_id,
+                seq
+            )
+            .is_empty());
             assert!(!old_path.exists() && new_path.exists());
+            assert_eq!(usage(&retired, old), MediaUsage::default());
+            assert_eq!(usage(&active, new), held);
             old_sender
                 .send_client_msg(ClientToServerMsg::ClientExited)
                 .unwrap();
@@ -1441,6 +1461,7 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
         state.write().unwrap().remove_client(old);
         retired.remove(&old);
         assert!(!old_path.exists() && new_path.exists());
+        assert_eq!(usage(&active, new), held);
         assert!(os.abort_native_drain(old, Some(before.1)));
         sender
             .send_client_msg(ClientToServerMsg::RenderFrameAck { seq: 1 })
@@ -1453,6 +1474,7 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
         };
         NativeRenderState::acknowledge_recipient(&mut active, &mut retired, client_id, seq);
         assert!(!new_path.exists());
+        assert_eq!(usage(&active, new), MediaUsage::default());
         os.send_to_client(
             new,
             ServerToClientMsg::RenderFrame {

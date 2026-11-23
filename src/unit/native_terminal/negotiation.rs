@@ -69,6 +69,10 @@ fn send(stream: &mut UnixStream, msg: Client) {
 }
 
 fn start_server(image_count: u8) -> NativeFixture {
+    start_images(&image_count.to_string())
+}
+
+fn start_images(mode: &str) -> NativeFixture {
     let fixture = NativeFixture::new();
     let path = fixture.fixture.path();
     let script = path.join("images.py");
@@ -76,7 +80,7 @@ fn start_server(image_count: u8) -> NativeFixture {
     fs::write(
         &fixture.layout,
         format!(
-            "layout {{ pane command=\"python3\" {{ args \"{}\" \"{image_count}\"; }}; }}",
+            "layout {{ pane command=\"python3\" {{ args \"{}\" \"{mode}\"; }}; }}",
             script.display()
         ),
     )
@@ -328,7 +332,7 @@ fn trigger(fixture: &NativeFixture, name: &str) {
 }
 
 pub(super) fn refusal() {
-    let fixture = start_server(33);
+    let fixture = start_server(32);
     let mut text = text_viewer(&fixture);
     let proxy = tempfile::tempdir_in("/tmp").unwrap();
     let dir = proxy
@@ -359,7 +363,7 @@ pub(super) fn refusal() {
     drop((probe, upstream));
     let mut client = bounded(listener.accept().unwrap().0);
     let mut upstream = server(&fixture);
-    let (mut state, _) = exchange(&mut client, &mut upstream, true);
+    let (mut state, generation) = exchange(&mut client, &mut upstream, true);
     let mut held = Vec::new();
     let mut leases = std::collections::BTreeMap::new();
     let mut colors = std::collections::HashMap::new();
@@ -390,7 +394,9 @@ pub(super) fn refusal() {
             held.push(packet);
         }
     }
-    trigger(&fixture, "image-33");
+    // The 32 held leases fill this viewer's entry budget, so another large image would
+    // only be deferred. Seal instead with a frame that is too large on its own.
+    seal_with_oversized_presentation(&mut upstream, &generation);
     let (terminal, reason) = loop {
         let packet = read_packet(&mut upstream);
         if let Server::Exit {
@@ -481,6 +487,22 @@ pub(super) fn refusal() {
     drop(upstream);
     trigger(&fixture, "after");
     wait_text(&mut text, "AFTER-DRAIN");
+}
+
+/// A terminal far larger than the session gets a centered presentation whose explicit
+/// margin cells alone exceed the writer's 64 MiB frame limit, sealing the stream on that
+/// one frame without relying on any timing.
+fn seal_with_oversized_presentation(stream: &mut UnixStream, tag: &[u8]) {
+    send_tagged(
+        stream,
+        tag,
+        Client::TerminalResize {
+            new_size: Size {
+                rows: 2000,
+                cols: 2000,
+            },
+        },
+    );
 }
 
 #[test]
@@ -1437,4 +1459,508 @@ fn live_graphical_driver() {
         assert_success(output);
     })
     .unwrap();
+}
+
+// Shared-media budgets and cleanup through the real server, observed in the fixture's TMPDIR.
+
+const REPLACEMENT_BYTES: u64 = 2048 * 2048 * 4;
+const VIEWER_ENTRIES: usize = yinz_runtime::native_media::VIEWER_MEDIA_ENTRIES;
+const VIEWER_BYTES: u64 = yinz_runtime::native_media::VIEWER_MEDIA_BYTES as u64;
+
+/// Staged image files and their sizes. A file unlinked mid-listing is skipped.
+fn staged(fixture: &NativeFixture) -> std::collections::BTreeMap<PathBuf, u64> {
+    let dir = fixture.fixture.path().join("tmp").canonicalize().unwrap();
+    fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            name.starts_with(yinz_runtime::native_media::IMAGE_PREFIX)
+                .then_some(())?;
+            Some((dir.join(name), entry.metadata().ok()?.len()))
+        })
+        .collect()
+}
+
+/// One shared viewer may retain at most its entry and byte budget.
+fn assert_within_viewer_budget(fixture: &NativeFixture) {
+    let files = staged(fixture);
+    let bytes: u64 = files.values().sum();
+    assert!(
+        files.len() <= VIEWER_ENTRIES && bytes <= VIEWER_BYTES,
+        "{} staged files, {bytes} bytes",
+        files.len()
+    );
+}
+
+fn wait_until<T>(what: &str, mut observe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        if let Some(value) = observe() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::park_timeout(Duration::from_millis(20));
+    }
+}
+
+fn replace(fixture: &NativeFixture, text: &mut UnixStream, n: usize) {
+    trigger(fixture, &format!("replace-{n}"));
+    wait_text(text, &format!("REPLACED-{n:03}"));
+}
+
+#[derive(Debug, Default)]
+struct Seen {
+    seq: u64,
+    shared: Vec<PathBuf>,
+    inline: usize,
+    placements: usize,
+}
+
+enum Event {
+    Frame(Seen),
+    Exit(String),
+}
+
+/// A local viewer that proved a shared directory, read through the production decoder.
+struct SharedViewer {
+    stream: UnixStream,
+    tag: Vec<u8>,
+    state: TerminalState,
+    root: Arc<MediaRoot>,
+    _probe: yinz_runtime::native_media::Probe,
+}
+
+impl SharedViewer {
+    /// Attach, negotiate shared media and return the unacknowledged first full repaint.
+    fn attach(fixture: &NativeFixture) -> (Self, Seen) {
+        let (stream, tag) = advertised_attachment(fixture);
+        let probe =
+            yinz_runtime::native_media::Probe::create(&fixture.fixture.path().join("tmp")).unwrap();
+        let root = Arc::new(MediaRoot::open(Path::new(&probe.offer.root)).unwrap());
+        let offer = caps::Offer::reader(Some(probe.offer.clone()));
+        let mut viewer = Self {
+            stream,
+            tag,
+            state: TerminalState::new(40, 120),
+            root,
+            _probe: probe,
+        };
+        viewer.send(Client::NativeRenderRequest(caps::Request::Offer(offer)));
+        let first = viewer.frame();
+        assert!(first.seq > 0);
+        (viewer, first)
+    }
+
+    fn send(&mut self, message: Client) {
+        send_tagged(&mut self.stream, &self.tag.clone(), message);
+    }
+
+    fn ack(&mut self, seq: u64) {
+        self.send(Client::RenderFrameAck { seq });
+    }
+
+    fn packet(&mut self) -> wire::ServerToClientMsg {
+        wire::ServerToClientMsg::decode(read_packet(&mut self.stream).as_slice()).unwrap()
+    }
+
+    fn next(&mut self) -> Event {
+        loop {
+            let packet = self.packet();
+            if let Some(event) = self.handle(packet) {
+                return event;
+            }
+        }
+    }
+
+    fn handle(&mut self, packet: wire::ServerToClientMsg) -> Option<Event> {
+        let owned = packet.attachment_generation.as_deref() == Some(self.tag.as_slice());
+        match Server::try_from(packet).unwrap() {
+            Server::NativeRenderResult(caps::Decision::Selected(agreement)) => {
+                assert!(owned && agreement.media & caps::SHARED != 0);
+                self.state.negotiate(agreement, Some(self.root.clone()));
+            },
+            Server::RenderFrame { frame } => {
+                assert!(owned);
+                let view = decode(&frame).unwrap();
+                let mut seen = Seen {
+                    seq: view.header().seq,
+                    ..Default::default()
+                };
+                for record in view.graphics() {
+                    match record {
+                        GraphicsRecord::Residency {
+                            medium: GraphicsMedium::SharedFile,
+                            data,
+                            ..
+                        } => {
+                            let path = PathBuf::from(String::from_utf8(data).unwrap());
+                            assert!(path.is_file(), "staged before its frame");
+                            seen.shared.push(path);
+                        },
+                        GraphicsRecord::Residency { .. } => seen.inline += 1,
+                        GraphicsRecord::Placement { .. } => seen.placements += 1,
+                        _ => {},
+                    }
+                }
+                self.state.apply_frame(&frame).unwrap();
+                return Some(Event::Frame(seen));
+            },
+            Server::Exit {
+                exit_reason: ExitReason::Error(reason),
+            } => return Some(Event::Exit(reason)),
+            Server::Exit { exit_reason } => return Some(Event::Exit(format!("{exit_reason:?}"))),
+            _ => {},
+        }
+        None
+    }
+
+    fn frame(&mut self) -> Seen {
+        match self.next() {
+            Event::Frame(seen) => seen,
+            Event::Exit(reason) => panic!("viewer ended: {reason}"),
+        }
+    }
+
+    fn shows(&self, marker: &str) -> bool {
+        let size = self.state.size();
+        (0..size.rows).any(|r| {
+            (0..size.cols)
+                .map(|c| self.state.screen().cell(r, c).character())
+                .collect::<String>()
+                .contains(marker)
+        })
+    }
+
+    /// Frames up to the one showing `marker`.
+    fn frames_until(&mut self, marker: &str) -> Vec<Seen> {
+        let mut frames = Vec::new();
+        while !self.shows(marker) {
+            frames.push(self.frame());
+        }
+        frames
+    }
+
+    /// A rejected duplicate offer is an ordered screen roundtrip after anything sent
+    /// before it on this connection. Frames that arrive first are returned.
+    fn roundtrip(&mut self) -> Vec<Seen> {
+        let offer = caps::Offer::reader(Some(self._probe.offer.clone()));
+        self.send(Client::NativeRenderRequest(caps::Request::Offer(offer)));
+        let mut frames = Vec::new();
+        loop {
+            let packet = self.packet();
+            if let Ok(Server::NativeRenderResult(caps::Decision::Rejected(reason))) =
+                Server::try_from(packet.clone())
+            {
+                assert!(reason.contains("reattach"), "{reason}");
+                return frames;
+            }
+            match self.handle(packet) {
+                Some(Event::Frame(seen)) => frames.push(seen),
+                Some(Event::Exit(reason)) => panic!("viewer ended: {reason}"),
+                None => {},
+            }
+        }
+    }
+
+    fn image_shade(&self) -> Option<u8> {
+        self.state
+            .graphics()
+            .placements()
+            .filter_map(|placement| self.state.graphics().image(placement.image_id))
+            .map(|image| image.pixels[0])
+            .max()
+    }
+}
+
+#[test]
+fn native_media_budget_defers_withheld_acks_and_releases_on_resume() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let (_other, foreign) = advertised_attachment(&fixture);
+    let (mut viewer, first) = SharedViewer::attach(&fixture);
+    assert!(first.shared.is_empty());
+    viewer.ack(first.seq);
+    let mut held = Vec::new();
+    let mut last = first.seq;
+    let per_viewer = (VIEWER_BYTES / REPLACEMENT_BYTES) as usize;
+    for n in 1..=per_viewer + 1 {
+        trigger(&fixture, &format!("replace-{n}"));
+        let frames = viewer.frames_until(&format!("REPLACED-{n:03}"));
+        for frame in &frames {
+            assert_eq!(
+                frame.inline, 0,
+                "a budget refusal never falls back to inline"
+            );
+            assert_within_viewer_budget(&fixture);
+            last = frame.seq;
+        }
+        let shared: Vec<_> = frames.iter().flat_map(|f| f.shared.clone()).collect();
+        if n <= per_viewer {
+            assert_eq!(shared.len(), 1, "replacement {n}");
+            held.push(shared[0].clone());
+        } else {
+            // Deferred: the frame carried the text but neither residency nor placement.
+            assert!(
+                shared.is_empty(),
+                "replacement {n} staged beyond the budget"
+            );
+            assert_eq!(frames.iter().map(|f| f.placements).sum::<usize>(), 0);
+        }
+    }
+    // The replaced raster was deleted and its successor waits, so no stale image remains.
+    assert_eq!(viewer.image_shade(), None);
+    assert_eq!(staged(&fixture).len(), per_viewer);
+    assert_eq!(staged(&fixture).values().sum::<u64>(), VIEWER_BYTES);
+    // Duplicate, stale, future and foreign-generation ACKs leave every file in place.
+    let anomalies: [(&[u8], u64); 4] = [
+        (&viewer.tag.clone(), first.seq),
+        (&viewer.tag.clone(), first.seq - 1),
+        (&viewer.tag.clone(), last + 1),
+        (&foreign, last),
+    ];
+    for (tag, seq) in anomalies {
+        send_tagged(&mut viewer.stream, tag, Client::RenderFrameAck { seq });
+        assert!(viewer.roundtrip().is_empty(), "no retry without a release");
+        assert!(held.iter().all(|path| path.is_file()), "ACK {seq} released");
+    }
+    assert!(fixture
+        .log_text()
+        .contains("native viewer media budget byte limit reached: deferring"));
+    viewer.ack(last);
+    wait_until("consumed files unlinked", || {
+        held.iter().all(|path| !path.exists()).then_some(())
+    });
+    // The releasing ACK alone re-renders the deferred image as a shared file.
+    let retried = loop {
+        let frame = viewer.frame();
+        if !frame.shared.is_empty() {
+            break frame;
+        }
+    };
+    assert_eq!((retried.shared.len(), retried.inline), (1, 0));
+    assert!(retried.placements > 0);
+    assert_eq!(viewer.image_shade(), Some(per_viewer as u8 + 1));
+    viewer.ack(retried.seq);
+    wait_until("retried file unlinked", || {
+        (!retried.shared[0].exists()).then_some(())
+    });
+    replace(&fixture, &mut text, per_viewer + 2);
+}
+
+#[test]
+fn native_media_stalled_reader_stays_within_budget() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let (mut viewer, first) = SharedViewer::attach(&fixture);
+    viewer.ack(first.seq);
+    // The viewer stops reading; the text viewer keeps the session rendering.
+    for n in 1..=12 {
+        replace(&fixture, &mut text, n);
+        assert_within_viewer_budget(&fixture);
+    }
+    // Staging ran for every render and stopped exactly at the byte budget.
+    assert_eq!(staged(&fixture).values().sum::<u64>(), VIEWER_BYTES);
+    drop(viewer);
+    wait_until("stalled viewer's files unlinked", || {
+        staged(&fixture).is_empty().then_some(())
+    });
+    replace(&fixture, &mut text, 13);
+    assert!(staged(&fixture).is_empty());
+}
+
+#[test]
+fn native_media_cleanup_on_detach_peer_loss_writer_failure_and_withdraw_close() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let mut n = 1;
+    replace(&fixture, &mut text, n);
+    let mut modes = vec!["detach", "peer loss", "withdraw then close"];
+    // After the peer shuts its read half, Linux fails the server's next write with EPIPE.
+    if cfg!(target_os = "linux") {
+        modes.push("writer failure");
+    }
+    for mode in modes {
+        let (mut viewer, first) = SharedViewer::attach(&fixture);
+        let [path] = first.shared.as_slice() else {
+            panic!("{mode}: expected the visible image staged for this viewer")
+        };
+        let path = path.clone();
+        match mode {
+            "detach" => viewer.send(Client::ClientExited),
+            "peer loss" => {},
+            "withdraw then close" => {
+                viewer.send(Client::NativeRenderRequest(caps::Request::Withdraw));
+                loop {
+                    let packet = server_message(&read_packet(&mut viewer.stream));
+                    if matches!(
+                        packet,
+                        Server::NativeRenderResult(caps::Decision::Withdrawn(_))
+                    ) {
+                        break;
+                    }
+                }
+                assert!(path.is_file(), "withdrawal released an unconsumed file");
+            },
+            "writer failure" => {
+                viewer.stream.shutdown(std::net::Shutdown::Read).unwrap();
+                n += 1;
+                replace(&fixture, &mut text, n);
+            },
+            _ => unreachable!(),
+        }
+        // A writer failure keeps the socket open, so only the failed write can end it.
+        let open = (mode == "writer failure").then_some(viewer);
+        wait_until(&format!("{mode} unlink"), || (!path.exists()).then_some(()));
+        drop(open);
+        n += 1;
+        replace(&fixture, &mut text, n);
+    }
+    assert!(staged(&fixture).is_empty());
+    assert!(!fixture.log_text().contains("remove staged native media"));
+}
+
+#[test]
+fn native_media_session_exit_unlinks_staged_files() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    replace(&fixture, &mut text, 1);
+    let (mut viewer, first) = SharedViewer::attach(&fixture);
+    assert_eq!(first.shared.len(), 1);
+    assert_success(
+        fixture
+            .command()
+            .args(["kill-session", SESSION])
+            .output()
+            .unwrap(),
+    );
+    // The server closes every attachment before it exits.
+    loop {
+        let mut prefix = [0; 4];
+        match viewer.stream.read(&mut prefix) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                let mut rest = [0; 4];
+                viewer.stream.read_exact(&mut rest[..4 - read]).unwrap();
+                prefix[read..].copy_from_slice(&rest[..4 - read]);
+                let mut body = vec![0; u32::from_le_bytes(prefix) as usize];
+                viewer.stream.read_exact(&mut body).unwrap();
+            },
+        }
+    }
+    let socket = fixture
+        .fixture
+        .socket_dir()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
+        .join(SESSION);
+    wait_until("session exit", || {
+        (!socket.exists() && staged(&fixture).is_empty()).then_some(())
+    });
+    assert!(!first.shared[0].exists());
+}
+
+#[test]
+fn native_media_reattach_keeps_leases_apart() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    replace(&fixture, &mut text, 1);
+    let (mut a, a_first) = SharedViewer::attach(&fixture);
+    let [a1] = a_first.shared.as_slice() else {
+        panic!("expected A's first file")
+    };
+    let a1 = a1.clone();
+    trigger(&fixture, "replace-2");
+    let frames = a.frames_until("REPLACED-002");
+    let a2: Vec<_> = frames.iter().flat_map(|f| f.shared.clone()).collect();
+    let [a2] = a2.as_slice() else {
+        panic!("expected A's second file")
+    };
+    let a2 = a2.clone();
+    let high = frames.last().unwrap().seq;
+    wait_text(&mut text, "REPLACED-002");
+    seal_with_oversized_presentation(&mut a.stream, &a.tag.clone());
+    let reason = loop {
+        if let Event::Exit(reason) = a.next() {
+            break reason;
+        }
+    };
+    assert!(
+        reason.contains("send queue limit of 67108864 bytes"),
+        "{reason}"
+    );
+    assert!(a1.is_file() && a2.is_file());
+    // B's full repaint stages its own copy of the visible image.
+    let (mut b, b_first) = SharedViewer::attach(&fixture);
+    let [b1] = b_first.shared.as_slice() else {
+        panic!("expected B's own file")
+    };
+    let b1 = b1.clone();
+    assert!(b1 != a1 && b1 != a2);
+    // A's generation on B's connection is ignored.
+    send_tagged(
+        &mut b.stream,
+        &a.tag.clone(),
+        Client::RenderFrameAck { seq: b_first.seq },
+    );
+    assert!(b.roundtrip().is_empty());
+    assert!(b1.is_file() && a1.is_file() && a2.is_file());
+    // Above A's sealed high mark releases nothing; inside it, exactly the covered file.
+    a.ack(high + 1);
+    a.ack(a_first.seq);
+    wait_until("A's first file unlinked", || (!a1.exists()).then_some(()));
+    assert!(
+        a2.is_file(),
+        "an ACK above the sealed prefix released media"
+    );
+    assert!(b1.is_file(), "A's ACK released B's file");
+    // Closing A releases the rest of its prefix and nothing of B's.
+    drop(a);
+    wait_until("A's prefix unlinked at removal", || {
+        (!a2.exists()).then_some(())
+    });
+    assert!(b.roundtrip().is_empty());
+    assert!(b1.is_file());
+    b.ack(b_first.seq);
+    wait_until("B's file unlinked", || (!b1.exists()).then_some(()));
+    replace(&fixture, &mut text, 3);
+}
+
+#[test]
+fn native_media_disconnect_races() {
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    // (1) A frame in flight at peer loss: staged, never read, then the stream drops.
+    let (mut first, opening) = SharedViewer::attach(&fixture);
+    assert!(opening.shared.is_empty());
+    first.ack(opening.seq);
+    replace(&fixture, &mut text, 1);
+    let in_flight = wait_until("staged file for the unread frame", || {
+        staged(&fixture).into_keys().next()
+    });
+    drop(first);
+    wait_until("in-flight file unlinked", || {
+        (!in_flight.exists()).then_some(())
+    });
+    let (mut second, opening) = SharedViewer::attach(&fixture);
+    let [own] = opening.shared.as_slice() else {
+        panic!("expected the second viewer's own file")
+    };
+    let own = own.clone();
+    assert_eq!(
+        staged(&fixture).into_keys().collect::<Vec<_>>(),
+        std::slice::from_ref(&own)
+    );
+    // (2) An ACK racing removal: written in the same burst as the shutdown.
+    second.ack(opening.seq);
+    second.stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(second);
+    wait_until("acknowledged file unlinked", || {
+        (!own.exists()).then_some(())
+    });
+    // (4) A render after removal stages nothing.
+    replace(&fixture, &mut text, 2);
+    assert!(staged(&fixture).is_empty());
+    // (3) ACKs racing a seal are covered by native_media_reattach_keeps_leases_apart.
+    // Each file was removed exactly once: a second unlink would log an error.
+    assert!(!fixture.log_text().contains("remove staged native media"));
 }
