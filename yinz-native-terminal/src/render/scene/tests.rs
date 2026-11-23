@@ -1263,7 +1263,10 @@ fn see_through_padding_lets_a_theme_default_edge_through() {
         });
         painter.styled(0, 1, "b", |cell| cell.bg = theme.pack());
     });
-    let paints = Paints::default();
+    let paints = Paints {
+        background: [30, 20, 40],
+        ..Paints::default()
+    };
     let metrics = cache().metrics();
     let see_through = Transparency {
         opacity: 0.5,
@@ -1276,7 +1279,15 @@ fn see_through_padding_lets_a_theme_default_edge_through() {
         Some([30, 20, 40]),
         "the same color chosen by a program extends solid"
     );
-    let opaque = padding_rects(&state, &paints, metrics, Transparency::OPAQUE, margins());
+    // A pane theme the window's `theme` does not name keeps its own color.
+    let other = Paints::default();
+    let rects = padding_rects(&state, &other, metrics, see_through, margins());
+    assert_eq!(
+        painted(&rects, -1, 0),
+        Some([30, 20, 40]),
+        "a theme default edge unlike the window's clear extends solid"
+    );
+    let opaque = padding_rects(&state, &other, metrics, Transparency::OPAQUE, margins());
     assert_eq!(
         painted(&opaque, -1, 0),
         Some([30, 20, 40]),

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use yinz_types::structured_render::{
-    GeometryRecord, WireCell, ATTR_BOLD, ATTR_DIM, ATTR_GROUP_CONTINUE, ATTR_HIDDEN, ATTR_ITALIC,
-    ATTR_REVERSE, LINK_NONE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
+    GeometryRecord, WireCell, WireColor, ATTR_BOLD, ATTR_DIM, ATTR_GROUP_CONTINUE, ATTR_HIDDEN,
+    ATTR_ITALIC, ATTR_REVERSE, LINK_NONE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
 };
 
 use crate::emulation::color::{self, Contrast, Paints, Srgb};
@@ -859,7 +859,7 @@ pub(crate) fn build_row_with_underlines(
         let explicit_background = inverted_by_cursor
             || selected
             || cell.has(ATTR_REVERSE)
-            || !cell.has_default_background();
+            || !shows_window_background(cell, paints);
         if context.transparent_background && paint.hidden && !explicit_background {
             paint.draw_glyph = false;
         }
@@ -1013,6 +1013,19 @@ pub(crate) fn build_row_with_underlines(
             );
         }
     }
+}
+
+/// Whether a cell's background stands for the window's own default background,
+/// which a see-through clear replaces: [`WireColor::Default`], or a session theme's
+/// default background ([`WireCell::has_default_background`]) in the same color as
+/// the window's default. A theme background in another color, such as a
+/// `theme_dark`/`theme_light` variant or a theme preview that the window's `theme`
+/// does not name, stays solid so it keeps the color the session paints rather than
+/// showing the window's clear. Reverse video is not considered.
+fn shows_window_background(cell: WireCell, paints: &Paints) -> bool {
+    cell.has_default_background()
+        && (WireColor::unpack(cell.bg) == WireColor::Default
+            || paints.background(cell.bg) == paints.background)
 }
 
 fn paint_of(

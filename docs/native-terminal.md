@@ -174,7 +174,7 @@ session.
 `opacity_mode` chooses what `opacity` applies to, with the pinned source's
 spelling and semantics. `"background"` (the default when omitted) lets only the
 default background show through, including a session theme's terminal
-background, and keeps text, coloured cells, the cursor and images solid.
+background when it matches the window's own `theme`, and keeps text, coloured cells, the cursor and images solid.
 `"everything"` fades the whole window evenly. The value is one plain string
 matched ASCII-case-insensitively (`"Everything"` is accepted);
 serialization always writes lowercase. Other strings such as `"sideways"`,
@@ -184,7 +184,7 @@ point at the node. With `opacity 1` the mode makes no difference.
 
 | Layer | `"background"` | `"everything"` |
 |---|---|---|
-| Window clear, default-background cells (including a theme's terminal background), default padding | `opacity` | `opacity` |
+| Window clear, default-background cells (including a theme's terminal background in the window's own background colour), default padding | `opacity` | `opacity` |
 | Explicit and reverse-video backgrounds, selection | solid | `opacity` |
 | Text, underlines and other decorations | solid | `opacity` |
 | Cursor | solid | `opacity` |
@@ -199,14 +199,21 @@ look and the desktop shows through evenly. `"background"` instead leaves the
 default background unpainted over a see-through clear. The session switch notice
 is a Yinz addition drawn after the fade, so failure guidance stays readable in
 both modes. A session theme with a `terminal` block (every bundled theme) gives
-panes a concrete default background. Native windows still treat pane cells on
-that theme background as default background: in `"background"` mode they show
-through like the rest of the clear, and the window draws the clear in its own
-background colour, taken from the `theme` in the configuration files it reads
-(normally the session's theme). A background a program sets explicitly, even to
-the theme's colour, stays solid, as does a pane default background set for one
-pane. The built-in `default` theme has no `terminal` block, so its pane cells
-already use the default background. `"everything"` is not affected.
+panes a concrete default background. The window draws its clear in its own
+background colour, taken from the `theme` option in the configuration files it
+reads. When a pane's theme background has that same colour, native windows treat
+pane cells on it as default background: in `"background"` mode they show through
+like the rest of the clear. When the colours differ, those cells stay solid in
+the colour the session paints, so a pane never shows another theme's background
+behind its text. This happens with a `theme_dark`/`theme_light` pair, which
+renders panes in the pinned or hue-selected variant (dark by default) whatever
+`theme` names, while a theme preview is shown, and when `theme` is unset or names
+a theme without a `terminal` block. To let pane backgrounds show through with a
+pair, set `theme` to the variant in use, or use `"everything"`. A background a
+program sets explicitly, even to the theme's colour, stays solid, as does a pane
+default background set for one pane. The built-in `default` theme has no
+`terminal` block, so its pane cells already use the default background.
+`"everything"` is not affected.
 
 Startup uses the configured values. Saved file and drop-in edits reload live:
 a change to `opacity` or `opacity_mode` rebuilds the drawn rows once on the next

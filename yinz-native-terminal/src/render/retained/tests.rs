@@ -373,7 +373,8 @@ fn a_see_through_background_lets_a_theme_default_background_through() {
     use yinz_types::structured_render::{WireColor, ATTR_REVERSE, ATTR_THEME_BACKGROUND};
     let mut cache = cache();
     // A session theme's `terminal` background reaches native windows as a concrete
-    // color marked as the pane default, distinct from the window's own default.
+    // color marked as the pane default. The window's own default comes from its
+    // configured `theme`, normally the same theme.
     let theme = WireColor::Rgb(30, 20, 40).pack();
     let state = Painter::state(4, 8, |painter| {
         painter.styled(0, 0, "plain", |cell| {
@@ -386,18 +387,27 @@ fn a_see_through_background_lets_a_theme_default_background_through() {
             cell.attrs |= ATTR_THEME_BACKGROUND | ATTR_REVERSE;
         });
     });
-
-    let mut opaque = RetainedScene::new();
-    refreshed(&mut opaque, &state, &mut cache);
-    assert_eq!(
-        rects_in_row(&opaque, 0),
-        5,
-        "a solid window keeps painting the theme background"
-    );
+    let window = Paints {
+        background: [30, 20, 40],
+        ..Paints::default()
+    };
+    let refreshed_in = |scene: &mut RetainedScene, paints: &Paints, cache: &mut GlyphCache| {
+        scene.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
 
     let mut clear = RetainedScene::new();
     clear.set_transparency(see_through());
-    refreshed(&mut clear, &state, &mut cache);
+    refreshed_in(&mut clear, &window, &mut cache);
     assert_eq!(
         rects_in_row(&clear, 0),
         0,
@@ -410,6 +420,31 @@ fn a_see_through_background_lets_a_theme_default_background_through() {
         "the same color chosen by a program stays solid"
     );
     assert_eq!(rects_in_row(&clear, 2), 1, "reverse video stays solid");
+
+    // A pane theme the window's `theme` does not name (a `theme_dark`/`theme_light`
+    // variant or a preview) keeps its own color instead of showing the window's.
+    let mut opaque = RetainedScene::new();
+    refreshed(&mut opaque, &state, &mut cache);
+    assert_eq!(
+        rects_in_row(&opaque, 0),
+        5,
+        "a solid window keeps painting the theme background"
+    );
+    let mut other = RetainedScene::new();
+    other.set_transparency(see_through());
+    refreshed(&mut other, &state, &mut cache);
+    assert_eq!(
+        rects_in_row(&other, 0),
+        5,
+        "a theme background unlike the window's clear stays solid"
+    );
+    assert!(
+        other.rows()[0]
+            .rects
+            .iter()
+            .all(|rect| rect.color == [30, 20, 40]),
+        "in the session theme's color"
+    );
 
     let mut faded = RetainedScene::new();
     faded.set_transparency(Transparency {

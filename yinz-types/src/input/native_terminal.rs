@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum OpacityMode {
     /// Only the default background (and default padding) shows through, including
-    /// a session theme's terminal background; text, coloured cells, the cursor and
-    /// images stay solid.
+    /// a session theme's terminal background in the window's own background
+    /// colour; text, coloured cells, the cursor and images stay solid.
     #[default]
     Background,
     /// The whole window fades evenly.
