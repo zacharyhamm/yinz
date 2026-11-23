@@ -52,6 +52,7 @@ terminal {
     padding_left 6.0
     padding_balance false
     padding_color "background"
+    minimum_contrast 1.0
     opacity 1.0
     blur false
     cursor_style "block"
@@ -129,6 +130,32 @@ and repeated keys are errors that name both valid values (or the duplicate) and
 point at the node. Startup reads it from the configuration. Saved file and
 drop-in edits reload live and only redraw, without rebuilding fonts, rows or
 geometry; a later layer wins and omission inherits.
+
+`minimum_contrast` sets the lowest contrast ratio allowed between displayed text
+and its background. It takes one plain number (integer or decimal) from 1 to 21;
+the default when omitted is 1, which turns it off and draws colours exactly as
+before. The ratio is the WCAG relative-luminance contrast ratio, so 4.5 and 7 are
+the usual readability levels and 21 means black on white. When a cell's text
+colour falls below the minimum against its background, the text colour is blended
+toward white or toward black in 255 steps, and whichever reaches the minimum with
+the smaller move wins. When neither can reach it, the text is drawn in whichever
+of white or black contrasts more. This is the pinned source's algorithm and range.
+The adjustment applies per cell to the colour actually displayed: named, indexed,
+truecolor and default foregrounds, after dim (faint) and reverse video are applied,
+against the cell's effective background. It also applies to explicit underline
+colours, to text under a block cursor (contrasted against the cursor colour) and
+to the cursor trail. Selected text swaps the already contrasted text and
+background colours; the ratio is symmetric, so selected text keeps the minimum.
+Concealed (hidden) text and blinked-out text are not made visible. Only the
+displayed colour changes: theme colours, the palette and stored cell colours are
+never modified, so lowering the value restores the original colours exactly.
+Errors name the setting and its range and point at the node: values outside 1..21
+such as `0.9` or `22`, non-finite numbers, strings, booleans, a bare node, type
+annotations, properties, children, extra arguments and repeated keys. Startup uses
+the configured value. Saved file and drop-in edits reload live and take effect on
+the next frame; a change only redraws, without rebuilding fonts or geometry, and
+content and selection are kept. A palette or theme reload re-adjusts text against
+the new colours. A later layer wins and omission inherits.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero
 or more string arguments:
@@ -291,8 +318,8 @@ running is discovered during the normal polling/debounce cycle.
 Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
 `underline_thickness`, `ligatures`, `font_ligatures`, `font_features`, effective
 padding (`padding`, `padding_top`, `padding_right`, `padding_bottom`,
-`padding_left`), `padding_balance` or effective `padding_color` with `action
-reconfigure` requires
+`padding_left`), `padding_balance`, effective `padding_color` or effective
+`minimum_contrast` with `action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
@@ -301,7 +328,7 @@ when the effective value is already the default. For `font_features`, omission a
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
 counts as a change. Padding compares the resolved sides and balance, so
 `padding_left 4` with a current `padding 4` is equivalent; `padding_color
-"background"` equals omission. The refusal names the
+"background"` equals omission, and so does `minimum_contrast 1`. The refusal names the
 key that caused each change: `padding` when the shorthand changed a side, or the
 side's own key. Before this change, unsaved padding was accepted but never
 reached native windows, which read padding only from files. An invalid fragment, with or without `--write`, is refused with

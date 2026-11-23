@@ -1,6 +1,6 @@
 use super::*;
 use crate::kdl_parsing_error;
-use yinz_types::input::native_terminal::TerminalConfig;
+use yinz_types::input::native_terminal::{TerminalConfig, MAX_CONTRAST, MIN_CONTRAST};
 
 pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
     if !block.entries().is_empty() {
@@ -84,6 +84,31 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 "terminal padding_balance must be a plain boolean true or false".to_owned(),
                 node
             ));
+        }
+        if name == "minimum_contrast" {
+            // Range as in the pinned source's minimum_contrast_from_kdl,
+            // compared in f64; a valid value is stored by the generic path,
+            // which also reports a repeated node.
+            let ratio =
+                (plain_positional && node.ty().is_none() && node.entries()[0].ty().is_none())
+                    .then(|| {
+                        let value = node.entries()[0].value();
+                        value
+                            .as_i64()
+                            .map(|value| value as f64)
+                            .or_else(|| value.as_f64())
+                    })
+                    .flatten();
+            if !ratio.is_some_and(|ratio| {
+                ratio.is_finite()
+                    && (f64::from(MIN_CONTRAST)..=f64::from(MAX_CONTRAST)).contains(&ratio)
+            }) {
+                return Err(kdl_parsing_error!(
+                    "terminal minimum_contrast must be a plain number from 1 to 21 (1 turns it off)"
+                        .to_owned(),
+                    node
+                ));
+            }
         }
         if name == "padding_color" {
             // Matched ASCII-case-insensitively like the pinned source; stored

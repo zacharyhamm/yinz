@@ -1125,3 +1125,41 @@ fn native_startup_dimensions_overlay_contract() {
     assert_eq!(loaded.terminal.initial_columns, Some(120));
     assert_eq!(loaded.terminal.initial_rows, Some(35));
 }
+
+#[test]
+fn native_minimum_contrast_drop_ins_override_inherit_and_reject_invalid_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl("terminal { minimum_contrast 3; padding 2; }", None).unwrap();
+    for (name, text) in [
+        ("30-invalid.kdl", "terminal { minimum_contrast 22; }"),
+        ("20-other.kdl", "terminal { opacity 0.5; }"),
+        ("10-contrast.kdl", "terminal { minimum_contrast 4.5; }"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let loaded = base.clone().with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.minimum_contrast, Some(4.5));
+    assert_eq!(loaded.terminal.padding, Some(2.0));
+    assert_eq!(loaded.terminal.opacity, Some(0.5));
+
+    let path =
+        Config::write_managed_fragment(dir.path(), "terminal { minimum_contrast 7; }").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        Config::from_kdl(&before, None)
+            .unwrap()
+            .terminal
+            .minimum_contrast,
+        Some(7.0)
+    );
+    for fragment in [
+        "terminal { minimum_contrast 0.5; }",
+        "terminal { minimum_contrast 4.5; minimum_contrast 5; }",
+    ] {
+        assert!(Config::write_managed_fragment(dir.path(), fragment).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+    let loaded = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.minimum_contrast, Some(7.0));
+    assert_eq!(loaded.terminal.padding, Some(2.0));
+}

@@ -152,6 +152,7 @@ fn documented_native_terminal_example_loads() {
         config.terminal.padding_color,
         Some(yinz_types::input::native_terminal::PaddingColor::Background)
     );
+    assert_eq!(config.terminal.minimum_contrast, Some(1.0));
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -953,4 +954,92 @@ fn padding_color_validates_roundtrips_and_overlays() {
         panic!("expected KdlError");
     };
     assert!(input[error.offset.unwrap()..].starts_with("padding_color \"background\""));
+}
+
+#[test]
+fn minimum_contrast_validates_roundtrips_and_overlays() {
+    let unset = Config::from_kdl("terminal { padding 2; }", None).unwrap();
+    assert_eq!(unset.terminal.minimum_contrast, None);
+    assert_eq!(unset.terminal.minimum_contrast_ratio(), 1.0);
+    assert!(!unset.to_string(false).unwrap().contains("minimum_contrast"));
+    for (literal, ratio) in [
+        ("1", 1.0),
+        ("1.0", 1.0),
+        ("1.5", 1.5),
+        ("3.1", 3.1),
+        ("4.5", 4.5),
+        ("7", 7.0),
+        ("21", 21.0),
+        ("21.0", 21.0),
+    ] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ minimum_contrast {literal}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.minimum_contrast, Some(ratio), "{literal}");
+        let text = config.to_string(false).unwrap();
+        assert!(text.contains("minimum_contrast "), "{literal}: {text}");
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal, "{literal}: {text}");
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.minimum_contrast, Some(ratio));
+        let overridden =
+            Config::from_kdl("terminal { minimum_contrast 7; }", Some(inherited)).unwrap();
+        assert_eq!(overridden.terminal.minimum_contrast, Some(7.0));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+        assert_eq!(overridden.terminal.opacity, Some(0.5));
+    }
+    // Exactly representable values serialize as written.
+    let text = Config::from_kdl("terminal { minimum_contrast 4.5; }", None)
+        .unwrap()
+        .to_string(false)
+        .unwrap();
+    assert!(text.contains("minimum_contrast 4.5"), "{text}");
+    let message = "terminal minimum_contrast must be a plain number from 1 to 21 (1 turns it off)";
+    for (bad, expected) in [
+        ("minimum_contrast 0.9", message),
+        ("minimum_contrast 0", message),
+        ("minimum_contrast -3", message),
+        ("minimum_contrast 22", message),
+        ("minimum_contrast 21.5", message),
+        ("minimum_contrast 1e400", message),
+        ("minimum_contrast \"high\"", message),
+        ("minimum_contrast \"4.5\"", message),
+        ("minimum_contrast true", message),
+        ("minimum_contrast null", message),
+        ("minimum_contrast", message),
+        ("minimum_contrast (t)4.5", message),
+        ("(t)minimum_contrast 4.5", message),
+        ("minimum_contrast value=4.5", message),
+        ("minimum_contrast 4.5 7", message),
+        ("minimum_contrast 4.5 {}", message),
+        (
+            "minimum_contrast 4.5; minimum_contrast 4.5",
+            "duplicate terminal setting minimum_contrast",
+        ),
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert_eq!(error.error_message, expected, "{input}");
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let span = &input[offset..offset + len];
+        assert!(
+            span.contains("minimum_contrast") && !span.starts_with("terminal"),
+            "{input}: span {span:?}"
+        );
+    }
+    // The duplicate is reported at the second node.
+    let input = "terminal { minimum_contrast 4.5; minimum_contrast 7; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("expected KdlError");
+    };
+    assert!(input[error.offset.unwrap()..].starts_with("minimum_contrast 7"));
+    assert!(
+        Config::from_kdl("terminal { min_contrast 4.5; }", None).is_err(),
+        "unknown spellings stay rejected"
+    );
 }

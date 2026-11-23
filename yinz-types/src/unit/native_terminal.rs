@@ -400,3 +400,47 @@ fn padding_color_defaults_to_background_and_serializes_lowercase() {
         );
     }
 }
+
+#[test]
+fn minimum_contrast_defaults_to_off_and_roundtrips() {
+    assert_eq!(TerminalConfig::default().minimum_contrast, None);
+    assert_eq!(TerminalConfig::default().minimum_contrast_ratio(), 1.0);
+    assert_eq!((MIN_CONTRAST, MAX_CONTRAST), (1.0, 21.0));
+    for text in ["{}", r#"{"minimum_contrast":null}"#] {
+        assert_eq!(
+            serde_json::from_str::<TerminalConfig>(text)
+                .unwrap()
+                .minimum_contrast,
+            None
+        );
+    }
+    for (value, ratio) in [
+        (serde_json::json!(4.5), 4.5),
+        (serde_json::json!(21), 21.0),
+        (serde_json::json!(1), 1.0),
+    ] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"minimum_contrast": value})).unwrap();
+        assert_eq!(config.minimum_contrast, Some(ratio));
+        assert_eq!(config.minimum_contrast_ratio(), ratio);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["minimum_contrast"], ratio);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(serialized).unwrap(),
+            config
+        );
+    }
+    for bad in ["true", "\"4.5\"", "[]", "{}"] {
+        assert!(
+            serde_json::from_str::<TerminalConfig>(&format!("{{\"minimum_contrast\":{bad}}}"))
+                .is_err(),
+            "{bad}"
+        );
+    }
+    for spelling in ["min_contrast", "minimum-contrast", "contrast"] {
+        assert!(
+            serde_json::from_value::<TerminalConfig>(serde_json::json!({spelling: 4.5})).is_err(),
+            "{spelling}"
+        );
+    }
+}

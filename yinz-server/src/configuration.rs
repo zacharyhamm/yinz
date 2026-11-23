@@ -38,6 +38,10 @@ fn validate_unsaved_native_settings(
         &current.terminal,
         &requested.terminal,
     ));
+    // Effective values, so omission and an explicit 1 (off) are equivalent.
+    if current.terminal.minimum_contrast_ratio() != requested.terminal.minimum_contrast_ratio() {
+        changed.push("minimum_contrast");
+    }
     if !changed.is_empty() {
         return Err(anyhow!(
             "changing terminal {} requires a saved configuration: \

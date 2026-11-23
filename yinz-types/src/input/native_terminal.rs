@@ -76,6 +76,10 @@ pub struct TerminalConfig {
     pub padding_balance: Option<bool>,
     /// Padding paint mode; unset means [`PaddingColor::Background`].
     pub padding_color: Option<PaddingColor>,
+    /// Minimum WCAG contrast ratio between displayed text and its background;
+    /// KDL accepts [`MIN_CONTRAST`]`..=`[`MAX_CONTRAST`]. Unset means 1.0 (off),
+    /// see [`TerminalConfig::minimum_contrast_ratio`].
+    pub minimum_contrast: Option<f32>,
     pub opacity: Option<f32>,
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
@@ -88,6 +92,11 @@ pub struct TerminalConfig {
     pub open_links: Option<bool>,
     pub middle_click_paste: Option<bool>,
 }
+
+/// Smallest accepted `minimum_contrast`; it leaves every colour unchanged.
+pub const MIN_CONTRAST: f32 = 1.0;
+/// Largest accepted `minimum_contrast`: black on white.
+pub const MAX_CONTRAST: f32 = 21.0;
 
 /// Logical padding per side after precedence: side override, then the
 /// `padding` shorthand, then 0.
@@ -119,6 +128,11 @@ impl TerminalConfig {
 
     pub fn padding_color_mode(&self) -> PaddingColor {
         self.padding_color.unwrap_or_default()
+    }
+
+    /// The effective minimum contrast ratio; unset means [`MIN_CONTRAST`] (off).
+    pub fn minimum_contrast_ratio(&self) -> f32 {
+        self.minimum_contrast.unwrap_or(MIN_CONTRAST)
     }
 }
 

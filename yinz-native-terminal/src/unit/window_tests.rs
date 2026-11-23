@@ -5310,3 +5310,239 @@ fn padding_color_reload_keeps_rows_fonts_and_geometry() {
     refresh(&mut retained, &mut cache, &paints);
     assert!(retained.rebuilt_everything());
 }
+
+fn minimum_contrast_fixture() -> (TerminalState, GlyphCache) {
+    use yinz_types::structured_render::WireColor;
+    let settings = embedded_settings();
+    let active = effective_font_options(&settings, 1.0, 1.0);
+    let cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let state = crate::testing::painter::Painter::state(2, 8, |painter| {
+        painter.styled(0, 0, "Ag", |cell| {
+            cell.fg = WireColor::Rgb(40, 40, 40).pack();
+            cell.bg = WireColor::Rgb(20, 20, 20).pack();
+        });
+        // Default colours, resolved through Paints.
+        painter.text(1, 0, "Ag");
+    });
+    (state, cache)
+}
+
+fn refresh_minimum_contrast_scene(
+    retained: &mut RetainedScene,
+    cache: &mut GlyphCache,
+    state: &TerminalState,
+    paints: &Paints,
+) {
+    retained.refresh(
+        SceneInputs {
+            state,
+            phase: BlinkPhase::On,
+            paints,
+            cursor: CursorOptions::default(),
+            hovered_link: None,
+            preedit: None,
+        },
+        cache,
+    );
+}
+
+#[test]
+fn minimum_contrast_reload_redraws_without_fonts_or_geometry() {
+    use crate::emulation::color::contrast_ratio;
+
+    let (state, mut cache) = minimum_contrast_fixture();
+    let mut settings = embedded_settings();
+    let active = effective_font_options(&settings, 1.0, 1.0);
+    let mut paints = Paints::default();
+    let mut retained = RetainedScene::new();
+    refresh_minimum_contrast_scene(&mut retained, &mut cache, &state, &paints);
+    assert!(retained.rebuilt_everything());
+    let generation = cache.generation();
+    let original = retained.flatten();
+    assert!(original
+        .glyphs
+        .iter()
+        .any(|glyph| glyph.color == [40, 40, 40]));
+    let geometry =
+        Geometry::calculate(400, 200, padding_layout(&settings, 1.0), cache.metrics()).unwrap();
+    let reload = |settings: &mut TerminalConfig,
+                  paints: &mut Paints,
+                  retained: &mut RetainedScene,
+                  cache: &mut GlyphCache,
+                  minimum: Option<f32>| {
+        let next = TerminalConfig {
+            minimum_contrast: minimum,
+            ..settings.clone()
+        };
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        assert!(matches!(
+            prepare_fonts(&active, &requested).unwrap(),
+            FontUpdate::Unchanged
+        ));
+        let next_paints = *paints;
+        apply_settings(settings, paints, retained, next.clone(), next_paints);
+        refresh_minimum_contrast_scene(retained, cache, &state, paints);
+        assert_eq!(*settings, next);
+        assert_eq!(*paints, next_paints, "stored colours never change");
+        assert_eq!(cache.generation(), generation, "{minimum:?}");
+        assert!(
+            Geometry::calculate(400, 200, padding_layout(settings, 1.0), cache.metrics())
+                .unwrap()
+                .messages(Some(geometry))
+                .is_empty(),
+            "{minimum:?}"
+        );
+    };
+
+    reload(
+        &mut settings,
+        &mut paints,
+        &mut retained,
+        &mut cache,
+        Some(4.5),
+    );
+    assert!(
+        retained.rebuilt_everything(),
+        "a changed minimum recolours rows"
+    );
+    assert_eq!(retained.contrast().minimum(), 4.5);
+    let lifted = retained.flatten();
+    let background = lifted
+        .rects
+        .iter()
+        .find(|rect| rect.color == [20, 20, 20])
+        .expect("the explicit background stays put");
+    let dark: Vec<_> = lifted
+        .glyphs
+        .iter()
+        .filter(|glyph| glyph.y < background.y + background.height as i32)
+        .collect();
+    assert!(!dark.is_empty());
+    for glyph in dark {
+        assert!(
+            contrast_ratio(glyph.color, [20, 20, 20]) >= 4.5,
+            "{:?}",
+            glyph.color
+        );
+    }
+    assert_eq!(lifted.rects, original.rects, "backgrounds never move");
+
+    // An equal value is not a change.
+    reload(
+        &mut settings,
+        &mut paints,
+        &mut retained,
+        &mut cache,
+        Some(4.5),
+    );
+    assert!(!retained.rebuilt_everything());
+    assert_eq!(retained.flatten(), lifted);
+
+    // Returning to unset (or explicit 1) restores the original colours exactly.
+    for minimum in [None, Some(1.0)] {
+        reload(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            &mut cache,
+            Some(7.0),
+        );
+        reload(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            &mut cache,
+            minimum,
+        );
+        assert!(retained.rebuilt_everything(), "{minimum:?}");
+        assert_eq!(retained.contrast().minimum(), 1.0);
+        assert_eq!(retained.flatten(), original, "{minimum:?}");
+    }
+}
+
+#[test]
+fn minimum_contrast_readjusts_after_a_palette_reload() {
+    use crate::emulation::color::contrast_ratio;
+
+    let (state, mut cache) = minimum_contrast_fixture();
+    let mut settings = TerminalConfig {
+        minimum_contrast: Some(4.5),
+        ..embedded_settings()
+    };
+    let mut paints = Paints::default();
+    let mut retained = RetainedScene::new();
+    retained.set_contrast(settings.minimum_contrast_ratio());
+    refresh_minimum_contrast_scene(&mut retained, &mut cache, &state, &paints);
+    let default_row_top = cache.metrics().height as i32;
+    let default_glyphs = |retained: &RetainedScene| -> Vec<[u8; 3]> {
+        retained
+            .flatten()
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.y >= default_row_top)
+            .map(|glyph| glyph.color)
+            .collect()
+    };
+    // The default palette is already readable, so default text is unchanged.
+    assert!(default_glyphs(&retained)
+        .iter()
+        .all(|color| *color == paints.foreground));
+
+    let next_paints = Paints {
+        foreground: [60, 60, 60],
+        background: [50, 50, 50],
+        ..paints
+    };
+    let next = settings.clone();
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    refresh_minimum_contrast_scene(&mut retained, &mut cache, &state, &paints);
+    assert!(retained.rebuilt_everything());
+    assert_eq!(paints, next_paints, "the palette is stored unchanged");
+    let glyphs = default_glyphs(&retained);
+    assert!(!glyphs.is_empty());
+    for color in glyphs {
+        assert_ne!(color, [60, 60, 60]);
+        assert!(
+            contrast_ratio(color, [50, 50, 50]) >= 4.5,
+            "{color:?} against the new background"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn minimum_contrast_reaches_the_production_draw_path() {
+    let mut app = switch_app(CliArgs::default());
+    // Without a configured value the scene stays off.
+    app.draw().unwrap();
+    assert_eq!(app.retained.contrast().minimum(), 1.0);
+
+    app.settings.minimum_contrast = Some(4.5);
+    app.draw().unwrap();
+    assert_eq!(app.retained.contrast().minimum(), 4.5);
+
+    // A session switch replaces the scene; the next frame restores the value.
+    app.retained = RetainedScene::new();
+    app.draw().unwrap();
+    assert_eq!(app.retained.contrast().minimum(), 4.5);
+}
+
+#[test]
+fn minimum_contrast_is_applied_from_startup_configuration() {
+    let mut config = Config::default();
+    config.terminal.system_fonts = Some(false);
+    config.terminal.minimum_contrast = Some(7.0);
+    let app = App::new(
+        TerminalArgs {
+            rows: Some(2),
+            cols: Some(18),
+            ..Default::default()
+        },
+        CliArgs::default(),
+        (config, Options::default()),
+        Arc::new(|_| true),
+        Clipboard::in_memory,
+    )
+    .unwrap();
+    assert_eq!(app.retained.contrast().minimum(), 7.0);
+}

@@ -2316,6 +2316,22 @@ mod padding_reconfigure {
                     "padding 2; padding_color \"extend\";",
                     vec!["padding", "padding_color"],
                 ),
+                ("", "minimum_contrast 4.5;", vec!["minimum_contrast"]),
+                (
+                    "minimum_contrast 4.5;",
+                    "minimum_contrast 7;",
+                    vec!["minimum_contrast"],
+                ),
+                (
+                    "minimum_contrast 4.5;",
+                    "minimum_contrast 1;",
+                    vec!["minimum_contrast"],
+                ),
+                (
+                    "",
+                    "padding 2; minimum_contrast 4.5;",
+                    vec!["padding", "minimum_contrast"],
+                ),
             ] {
                 let fixture = with_current(&clients, current);
                 let before = fixture.snapshot();
@@ -2353,6 +2369,10 @@ mod padding_reconfigure {
                 ("padding_color \"extend\";", "padding_color \"extend\";"),
                 ("padding_color \"extend\";", "padding_color \"EXTEND\";"),
                 ("padding_color \"extend\";", "padding 0;"),
+                ("", "minimum_contrast 1;"),
+                ("", "minimum_contrast 1.0;"),
+                ("minimum_contrast 4.5;", "minimum_contrast 4.5;"),
+                ("minimum_contrast 4.5;", "padding 0;"),
             ] {
                 for all in [true, false] {
                     let fixture = with_current(&clients, current);
@@ -2388,8 +2408,8 @@ mod padding_reconfigure {
     fn written_padding_changes_save_instead_of_unsaved_refusal() {
         for all in [true, false] {
             let fixture = with_current(&[CLIENT], "padding 4;");
-            let fragment =
-                "terminal { padding_left 6; padding_balance true; padding_color \"extend\"; }";
+            let fragment = "terminal { padding_left 6; padding_balance true; \
+                            padding_color \"extend\"; minimum_contrast 4.5; }";
             if all {
                 assert_eq!(fixture.all(fragment, true).exit_status, None);
             } else {
@@ -2404,6 +2424,7 @@ mod padding_reconfigure {
                 saved.terminal.padding_color,
                 Some(yinz_types::input::native_terminal::PaddingColor::Extend)
             );
+            assert_eq!(saved.terminal.minimum_contrast, Some(4.5));
             assert_eq!(
                 std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
                 "// unchanged main\n"

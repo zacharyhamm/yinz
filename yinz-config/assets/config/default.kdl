@@ -761,13 +761,20 @@ background_opacity "85%"
 //
 // styled_underlines false
 
-// Native terminal underline adjustments use whole logical pixels from -64 through 64.
-// Zero uses the font default. Positive offset moves the underline down, negative moves it up.
-// Positive thickness thickens the stroke, negative thins it.
+// Native terminal settings. A config file holds one terminal block, so
+// uncomment the settings you want inside this single block.
 //
 // terminal {
+//     // Underline adjustments use whole logical pixels from -64 through 64.
+//     // Zero uses the font default. Positive offset moves the underline down,
+//     // negative moves it up. Positive thickness thickens the stroke, negative
+//     // thins it.
 //     underline_offset -2
 //     underline_thickness 1
+//
+//     // The lowest allowed contrast ratio between text and its background, from
+//     // 1.0 (off) to 21.0; text colours are adjusted when below it.
+//     minimum_contrast 1.0
 // }
 
 // Enable or disable writing of session metadata to disk (if disabled, other sessions might not know

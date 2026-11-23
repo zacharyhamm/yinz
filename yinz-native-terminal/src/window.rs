@@ -580,6 +580,12 @@ pub(crate) fn apply_settings(
     // Padding is recomputed every frame; a mode change only needs the redraw
     // that every reload schedules.
     comparison.padding_color = next_settings.padding_color;
+    // A contrast change marks everything inside set_contrast (every glyph colour
+    // may move) without rebuilding fonts or geometry. Setting it here keeps the
+    // reload-time cursor trail observation consistent before the next draw,
+    // which also syncs it.
+    comparison.minimum_contrast = next_settings.minimum_contrast;
+    retained.set_contrast(next_settings.minimum_contrast_ratio());
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
@@ -1291,6 +1297,8 @@ impl App {
         let paints = paints_for(&config, &options);
         let opening_size = graphical_opening_size(&args);
         let startup_mode = startup_mode(&args, &config.terminal);
+        let mut retained = RetainedScene::new();
+        retained.set_contrast(config.terminal.minimum_contrast_ratio());
         Ok(Self {
             surfaces: None,
             wake_reader,
@@ -1305,7 +1313,7 @@ impl App {
             endpoint: Default::default(),
             connection_geometry: ConnectionGeometry::new(opening_size, now),
             last_measured_geometry: None,
-            retained: RetainedScene::new(),
+            retained,
             sender: None,
             messages: None,
             connection_id: 0,
@@ -2129,6 +2137,8 @@ impl App {
         }
         self.state = first.state;
         self.retained = RetainedScene::new();
+        self.retained
+            .set_contrast(self.settings.minimum_contrast_ratio());
         self.cursor_trail.reset();
         if let Some(surfaces) = &mut self.surfaces {
             surfaces.renderer.clear_images();
@@ -2176,6 +2186,10 @@ impl App {
         let preedit = self.composition.shown();
         self.retained.set_selection(self.selection.range());
         self.retained.set_transparency(self.transparency());
+        // Synced every frame (pinned source draw.rs) because a fresh
+        // RetainedScene, at startup or after a session switch, starts off.
+        self.retained
+            .set_contrast(self.settings.minimum_contrast_ratio());
         let cursor = self.cursor_options();
         let size = self.surfaces.as_ref().map(Surfaces::size);
         let Some(size) = refresh_drawable(

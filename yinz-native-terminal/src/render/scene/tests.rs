@@ -168,22 +168,31 @@ fn a_focused_cursor_is_drawn_as_before() {
 }
 
 fn contrasted(minimum: f32, paint: impl FnOnce(&mut Painter)) -> Scene {
+    contrasted_with(minimum, &Paints::default(), None, paint)
+}
+
+fn contrasted_with(
+    minimum: f32,
+    paints: &Paints,
+    selection: Option<&crate::emulation::selection::Selection>,
+    paint: impl FnOnce(&mut Painter),
+) -> Scene {
     let state = Painter::state(1, 4, paint);
     let mut cache = cache();
     let contrast = Contrast::new(minimum);
-    let paints = Paints::default();
     let context = RowContext::new(
         SceneInputs {
             state: &state,
             phase: BlinkPhase::On,
-            paints: &paints,
+            paints,
             cursor: CursorOptions::default(),
             hovered_link: None,
             preedit: None,
         },
         &cache,
     )
-    .with_contrast(&contrast);
+    .with_contrast(&contrast)
+    .with_selection(selection);
     let mut scratch = RowScratch::default();
     let mut row = RowScene::default();
     build_row(&context, &mut cache, 0, &mut scratch, &mut row);
@@ -220,6 +229,88 @@ fn low_contrast_text_is_lifted_to_the_minimum() {
         [20, 20, 20],
         "the background must not move"
     );
+}
+
+#[test]
+fn indexed_and_named_foregrounds_are_contrasted_after_palette_resolution() {
+    let mut ansi = color::ANSI_16;
+    ansi[4] = [25, 25, 25];
+    let paints = Paints {
+        background: [20, 20, 20],
+        ansi,
+        ..Paints::default()
+    };
+    // 16 resolves to black from the extended palette, not from Paints.
+    for (wire, resolved) in [
+        (WireColor::Indexed(4), [25, 25, 25]),
+        (WireColor::Named(4), [25, 25, 25]),
+        (WireColor::Indexed(16), [0, 0, 0]),
+    ] {
+        let plain = contrasted_with(1.0, &paints, None, |painter| {
+            painter.styled(0, 0, "A", |cell| cell.fg = wire.pack());
+        });
+        assert_eq!(plain.glyphs[0].color, resolved, "{wire:?}");
+        let scene = contrasted_with(4.5, &paints, None, |painter| {
+            painter.styled(0, 0, "A", |cell| cell.fg = wire.pack());
+        });
+        let glyph = scene.glyphs[0].color;
+        assert_eq!(glyph, Contrast::new(4.5).apply(resolved, [20, 20, 20]));
+        assert!(
+            color::contrast_ratio(glyph, [20, 20, 20]) >= 4.5,
+            "{wire:?}: {glyph:?}"
+        );
+    }
+    assert_eq!(paints.ansi[4], [25, 25, 25], "the palette is not modified");
+}
+
+#[test]
+fn reverse_video_is_contrasted_after_the_swap() {
+    let scene = contrasted(4.5, |painter| {
+        painter.styled(0, 0, "A", |cell| {
+            cell.fg = WireColor::Rgb(40, 40, 40).pack();
+            cell.bg = WireColor::Rgb(20, 20, 20).pack();
+            cell.attrs |= ATTR_REVERSE;
+        });
+    });
+    // The former foreground is the background; the former background is the
+    // glyph, lifted against it.
+    assert!(scene.rects.iter().any(|rect| rect.color == [40, 40, 40]));
+    let glyph = scene.glyphs[0].color;
+    assert_eq!(glyph, Contrast::new(4.5).apply([20, 20, 20], [40, 40, 40]));
+    assert!(color::contrast_ratio(glyph, [40, 40, 40]) >= 4.5);
+}
+
+#[test]
+fn dim_is_applied_before_contrast() {
+    let (foreground, background) = ([120, 120, 120], [0, 0, 0]);
+    assert!(color::contrast_ratio(foreground, background) >= 4.5);
+    assert!(color::contrast_ratio(color::dim(foreground), background) < 4.5);
+    let scene = contrasted(4.5, |painter| {
+        painter.styled(0, 0, "A", |cell| {
+            cell.fg = WireColor::Rgb(120, 120, 120).pack();
+            cell.bg = WireColor::Rgb(0, 0, 0).pack();
+            cell.attrs |= ATTR_DIM;
+        });
+    });
+    let glyph = scene.glyphs[0].color;
+    assert_ne!(glyph, color::dim(foreground));
+    assert_eq!(
+        glyph,
+        Contrast::new(4.5).apply(color::dim(foreground), background)
+    );
+    assert!(color::contrast_ratio(glyph, background) >= 4.5);
+}
+
+#[test]
+fn selected_text_swaps_the_contrasted_pair_and_keeps_the_ratio() {
+    use crate::emulation::selection::Selection;
+    let unselected = contrasted(4.5, dark_on_dark);
+    let lifted = unselected.glyphs[0].color;
+    let selection = Selection::at(0, 0).extended_to(0, 1);
+    let selected = contrasted_with(4.5, &Paints::default(), Some(&selection), dark_on_dark);
+    assert_eq!(selected.glyphs[0].color, [20, 20, 20]);
+    assert!(selected.rects.iter().any(|rect| rect.color == lifted));
+    assert!(color::contrast_ratio(lifted, [20, 20, 20]) >= 4.5);
 }
 
 #[test]

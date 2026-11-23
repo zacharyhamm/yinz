@@ -9214,6 +9214,7 @@ Config {
         padding_left: None,
         padding_balance: None,
         padding_color: None,
+        minimum_contrast: None,
         opacity: None,
         blur: None,
         startup_mode: None,
