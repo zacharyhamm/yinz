@@ -220,7 +220,7 @@ function headerHtml(fx, header, live) {
   const identity = live
     ? `<p class="agent-header-identity" data-state="${esc(trim(live.state))}"><span class="agent-header-agent"><span aria-hidden="true" class="agent-header-glyph">${esc(trim(live.glyph))}</span> <strong class="agent-header-provider">${esc(trim(live.provider) || 'agent')}</strong> <span class="agent-header-state">${esc(trim(live.status))}</span>${trim(live.host) ? `<span class="agent-header-host"> @${esc(trim(live.host))}</span>` : ''}</span><span class="agent-header-pane">[${esc(trim(live.pane))}]</span></p>`
     : `<p class="agent-header-identity">${esc(trim(header.status) || 'Agent · —')}</p>`;
-  const sessionId = trim(header.session_id);
+  const sessionId = typeof header.session_id === 'string' ? header.session_id : '';
   const [idLabel, id] = sessionId.startsWith('run ') ? ['Run', sessionId.slice(4)]
     : ['Session', sessionId.startsWith('session ') ? sessionId.slice(8) : sessionId];
   const branch = trim(header.branch) === 'no branch' ? '' : trim(header.branch);

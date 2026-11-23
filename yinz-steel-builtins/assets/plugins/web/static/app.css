@@ -158,9 +158,10 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Agents list */
 .list-main { padding: 4px calc(12px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(12px + var(--safe-left)); max-width: 760px; margin: 0 auto; }
 .agent-section { margin-top: 8px; }
-/* Pinned under the Agents bar; opaque so cards scroll beneath it. */
+/* Pinned under the Agents bar; opaque so cards scroll beneath it. list.js measures
+   the bar; the fallback is its unwrapped height (padding, one touch row, border). */
 .section-title {
-  position: sticky; top: var(--list-header-height, 0px); z-index: 4;
+  position: sticky; top: var(--list-header-height, calc(var(--tap) + 5px + var(--top-chrome))); z-index: 4;
   font-size: 15px; font-weight: 700; color: var(--text); margin: 0 0 2px; padding: 2px 4px;
   background: var(--bg); overflow-wrap: anywhere;
 }

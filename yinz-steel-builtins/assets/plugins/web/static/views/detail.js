@@ -536,7 +536,7 @@ export function DetailView({ env, route }) {
       <section id="detail-information" class="detail-information" aria-label="Agent information" tabindex="0" hidden=${!informationOpen}>
         <div class="information-body">
           ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
-            : !store ? html`<p class="information-empty">No recorded run.</p>` : null}
+            : !store && Array.isArray(listRows) && !listRow?.run ? html`<p class="information-empty">No recorded run.</p>` : null}
           <${UsageColumn} display=${usage && usage.data && usage.data.display}
             stale=${!!usage && ['retrying', 'offline', 'error'].includes(usage.status)}
             error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />

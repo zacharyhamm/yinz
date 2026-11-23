@@ -224,23 +224,31 @@ export function ListView({ env, groupKey, navigation, entry }) {
       return { row, key: group.key, identity: bindings.get(binding) === 1 ? binding : href };
     }));
   const pageWaiting = waitingAgents.filter((agent) => agent.key === pageKey);
-  const page = useRef(null);
   const header = useRef(null);
   const main = useRef(null);
   const launchBanner = useRef(null);
   // The group heading sticks below the Agents bar, whose height follows the safe area and wrapping.
+  // A constructed stylesheet carries the measurements, so the page keeps no inline styles
+  // (CSP style-src 'self'). Border boxes include the bar's safe-area padding. Browsers
+  // without constructed stylesheets (Safari before 16.4) keep app.css's one-row estimate.
   useLayoutEffect(() => {
+    if (!('adoptedStyleSheets' in document)) return undefined;
     const heading = main.current.querySelector(':scope > .agent-section > .section-title');
+    const sheet = new CSSStyleSheet();
+    document.adoptedStyleSheets.push(sheet);
     const measure = () => {
       const bar = header.current.getBoundingClientRect().height;
-      page.current.style.setProperty('--list-header-height', `${bar}px`);
-      page.current.style.setProperty('--list-sticky-height', `${bar + (heading?.getBoundingClientRect().height ?? 0)}px`);
+      const sticky = bar + (heading?.getBoundingClientRect().height ?? 0);
+      sheet.replaceSync(`.list-page { --list-header-height: ${bar}px; --list-sticky-height: ${sticky}px; }`);
     };
     const observer = new ResizeObserver(measure);
-    observer.observe(header.current);
-    if (heading) observer.observe(heading);
+    observer.observe(header.current, { box: 'border-box' });
+    if (heading) observer.observe(heading, { box: 'border-box' });
     measure();
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((candidate) => candidate !== sheet);
+    };
   }, [pageKey, !!selected]);
   useLayoutEffect(() => {
     if (launch) focusAndReveal(launchBanner.current, header.current);
@@ -373,7 +381,7 @@ export function ListView({ env, groupKey, navigation, entry }) {
     </section>`;
   }
 
-  return html`<div class="page list-page" ref=${page}>
+  return html`<div class="page list-page">
     <header class="app-header" id="list-header" ref=${header}>
       <div class="header-row">
         <h1 class="header-title">Agents</h1>

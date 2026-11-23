@@ -469,7 +469,8 @@
   (define (field name) (string-trim (%web-app-string (%async-get header name ""))))
   (define activity (if (hash? live) (string-trim (%web-app-string (%async-get live "activity" ""))) ""))
   (define branch (if (equal? (field "branch") "no branch") "" (field "branch")))
-  (define id (%web-app-header-id (field "session_id")))
+  ;; Strip the prefix before trimming, as the palette does, so "session " has no ID.
+  (define id (%web-app-header-id (%web-app-string (%async-get header "session_id" ""))))
   (define (row class label value)
     (yinz-h "div" (hash "class" class)
       (yinz-h "dt" (hash) label)
