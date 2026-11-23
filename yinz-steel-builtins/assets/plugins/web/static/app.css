@@ -158,7 +158,14 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Agents list */
 .list-main { padding: 4px calc(12px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(12px + var(--safe-left)); max-width: 760px; margin: 0 auto; }
 .agent-section { margin-top: 8px; }
-.section-title { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 4px 4px; overflow-wrap: anywhere; }
+/* Pinned under the Agents bar; opaque so cards scroll beneath it. */
+.section-title {
+  position: sticky; top: var(--list-header-height, 0px); z-index: 4;
+  font-size: 15px; font-weight: 700; color: var(--text); margin: 0 0 2px; padding: 2px 4px;
+  background: var(--bg); overflow-wrap: anywhere;
+}
+/* Keep keyboard focus scrolling clear of the pinned bar and heading. */
+.agent-card, .agent-card :is(a, button, [tabindex]) { scroll-margin-top: calc(var(--list-sticky-height, 0px) + 4px); }
 .section-count { font-weight: 600; color: var(--muted); }
 .section-session { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
 .section-session-spelling { white-space: break-spaces; }

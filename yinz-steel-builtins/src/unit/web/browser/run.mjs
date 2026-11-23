@@ -2013,6 +2013,31 @@ async function groupedAgentList(open) {
   check(hashOf(page) === home, 'rename changed the default group URL');
 }
 
+async function pinnedGroupHeading(open) {
+  const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
+  for (const name of ['Pinned', `Pinned ${'release'.repeat(12)}`]) {
+    const tab_group = { id: 0, name };
+    fx.rows = Array.from({ length: 16 }, (_, i) => row(fx, `live:dev:${40 + i}`, 'idle', { tab_group }));
+    await openList(page);
+    await until(`${name} heading`, async () => await textOf(page, '.section-name') === name);
+    await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' }));
+    const g = await page.evaluate(() => {
+      const bar = document.getElementById('list-header').getBoundingClientRect();
+      const heading = document.querySelector('.section-title');
+      const rect = heading.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        scroll: scrollY, barTop: bar.top, barBottom: bar.bottom, top: rect.top, height: rect.height,
+        covers: heading.contains(hit), background: getComputedStyle(heading).backgroundColor,
+      };
+    });
+    check(g.scroll > 0 && Math.abs(g.barTop) <= 1 && Math.abs(g.top - g.barBottom) <= 1 && g.covers,
+      `group heading did not stay pinned under the Agents bar: ${JSON.stringify(g)}`);
+    check(!/rgba\(.*, 0\)|transparent/.test(g.background), `pinned group heading is transparent: ${g.background}`);
+    await noHorizontalOverflow(page, 'pinned group heading at 320px');
+  }
+}
+
 async function groupHistoryScroll(open) {
   const { page, fx } = await open({ viewport: { width: 320, height: 640 } });
   const session = 'browser-check';
@@ -2934,7 +2959,7 @@ async function nextWaitingAgent(open) {
   const focused = (row) => until(`jump focuses and reveals ${row.id}`, async () =>
     await exists(page, cardSelector(row.id)) && card(row).locator('.agent-open-area').evaluate((el) => {
       const rect = el.getBoundingClientRect();
-      return document.activeElement === el && rect.top >= document.querySelector('#list-header').getBoundingClientRect().bottom - 1 &&
+      return document.activeElement === el && rect.top >= Math.max(...['#list-header', '.section-title'].map((s) => document.querySelector(s)).filter(Boolean).map((e) => e.getBoundingClientRect().bottom)) - 1 &&
         rect.bottom <= innerHeight + 1;
     }));
   const next = async (from, to) => {
@@ -3022,7 +3047,7 @@ async function agentListPollFocus(open) {
   const quickKey = page.locator(cardSelector(agent.id)).getByRole('button', { name: 'Key 1', exact: true });
   const geometry = () => quickKey.evaluate((el) => {
     const { top, bottom } = el.getBoundingClientRect();
-    const headerBottom = document.getElementById('list-header').getBoundingClientRect().bottom;
+    const headerBottom = Math.max(...['#list-header', '.section-title'].map((s) => document.querySelector(s)).filter(Boolean).map((e) => e.getBoundingClientRect().bottom));
     return {
       active: document.activeElement === el, visible: top >= headerBottom - 1 && bottom <= innerHeight + 1,
       documentTop: top + scrollY, viewport: innerHeight, scroll: scrollY,
@@ -3981,6 +4006,7 @@ async function main() {
   await scenario('short phone viewport with a long retry and sparse cached card', cachedAgentList);
   await scenario('Agents group membership, fallback and poll updates', groupedAgentList);
   await scenario('Agents group scroll through history', groupHistoryScroll);
+  await scenario('Agents group heading stays pinned', pinnedGroupHeading);
   await scenario('Agents group dialog focus through polls and history', groupDialogFocus);
   await scenario('Agents peer group ownership during session name reuse', peerGroupOwnership);
   await scenario('Agents peer focus across republication: card area', (open) => peerFocusAcrossRepublication(open, '.agent-open-area'));

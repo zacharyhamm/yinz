@@ -82,11 +82,19 @@ const CARD_CONTROLS = {
   key: ':scope > .card-actions > .quick-keys > button.quick-key',
 };
 
+// The lowest edge of the pinned chrome: the Agents bar, or the group heading once it sticks under it.
+function obscuredTop(header) {
+  const bottom = header.getBoundingClientRect().bottom;
+  const heading = header.parentElement?.querySelector(':scope > .list-main > .agent-section > .section-title');
+  const rect = heading?.getBoundingClientRect();
+  return rect && rect.height && rect.top <= bottom + 1 ? Math.max(bottom, rect.bottom) : bottom;
+}
+
 function revealOffset(control, header) {
   const rect = control.getBoundingClientRect();
   const viewport = window.visualViewport;
   const viewportTop = viewport?.offsetTop ?? 0;
-  const top = Math.max(viewportTop, header.getBoundingClientRect().bottom);
+  const top = Math.max(viewportTop, obscuredTop(header));
   const bottom = viewportTop + (viewport?.height ?? window.innerHeight);
   if (!rect.height || top >= bottom) return null;
   if (rect.top < top - 1) return rect.top - top;
@@ -216,9 +224,24 @@ export function ListView({ env, groupKey, navigation, entry }) {
       return { row, key: group.key, identity: bindings.get(binding) === 1 ? binding : href };
     }));
   const pageWaiting = waitingAgents.filter((agent) => agent.key === pageKey);
+  const page = useRef(null);
   const header = useRef(null);
   const main = useRef(null);
   const launchBanner = useRef(null);
+  // The group heading sticks below the Agents bar, whose height follows the safe area and wrapping.
+  useLayoutEffect(() => {
+    const heading = main.current.querySelector(':scope > .agent-section > .section-title');
+    const measure = () => {
+      const bar = header.current.getBoundingClientRect().height;
+      page.current.style.setProperty('--list-header-height', `${bar}px`);
+      page.current.style.setProperty('--list-sticky-height', `${bar + (heading?.getBoundingClientRect().height ?? 0)}px`);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(header.current);
+    if (heading) observer.observe(heading);
+    measure();
+    return () => observer.disconnect();
+  }, [pageKey, !!selected]);
   useLayoutEffect(() => {
     if (launch) focusAndReveal(launchBanner.current, header.current);
   }, [launch]);
@@ -350,7 +373,7 @@ export function ListView({ env, groupKey, navigation, entry }) {
     </section>`;
   }
 
-  return html`<div class="page list-page">
+  return html`<div class="page list-page" ref=${page}>
     <header class="app-header" id="list-header" ref=${header}>
       <div class="header-row">
         <h1 class="header-title">Agents</h1>
