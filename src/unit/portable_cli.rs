@@ -114,6 +114,7 @@ fn underline_metrics_setup_validation_points_to_a_copyable_example() {
     let example = Config::from_kdl(&example, None).unwrap();
     assert_eq!(example.terminal.underline_offset, Some(-2));
     assert_eq!(example.terminal.underline_thickness, Some(1));
+    assert_eq!(example.terminal.minimum_contrast, Some(1.0));
 }
 
 #[cfg(unix)]

@@ -1127,7 +1127,7 @@ fn native_startup_dimensions_overlay_contract() {
 }
 
 #[test]
-fn native_minimum_contrast_drop_ins_override_inherit_and_reject_invalid_writes() {
+fn native_terminal_minimum_contrast_drop_ins_override_inherit_and_reject_invalid_writes() {
     let dir = tempfile::tempdir().unwrap();
     let base = Config::from_kdl("terminal { minimum_contrast 3; padding 2; }", None).unwrap();
     for (name, text) in [

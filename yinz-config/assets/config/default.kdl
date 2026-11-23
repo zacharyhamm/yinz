@@ -771,7 +771,6 @@ background_opacity "85%"
 //     // thins it.
 //     underline_offset -2
 //     underline_thickness 1
-//
 //     // The lowest allowed contrast ratio between text and its background, from
 //     // 1.0 (off) to 21.0; text colours are adjusted when below it.
 //     minimum_contrast 1.0

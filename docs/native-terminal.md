@@ -148,7 +148,9 @@ to the cursor trail. Selected text swaps the already contrasted text and
 background colours; the ratio is symmetric, so selected text keeps the minimum.
 Concealed (hidden) text and blinked-out text are not made visible. Only the
 displayed colour changes: theme colours, the palette and stored cell colours are
-never modified, so lowering the value restores the original colours exactly.
+never modified. Setting the value back to 1, or omitting it, restores the original
+colours exactly; a lower value above 1 recomputes the adjustment from the unchanged
+stored colours, so pairs still below it stay adjusted.
 Errors name the setting and its range and point at the node: values outside 1..21
 such as `0.9` or `22`, non-finite numbers, strings, booleans, a bare node, type
 annotations, properties, children, extra arguments and repeated keys. Startup uses
