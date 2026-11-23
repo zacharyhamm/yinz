@@ -95,24 +95,31 @@ fn launch_transaction_real_repeated_identity_runs_one_provider_and_closed_status
     assert_eq!(first["spawned"], second["spawned"]);
     // The provider writes before blocking in cat. Read through the pane's output barrier,
     // then the marker counts real executions, independently of the fake OS harness.
+    // `>>` creates the marker before printf writes, so an existing file can still be
+    // empty or hold a partial line: wait for a complete line, not for the file.
     let observed = yinz_test_support::Watched::new(None);
-    std::thread::scope(|scope| {
+    let complete = std::thread::scope(|scope| {
         let observed = &observed;
         let marker = &marker;
         scope.spawn(move || {
             let end = std::time::Instant::now() + Duration::from_secs(30);
             while std::time::Instant::now() < end {
-                if let Ok(value) = fs::read_to_string(marker) {
+                if let Ok(value) = fs::read_to_string(marker)
+                    && value.ends_with('\n')
+                {
                     *observed.lock() = Some(value);
                     return;
                 }
                 std::thread::yield_now();
             }
         });
-        observed.wait_until("provider marker", Duration::from_secs(30), |value| {
-            value.clone()
-        });
+        observed.wait_until(
+            "a complete provider marker line",
+            Duration::from_secs(30),
+            |value| value.clone(),
+        )
     });
+    assert_eq!(complete, "executed\n");
     assert_eq!(fs::read_to_string(&marker).unwrap(), "executed\n");
     let conflict = spawn(&session, &id, &file, &["--model", "different"]);
     assert_eq!(conflict["launch"]["outcome"], "conflict");
