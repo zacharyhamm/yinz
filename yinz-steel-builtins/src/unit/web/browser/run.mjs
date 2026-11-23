@@ -133,7 +133,7 @@ function row(fx, id, state, extra = {}) {
   const defaultStatus = { waiting: 'needs input', busy: 'working', idle: 'idle' }[state];
   const r = {
     id, ref: retargeted ? { ...REF7B } : { id, kind: 'codex', session_id: 'conv-1' },
-    session: 'browser-check', current_session: true, pane_id: id.split(':').pop(), provider: 'codex', state,
+    session: 'browser-check', current_session: true, pane_id: id.split(':').pop(), pane: id.split(':').pop(), provider: 'codex', state,
     glyph: { waiting: '?', busy: '●', idle: '○' }[state] || '?',
     status: defaultStatus || state,
     tab_group: { id: 0, name: 'Default' },
@@ -204,7 +204,7 @@ function headerFields(fx, run) {
   const long = fx.header === 'long';
   return {
     name: long ? `修正 🧭 ${'longIdentity'.repeat(12)}` : `Fix flaky test ${XSS(3)}`,
-    status: 'waiting', location: long ? `/workspace/${'location/'.repeat(12)}` : 'dev', started: '12:00',
+    status: 'waiting', location: long ? `/workspace/${'location/'.repeat(12)}` : `dev ${XSS(7)}`, started: '12:00',
     task: long ? `Review the complete mobile conversation and preserve all metadata. ${FILLER}` : 'fix',
     project: long ? 'Mobile conversation project with a long descriptive name' : 'yinz',
     branch: long ? `feature/${'unbroken-branch'.repeat(12)}` : 'main', session_id: 'conv-1', details: `Run: ${run}`,
@@ -213,9 +213,18 @@ function headerFields(fx, run) {
 
 // Mirror %web-app-header in yinz-steel/src/web_app.scm; its real Scheme assertions
 // and web_builtin_production_http cover the production hook, not this imitation.
-function headerHtml(fx, header) {
+function headerHtml(fx, header, live) {
   if (fx.header === 'absent') return '';
-  const markup = `<header class="agent-header"><h2>${esc(header.name)}</h2><p class="agent-header-status">${esc(header.status)}</p>${header.task ? `<p class="agent-header-task">${esc(header.task)}</p>` : ''}<p class="agent-header-meta">${['project', 'branch', 'location', 'started'].map((k) => header[k]).filter((s) => s && s.trim()).map(esc).join(' · ')}</p></header>`;
+  const trim = (s) => (typeof s === 'string' ? s.trim() : '');
+  const field = (cls, label, value) => `<div class="${cls}"><dt>${label}</dt><dd>${esc(value || '—')}</dd></div>`;
+  const identity = live
+    ? `<p class="agent-header-identity" data-state="${esc(trim(live.state))}"><span class="agent-header-agent"><span aria-hidden="true" class="agent-header-glyph">${esc(trim(live.glyph))}</span> <strong class="agent-header-provider">${esc(trim(live.provider) || 'agent')}</strong> <span class="agent-header-state">${esc(trim(live.status))}</span>${trim(live.host) ? `<span class="agent-header-host"> @${esc(trim(live.host))}</span>` : ''}</span><span class="agent-header-pane">[${esc(trim(live.pane))}]</span></p>`
+    : `<p class="agent-header-identity">${esc(trim(header.status) || 'Agent · —')}</p>`;
+  const sessionId = trim(header.session_id);
+  const [idLabel, id] = sessionId.startsWith('run ') ? ['Run', sessionId.slice(4)]
+    : ['Session', sessionId.startsWith('session ') ? sessionId.slice(8) : sessionId];
+  const branch = trim(header.branch) === 'no branch' ? '' : trim(header.branch);
+  const markup = `<header class="agent-header">${identity}<dl class="agent-header-fields">${field('agent-header-task', 'Task', trim(live?.activity) || trim(header.task))}${field('agent-header-project', 'Project', [trim(header.project), branch].filter(Boolean).join(' · '))}${field('agent-header-location', 'Location', trim(header.location))}${field('agent-header-started', 'Started', trim(header.started))}${field('agent-header-id', idLabel, id.trim())}</dl></header>`;
   if (fx.header === 'wrapped') return `<section class="custom-header">${markup}<a href="#custom-information" id="custom-information">Custom information link</a></section>`;
   if (fx.header === 'custom') return `<section class="custom-header"><h2>Custom hook output</h2><p>${esc(FILLER.repeat(12))}</p><button type="button" class="button" id="custom-information">Custom information action</button></section>`;
   return markup;
@@ -275,7 +284,7 @@ function history(fx, q) {
     header: headerFields(fx, run),
     events, earlier, next_from: null, previous_run: run === 'run-7' ? 'run-6' : null, origin_run: null, resumable: false,
     activity_ranges: [], navigation, status: '',
-    header_html: headerHtml(fx, headerFields(fx, run)),
+    header_html: headerHtml(fx, headerFields(fx, run), live),
     details_html: `<pre class="details">${esc(`Run: ${run}\nProvider: codex`)}</pre>`,
   };
 }
@@ -412,8 +421,12 @@ function fixtureReply(fx, entry) {
         page: { events: [], navigation: { earlier: { op: 'tools', run: q.get('run'), range: JSON.parse(q.get('range')), before: { created_at_ms: 1, revision: 2 } } } },
       }];
     case '/api/usage':
-      if (fx.usage) return [200, { usage: fx.usage }];
-      return [200, { usage: { provider: 'codex', status: 'ok', observed_at_ms: 1, plan: null, windows: [{ label: '5h', used_percent: 42, resets_at_ms: null }, { label: 'week', used_percent: 91, resets_at_ms: null }], message: null } }];
+      if (fx.usage) return [200, fx.usage];
+      // `display` stands in for the native quota::Display labels the palette shows.
+      return [200, {
+        usage: { provider: 'codex', status: 'ok', observed_at_ms: 1, plan: null, windows: [{ label: '5h', used_percent: 42, resets_at_ms: null }, { label: '7d', used_percent: 91, resets_at_ms: 2 }], message: null },
+        display: { weekly_label: 'Weekly', value: 9, remaining: 9, stale: false, short: '5hr · 58%', other: [], compact: 'Weekly · 9% · 5hr · 58%', reset: '2d left' },
+      }];
     case '/api/prompts':
       return [200, { prompts: [{ text: 'Run the tests', description: 'tests' }, { text: 'Commit the change', description: '' }] }];
     default:
@@ -550,10 +563,15 @@ async function continuePublicRequest(route) {
   }
 }
 
+// Navigating away (e.g. logout to /login) aborts an in-flight web font load with
+// NS_BINDING_ABORTED (0x804B0002). requestfailed below tolerates that abort, and
+// Firefox also reports it as a console error, which must be tolerated the same way.
+const FONT_NAVIGATION_ABORT = /downloadable font: download failed .*status=2152398850 /;
+
 function attachPage(page, guard) {
   page.on('pageerror', (e) => guard.add(`pageerror: ${e.message}`));
   page.on('console', (m) => {
-    if (m.type() === 'error') guard.add(`console error: ${m.text()}`);
+    if (m.type() === 'error' && !FONT_NAVIGATION_ABORT.test(m.text())) guard.add(`console error: ${m.text()}`);
   });
   page.on('response', (r) => {
     const u = new URL(r.url());
@@ -1111,8 +1129,8 @@ async function headerCharacterization(open, width, scheme) {
   for (const variant of ['short', 'long']) {
     fx.header = variant;
     await fixturePoll(page, fx);
-    await until('default header and idle composer', () => exists(page, '#detail-header-html .agent-header-meta'));
-    await until('usage windows', () => exists(page, '#quota .quota-window'));
+    await until('default header and idle composer', () => exists(page, '#detail-header-html .agent-header-fields'));
+    await until('usage column', () => exists(page, '#usage .usage-value'));
     await page.emulateMedia({ colorScheme: scheme });
     await nextFrame(page);
     const metrics = await detailGeometry(page);
@@ -1234,7 +1252,7 @@ async function compactDetail(open, width, scheme) {
   for (const variant of ['short', 'long']) {
     fx.header = variant;
     await fixturePoll(page, fx);
-    await until('healthy quota and composer', () => exists(page, '#quota .quota-window'));
+    await until('healthy quota and composer', () => exists(page, '#usage .usage-value'));
     const g = await detailGeometry(page);
     check(g.width === width && g.height === height && g.dark === (scheme === 'dark'), 'wrong detail viewport/theme');
     check(g.safeTop === 0 && g.safeBottom === 0, 'budget fixture requires zero emulated safe-area insets');
@@ -1254,7 +1272,10 @@ async function compactDetail(open, width, scheme) {
       const el = document.getElementById('detail-information');
       return { height: el.clientHeight, text: el.textContent, labelled: el.getAttribute('aria-label'), tab: el.tabIndex };
     });
-    for (const k of ['name', 'task', 'project', 'branch', 'location']) check(info.text.includes(headerFields(fx, 'run-7')[k]), `expanded information lost ${k}`);
+    // The command palette's details: live activity as the task, then the header's fields.
+    const fields = headerFields(fx, 'run-7');
+    for (const k of ['project', 'branch', 'location', 'started']) check(info.text.includes(fields[k]), `expanded information lost ${k}`);
+    for (const part of ['Taskediting', `Session${fields.session_id}`, 'codex', 'needs input', '[7]', 'Weekly · 9%']) check(info.text.includes(part), `expanded information lost ${part}`);
     check(info.labelled === 'Agent information' && info.tab === 0 && info.height <= Math.min(height * 0.3, 240), 'information region not labelled, keyboard scrollable or bounded');
     await page.focus('#detail-information');
     await page.keyboard.press('End');
@@ -1670,7 +1691,10 @@ async function detailFallbacks(open) {
     fx.header = variant;
     await fixturePoll(page, fx);
     check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'true', 'header variant reset disclosure');
-    if (variant === 'absent') check((await textOf(page, '#detail-information h2')).includes('Fix flaky test'), 'missing header lost full title fallback');
+    if (variant === 'absent') {
+      check(!(await exists(page, '#detail-header-html')), 'missing header rendered details');
+      await textUntil(page, '#usage', 'Weekly · 9%', 'missing header lost the usage column');
+    }
     else {
       await page.focus('#detail-information');
       await page.keyboard.press('End');
@@ -1690,15 +1714,23 @@ async function detailFallbacks(open) {
     await until('live labelled state', () => exists(page, `.detail-summary .state-${state}`));
     await detailContrast(page, `state ${state}`);
   }
+  fx.header = 'short';
   fx.live = { title: '', state: 'paused', host: 'remote host', current_session: false, session: 'peer', focused: true };
   await fixturePoll(page, fx);
   check((await textOf(page, '.detail-summary .state-text')) === 'paused', 'unknown state lost label');
   check((await textOf(page, '.detail-summary .header-title')) === headerFields(fx, 'run-7').name, 'header name fallback lost');
-  for (const sel of ['.badge-host', '.badge-peer', '.badge-focused']) check(await page.locator(`#detail-information ${sel}`).isVisible(), `secondary badge missing: ${sel}`);
-  for (const status of ['unavailable', 'unsupported', 'expired', 'error', 'ok']) {
-    fx.usage = { status, windows: [], message: 'Fixture usage explanation' };
+  // The palette's identity line: provider, state, host and pane ID.
+  await textUntil(page, '#detail-header-html .agent-header-identity', '@remote host', 'identity host');
+  const identity = await textOf(page, '#detail-header-html .agent-header-identity');
+  for (const part of ['codex', 'needs input', '[7]']) check(identity.includes(part), `identity missing ${part}`);
+  check((await textOf(page, '#detail-header-html .agent-header-task')) === 'Taskediting', 'task does not prefer live activity');
+  for (const status of ['unavailable', 'unsupported', 'expired', 'error']) {
+    fx.usage = {
+      usage: { provider: 'codex', status, windows: [], message: 'Fixture usage explanation' },
+      display: { weekly_label: 'Weekly · stale', value: null, remaining: null, stale: true, short: '', other: [], compact: 'Fixture usage explanation', reset: '' },
+    };
     await fixturePoll(page, fx, '/api/usage');
-    check((await textOf(page, '#quota')).includes(status === 'ok' ? 'No usage windows' : status === 'unsupported' ? 'not supported' : status === 'expired' ? 'expired' : status === 'error' ? 'could not be read' : 'unavailable'), `usage ${status} feedback missing`);
+    check(await page.locator('#usage .usage-compact').innerText() === 'Fixture usage explanation', `usage ${status} feedback missing`);
   }
   // Usage transport errors are also discoverable inside the disclosure.
   fx.fail.set('/api/usage', { mode: 'reply', times: 1, status: 503, body: { error: { message: 'Usage transport error' } } });
@@ -1706,7 +1738,7 @@ async function detailFallbacks(open) {
   await until('reloaded summary', () => exists(page, '#detail-information-toggle'));
   check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'false', 'reload retained disclosure');
   await disclosure(page, true);
-  await textUntil(page, '#quota', 'Usage transport error', 'usage HTTP error');
+  await textUntil(page, '#usage', 'Usage transport error', 'usage HTTP error');
   fx.gone = true;
   await fixturePoll(page, fx);
   await textUntil(page, '#banner-agent-gone', 'gone', 'gone agent banner');
@@ -1725,7 +1757,7 @@ async function detailFallbacks(open) {
   await until('waiting no-run screen', () => exists(page, '.xterm-rows'));
   check(await page.getAttribute('#detail-information-toggle', 'aria-expanded') === 'false', 'no-run view not collapsed');
   await disclosure(page, true);
-  check(await textOf(page, '#detail-information h2') === 'No recorded run', 'no-run full title missing');
+  check(await textOf(page, '#detail-information .information-empty') === 'No recorded run.', 'no-run placeholder missing');
   check(await exists(page, '#composer-input'), 'no-run live composer missing');
 }
 
@@ -2508,8 +2540,11 @@ async function manageAgent(open) {
   await submitMove.click();
   await until('move form closed', async () => !(await exists(page, '#sheet-move')));
   check(hashOf(page) === opened, 'move left the conversation');
-  await page.click('#detail-information-toggle');
-  await textUntil(page, '#detail-location', 'Review (#4) · Shell (#5)', 'location refreshed after move');
+  await page.click('#overflow-button');
+  await page.click('#action-move');
+  await textUntil(page, '#sheet-move', 'Review (#4) · Shell (#5)', 'location refreshed after move');
+  await page.keyboard.press('Escape');
+  await until('move form dismissed', async () => !(await exists(page, '#sheet-move')));
   for (const confirm of [false, true]) {
     await page.click('#overflow-button');
     await page.click('#action-close');

@@ -347,8 +347,11 @@ plugin configuration or secrets.
 - **Agent detail** (`#/a/<id>?run=<run>&tab=timeline|term|details`): a compact
   title and labelled live state, Back, **Agent information** (ⓘ), available
   actions and three tabs. Agent information starts collapsed on phones and
-  desktop. Open it for the full title, complete server header (including custom
-  hook output), host/session/focus badges and provider quota or usage errors.
+  desktop. Open it for the command palette's agent details: the complete server
+  header (by default the live identity line with provider, state, host and pane,
+  then Task, Project, Location, Started and Run or Session; custom hook output
+  replaces it) beside the palette's usage column, or usage errors. A narrow
+  panel shows the usage summary below the details.
   Peer links identify the conversation in the running peer. A rename or a
   newly recorded run keeps that binding. A restart, conversation change or older
   bookmark can leave only the retained run available. Return to Agents and

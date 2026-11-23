@@ -947,7 +947,7 @@ handler that survives terminal detach. Operations reject unknown fields. No nati
 | `hit` | `run`, `revision`, optional `tz` | History page with context/latest navigation |
 | `event` | `run`, `revision`, optional `tz` | `{header:string, markdown:string, tool:string}` |
 | `tools` | `run`, either `revisions` (1–30) or `range` with optional `before`, optional `tz` | Reader; range mode also includes `page` |
-| `usage` | `agent` (live lookup) | `{usage:ProviderUsage}` |
+| `usage` | `agent` (live lookup) | `{usage:ProviderUsage, display}`; `display` holds the command palette's quota labels (`weekly_label`, `value`, `remaining`, `stale`, `short`, `other`, `compact`, `reset`), with percentages as remaining share |
 | `prompts` | none | `{prompts:[{text,description}]}` (at most 500) |
 | `assistant_reply` | `agent:AgentRef`, `run` (the live agent's current run), `filter` with optional `main_only`, `query` (at most 1024 bytes), `revision`, `after`, `turn` | `{reply:{revision,text}}`, or a null `reply` |
 | `prompt` | `agent:AgentRef`, `submission_id`, `text` | `{response:AgentResponse}` |

@@ -1295,7 +1295,7 @@ receives `(next . args)`.
 | `login` | `ctx` | `<main class="login">` with `form#login-form` (`#password`, `#label`, `#remember`, `#login-submit`, `#login-status`), a `noscript` notice and the scripts |
 | `agent-list` | list of rows | the rows unchanged; may filter, reorder or add `badges: [{text,tone}]` |
 | `agent-row` | row | `div.agent-row` with glyph, title, status, provider/project/branch, badges and a nonblank reply preview (up to 160 Unicode characters plus a truncation ellipsis, displayed in at most three list lines). Every card has a state badge. The default row marks its redundant status text for hiding, and custom status text remains visible. The row keeps the native reply preview field. Open the timeline or message reader for the full reply. |
-| `agent-header` | `{live, header}` | `header.agent-header` with name, status, task and metadata |
+| `agent-header` | `{live, header}` | `header.agent-header` matching the command palette's agent details: the live identity line (glyph, provider, state, host, pane) or the header status, then a `dl` of Task, Project, Location, Started and Run or Session, with `—` for empty values. The app shows usage beside it. |
 | `event-body` | event | sanitized Markdown (escaped `<pre>` above 1 MiB or when rendered HTML exceeds 4 MiB); escaped `pre.event-tool` for `tool_call`/`tool_result` kinds and ranged activity |
 | `reader` | `{header, markdown, tool}` | `article.reader` with Markdown and the tool text in an escaped `<pre>` |
 | `details` | `{details}` | `pre.details` |

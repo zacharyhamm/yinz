@@ -104,35 +104,49 @@ export function RowBadges({ row, showState = true, peerSession = row?.session })
   </span>`;
 }
 
-function quotaClass(percent) {
-  const p = Math.max(0, Math.min(100, Number(percent) || 0));
-  return `q-${Math.round(p / 10)}`;
+function usageTone(display) {
+  if (display.stale || !Number.isFinite(display.remaining)) return 'muted';
+  if (display.remaining > 25) return 'ok';
+  return display.remaining >= 10 ? 'low' : 'danger';
 }
 
-const USAGE_STATUS = {
-  unavailable: 'Usage unavailable',
-  unsupported: 'Usage not supported for this provider',
-  expired: 'Usage credentials expired',
-  error: 'Usage could not be read',
-};
+function text(value) {
+  return typeof value === 'string' ? value : '';
+}
 
-/** Quota bars from ProviderUsage; explicit messages instead of fake zeros. */
-export function QuotaBar({ usage, error }) {
-  if (error) return html`<div class="quota quota-message" id="quota">${error}</div>`;
-  if (!usage) return null;
-  if (usage.status !== 'ok') {
-    const text = USAGE_STATUS[usage.status] || 'Usage unavailable';
-    return html`<div class="quota quota-message" id="quota">${text}${usage.message ? `: ${usage.message}` : ''}</div>`;
+/** The command palette's usage column (`agent_header`), from the server's
+ * quota display: remaining weekly share, the 5-hour window, other windows, reset.
+ * `stale` marks a retained reply whose refresh failed: the server computed its
+ * labels when it answered, so they would otherwise stay fresh indefinitely. */
+export function UsageColumn({ display, error, stale = false }) {
+  const rows = [];
+  let value = null;
+  if (display && typeof display === 'object') {
+    const other = Array.isArray(display.other) ? display.other.map(text).filter(Boolean) : [];
+    const known = Number.isFinite(display.value);
+    const quota = known || !!text(display.short) || other.length > 0;
+    if (stale && !display.stale) {
+      // As quota::Display marks an aged observation: label, muted tone and summary.
+      display = { ...display, stale: true, weekly_label: 'Weekly · stale',
+        compact: quota ? [text(display.compact), 'stale'].filter(Boolean).join(' · ') : display.compact };
+    }
+    if (!quota) {
+      rows.push('Usage unavailable', text(display.compact) || '—', '5hr · —');
+    } else {
+      rows.push(text(display.weekly_label) || 'Weekly');
+      value = known ? html`<span class="usage-value" data-tone=${usageTone(display)}>${display.value}%</span>` : '—';
+      rows.push(value);
+      rows.push(text(display.short) || '5hr · —', ...other);
+    }
+    rows.push(text(display.reset) || 'Reset —');
+  } else {
+    rows.push('Usage unavailable', error || '—', '5hr · —', 'Reset —');
   }
-  const windows = Array.isArray(usage.windows) ? usage.windows.filter((w) => w && Number.isFinite(w.used_percent)) : [];
-  if (!windows.length) return html`<div class="quota quota-message" id="quota">No usage windows reported</div>`;
-  return html`<div class="quota" id="quota">
-    ${windows.slice(0, 3).map((w) => html`<div class="quota-window">
-      <span class="quota-label">${String(w.label || '')} ${Math.round(w.used_percent)}%</span>
-      <span class="quota-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${Math.round(w.used_percent)} aria-label=${`${w.label} usage`}>
-        <span class=${cx('quota-fill', quotaClass(w.used_percent), w.used_percent >= 90 && 'quota-high')}></span>
-      </span>
-    </div>`)}
+  const compact = display && typeof display === 'object'
+    ? [text(display.compact), text(display.reset)].filter(Boolean) : [error].filter(Boolean);
+  return html`<div class="usage" id="usage">
+    <ul class="usage-full" aria-label="Usage">${rows.map((row) => html`<li>${row}</li>`)}</ul>
+    ${compact.length ? html`<ul class="usage-compact" aria-label="Usage">${compact.map((row) => html`<li>${row}</li>`)}</ul>` : null}
   </div>`;
 }
 

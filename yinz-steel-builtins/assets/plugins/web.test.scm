@@ -185,6 +185,17 @@
     (for-each (lambda (reply) (check-preview (hash-insert row "last_reply" reply) #f))
       (list json-null (hash) (hash "text" json-null) (hash "text" "") (hash "text" " \t\n" "truncated" #t)))))
 
+(test "stored-run headers fall back to the header status and name the run" (lambda ()
+    (w-load)
+    (define id (w-get "/api/history" (list "run" "R")))
+    (w-ok (t-merge page (hash "live" json-null
+          "header" (t-merge header (hash "session_id" "run R1" "branch" "no branch" "started" "  ")))))
+    (define header-html (hash-ref (w-body id) "header_html"))
+    (for-each (lambda (part) (assert (w-contains? header-html part) part))
+      (list "<p class=\"agent-header-identity\">Waiting</p>" "<dt>Run</dt><dd>R1</dd>"
+        "<dt>Project</dt><dd>yinz</dd>" "<dt>Started</dt><dd>—</dd>"))
+    (assert (not (w-contains? header-html "agent-header-pane")))))
+
 (test "history and hit pages gain header, details and event html" (lambda ()
     (w-load)
     (define id (w-get "/api/history" (list "run" "R") (list "agent" "live:main:7") (list "after_revision" "0") (list "tz" "UTC")))
@@ -199,8 +210,14 @@
     (assert (not (w-contains? (hash-ref (car events) "html") "<img")))
     (assert-equal (hash-ref (cadr events) "html") "<pre class=\"event-tool\">&lt;script&gt;tool&lt;/script&gt;</pre>")
     (assert-equal (hash-ref (caddr events) "html") "<pre class=\"event-tool\">grouped &lt;b&gt;</pre>")
-    (assert (w-contains? (hash-ref body "header_html") "<h2>&lt;agent&gt;</h2>"))
-    (assert (w-contains? (hash-ref body "header_html") "&lt;task&gt;"))
+    (define header-html (hash-ref body "header_html"))
+    ;; The command palette's agent details: live identity, then labelled fields.
+    (for-each (lambda (part) (assert (w-contains? header-html part) part))
+      (list "<p class=\"agent-header-identity\" data-state=\"waiting\">"
+        "<strong class=\"agent-header-provider\">claude</strong>" "<span class=\"agent-header-pane\">[7]</span>"
+        "<dt>Task</dt><dd>&lt;task&gt;</dd>" "<dt>Project</dt><dd>yinz · main</dd>"
+        "<dt>Location</dt><dd>/w</dd>" "<dt>Started</dt><dd>now</dd>" "<dt>Session</dt><dd>conversation-1</dd>"))
+    (assert (not (w-contains? header-html "agent-header-host")))
     (assert-equal (hash-ref body "details_html") "<pre class=\"details\">&lt;details&gt;</pre>")
     (define search (w-get "/api/history" (list "run" "R") (list "query" "needle") (list "from" "4")))
     (assert-equal (w-view) (hash "op" "history" "run" "R" "query" "needle" "from" 4))

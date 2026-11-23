@@ -266,9 +266,43 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin: 4px 4px 0; padding: 6px 4px; border-top: 1px solid var(--border);
 }
 .detail-information[hidden] { display: none; }
+/* Custom agent-header hook output keeps a panel-sized heading. */
 .detail-information h2 { font-size: 18px; }
-.detail-information .badges { margin-top: 6px; }
-.detail-information .quota { padding: 6px 0 0; }
+/* The command palette's agent details: fields beside a usage column, which
+   collapses to a right-aligned summary below them where the panel is narrow. */
+.detail-information { container: information / inline-size; }
+.information-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.information-body > .header-html, .information-empty { grid-column: 1; }
+.information-empty { color: var(--muted); }
+.agent-header { display: grid; gap: 2px; line-height: 1.35; }
+.agent-header-identity { display: flex; gap: 12px; justify-content: space-between; }
+.agent-header-agent { min-width: 0; }
+.agent-header-glyph, .agent-header-state { color: var(--muted); }
+.agent-header-identity[data-state="waiting"] :is(.agent-header-glyph, .agent-header-state) { color: var(--waiting); }
+.agent-header-identity[data-state="busy"] :is(.agent-header-glyph, .agent-header-state) { color: var(--busy); }
+.agent-header-glyph { font-weight: 700; }
+.agent-header-host, .agent-header-pane { color: var(--muted); }
+.agent-header-pane { flex: none; }
+.agent-header-fields { display: grid; gap: 2px; margin: 0; }
+.agent-header-fields > div { display: flex; gap: 1ch; }
+.agent-header-fields dt { flex: none; }
+.agent-header-fields dt::after { content: ":"; }
+.agent-header-fields dd { margin: 0; min-width: 0; }
+.agent-header-task { font-weight: 700; }
+.usage { grid-column: 2; }
+.usage ul { list-style: none; margin: 0; padding: 0; text-align: right; line-height: 1.35; }
+.usage-full { min-width: 18ch; padding-left: 12px; border-left: 1px solid var(--border); }
+.usage-compact { display: none; color: var(--muted); }
+.usage-value { font-size: 24px; font-weight: 700; line-height: 1.1; color: var(--muted); }
+.usage-value[data-tone="ok"] { color: var(--ok); }
+.usage-value[data-tone="low"] { color: var(--waiting); }
+.usage-value[data-tone="danger"] { color: var(--danger); }
+@container information (max-width: 44ch) {
+  .information-body { grid-template-columns: minmax(0, 1fr); }
+  .usage { grid-column: 1; }
+  .usage-full { display: none; }
+  .usage-compact { display: block; }
+}
 .detail-header .segmented { flex: none; margin-top: 0; padding: 1px; }
 .detail-page > .banners { flex: 0 2 auto; min-height: 0; max-height: 30dvh; overflow-y: auto; }
 /* One complete 44px banner action plus padding/margins must remain reachable. */
@@ -281,13 +315,6 @@ button:disabled, .button:disabled { opacity: 0.5; cursor: not-allowed; }
 .segment { flex: 1; border: 1px solid var(--border); background: transparent; font-weight: 600; color: var(--muted); }
 .segment-active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 
-.quota { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 4px 8px 0; font-size: 13px; color: var(--muted); }
-.quota-window { display: grid; gap: 2px; min-width: 120px; flex: 1; }
-.quota-track { display: block; height: 6px; background: var(--surface-2); overflow: hidden; }
-.quota-fill { display: block; height: 100%; background: var(--accent); width: 0; }
-.quota-high { background: var(--danger); }
-.q-0 { width: 0%; } .q-1 { width: 10%; } .q-2 { width: 20%; } .q-3 { width: 30%; } .q-4 { width: 40%; }
-.q-5 { width: 50%; } .q-6 { width: 60%; } .q-7 { width: 70%; } .q-8 { width: 80%; } .q-9 { width: 90%; } .q-10 { width: 100%; }
 
 .timeline-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
 .timeline-scroll {

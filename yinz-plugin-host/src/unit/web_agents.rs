@@ -415,6 +415,12 @@ fn web_agents_list_uses_shared_order_and_peer_usage_without_local_collection() {
         response["ok"]["usage"]["message"],
         "Quota unavailable for peer-session agents"
     );
+    // The palette's quota labels accompany the raw usage for the web info panel.
+    assert_eq!(
+        response["ok"]["display"],
+        json!({"weekly_label":"Weekly · stale","value":null,"stale":true,"remaining":null,
+            "short":"","other":[],"compact":"Quota unavailable for peer-session agents","reset":""})
+    );
 }
 #[test]
 fn web_agents_list_isolates_peer_labels_for_aliased_rows() {

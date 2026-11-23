@@ -1141,7 +1141,15 @@ fn execute(
             } else {
                 crate::provider_usage::collect(&provider)
             };
-            Ok(json!({"usage":usage}))
+            // The palette's own labels, so the web info panel reports the same figures.
+            let display = agent_proto::quota::Display::new(
+                &usage,
+                agent_proto::agents::now_ms().max(0) as u64,
+            );
+            Ok(json!({"usage":usage,"display":{
+                "weekly_label":display.weekly_label,"value":display.value,"stale":display.stale,
+                "remaining":display.remaining,"short":display.short,"other":display.other,
+                "compact":display.compact,"reset":display.reset}}))
         },
         Operation::Focus { agent } => {
             let live = target(senders, &agent)?;

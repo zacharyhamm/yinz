@@ -7,9 +7,9 @@ import { sameTarget, targetOf, validTarget } from '../submission.js';
 import { controlTarget, detailHash, detailListRow, isPeerDetail, isScopedPeer } from '../app-route.js';
 import {
   html, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, usePoller, useNow,
-  ServerHtml, StateBadge, RowBadges, QuotaBar, Banner, responseText, cx,
+  ServerHtml, StateBadge, UsageColumn, Banner, responseText, cx,
 } from './ui.js';
-import { MoveSheet, CloseSheet, agentLocation } from './manage.js';
+import { MoveSheet, CloseSheet } from './manage.js';
 import { Sheet, ConfirmSheet } from './sheets.js';
 import { Composer, StaleSubmissions } from './composer.js';
 import { TermPanel } from './term.js';
@@ -534,12 +534,13 @@ export function DetailView({ env, route }) {
           onClick=${() => setSheet({ type: 'overflow' })}>⋯</button>` : null}
       </div>
       <section id="detail-information" class="detail-information" aria-label="Agent information" tabindex="0" hidden=${!informationOpen}>
-        <h2 class="information-title">${title}</h2>
-        ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
-          : null}
-        ${manage && live.location ? html`<p id="detail-location">${agentLocation(live)}</p>` : null}
-        ${live ? html`<${RowBadges} row=${live} showState=${false} />` : null}
-        ${live ? html`<${QuotaBar} usage=${usage && usage.data && usage.data.usage} error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />` : null}
+        <div class="information-body">
+          ${store && store.meta.header_html ? html`<${ServerHtml} html=${store.meta.header_html} class="header-html" id="detail-header-html" />`
+            : !store ? html`<p class="information-empty">No recorded run.</p>` : null}
+          <${UsageColumn} display=${usage && usage.data && usage.data.display}
+            stale=${!!usage && ['retrying', 'offline', 'error'].includes(usage.status)}
+            error=${usage && !usage.data && usage.error ? describeError(usage.error) : null} />
+        </div>
       </section>
       <div class="segmented" role="tablist" aria-label="Agent views">
         ${['timeline', 'term', 'details'].map((t) => html`<button type="button" role="tab" id=${`tab-${t}`} aria-controls=${`panel-${t}`}
