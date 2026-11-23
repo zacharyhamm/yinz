@@ -75,6 +75,11 @@ pub const ATTR_STRIKE: u16 = 1 << 5;
 pub const ATTR_SLOW_BLINK: u16 = 1 << 6;
 pub const ATTR_FAST_BLINK: u16 = 1 << 7;
 pub const ATTR_GROUP_CONTINUE: u16 = 1 << 11;
+/// The cell's background is the pane's default background, which a session theme's
+/// `terminal` block supplies as a concrete color. Receivers draw that color, but a
+/// see-through background (native `opacity_mode "background"`) treats the cell like
+/// one with [`WireColor::Default`]. Receivers that ignore the bit draw it solid.
+pub const ATTR_THEME_BACKGROUND: u16 = 1 << 12;
 pub const UNDERLINE_SHIFT: u32 = 8;
 const UNDERLINE_MASK: u16 = 0b111 << UNDERLINE_SHIFT;
 
@@ -138,6 +143,13 @@ impl WireCell {
 
     pub fn is_group_continuation(&self) -> bool {
         self.has(ATTR_GROUP_CONTINUE)
+    }
+
+    /// Whether the background stands for the default background: either
+    /// [`WireColor::Default`] or a theme's default marked [`ATTR_THEME_BACKGROUND`].
+    /// Reverse video is not considered.
+    pub fn has_default_background(&self) -> bool {
+        self.has(ATTR_THEME_BACKGROUND) || WireColor::unpack(self.bg) == WireColor::Default
     }
 
     pub fn text<'a>(&self, clusters: &'a ClusterRecord) -> std::borrow::Cow<'a, str> {

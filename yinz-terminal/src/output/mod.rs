@@ -94,6 +94,31 @@ fn adjust_styles_for_possible_selection(
         .unwrap_or(character_styles)
 }
 
+/// Whether a cell's background, after selection highlights (`styles`), stands for
+/// the pane's default background: the application left it unset (or an agent theme
+/// mapped it to the theme background), it is not reverse video, and any pane default
+/// background comes from the session theme rather than a pane-specific color.
+fn uses_default_background(
+    chunk: &CharacterChunk,
+    character: &TerminalCharacter,
+    styles: &CharacterStyles,
+    x: usize,
+) -> bool {
+    let selected_background = chunk
+        .selection_and_colors()
+        .iter()
+        .find(|highlight| highlight.selection.contains(chunk.y, x))
+        .is_some_and(|highlight| highlight.bg.is_some());
+    let mapped_theme_background = !selected_background
+        && chunk
+            .agent_theme
+            .as_ref()
+            .is_some_and(|palette| palette.theme_background(*character.styles));
+    (matches!(styles.background, None | Some(AnsiCode::Reset)) || mapped_theme_background)
+        && styles.reverse != Some(AnsiCode::On)
+        && (chunk.pane_default_bg.is_none() || chunk.theme_background)
+}
+
 fn adjust_styles_for_custom_bg_fg(
     character_styles: CharacterStyles,
     pane_default_fg: Option<AnsiCode>,

@@ -9,7 +9,7 @@ use crate::testing::painter::Painter;
 use crate::text::font::ShapedGlyph;
 use crate::text::font::{FontOptions, FontStack, DEFAULT_FONT_SIZE};
 use yinz_types::structured_render::ATTR_STRIKE;
-use yinz_types::structured_render::{PaneRect, PANE_FRAMED, PANE_SELECTABLE};
+use yinz_types::structured_render::{PaneRect, WireColor, PANE_FRAMED, PANE_SELECTABLE};
 
 fn stack(ligatures: bool) -> FontStack {
     FontStack::build(&FontOptions {

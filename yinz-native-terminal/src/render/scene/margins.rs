@@ -4,7 +4,7 @@ use crate::render::scene::paint_of;
 use crate::render::scene::Rect;
 use crate::render::scene::Transparency;
 use crate::text::font::CellMetrics;
-use yinz_types::structured_render::{WireColor, ATTR_REVERSE};
+use yinz_types::structured_render::ATTR_REVERSE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Margins {
@@ -33,8 +33,7 @@ pub fn padding_rects(
     let edge = |row: usize, col: usize| -> Option<Srgb> {
         let cell = state.screen().cell(row, col);
         let paint = paint_of(cell, state.occupancy(row, col), paints, None);
-        let explicit =
-            cell.has(ATTR_REVERSE) || !matches!(WireColor::unpack(cell.bg), WireColor::Default);
+        let explicit = cell.has(ATTR_REVERSE) || !cell.has_default_background();
         let fills = if transparency.see_through_background() {
             explicit
         } else {

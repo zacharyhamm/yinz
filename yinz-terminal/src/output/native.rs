@@ -185,18 +185,26 @@ impl Output {
                     if col + width + dx > size.cols {
                         break;
                     }
+                    let selected = adjust_styles_for_possible_selection(
+                        chunk.selection_and_colors(),
+                        chunk.application_styles(*character.styles),
+                        chunk.y,
+                        col,
+                    );
+                    let default_background =
+                        uses_default_background(&chunk, character, &selected, col);
                     let styles = adjust_styles_for_custom_bg_fg(
-                        adjust_styles_for_possible_selection(
-                            chunk.selection_and_colors(),
-                            chunk.application_styles(*character.styles),
-                            chunk.y,
-                            col,
-                        ),
+                        selected,
                         chunk.pane_default_fg,
                         chunk.pane_default_bg,
                     );
                     let mut cell =
                         wire_cell(character, styles, chunk.changed_colors.as_ref(), true);
+                    // A theme's default background arrives as a concrete color; mark it
+                    // so a see-through native background still treats it as default.
+                    if default_background && WireColor::unpack(cell.bg) != WireColor::Default {
+                        cell.attrs |= ATTR_THEME_BACKGROUND;
+                    }
                     if !kitty && character.character == PLACEHOLDER {
                         cell.ch = ' ' as u32;
                     }

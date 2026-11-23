@@ -254,20 +254,7 @@ impl Composition {
             chunk.y,
             x,
         );
-        let selected_background = chunk
-            .selection_and_colors()
-            .iter()
-            .find(|highlight| highlight.selection.contains(chunk.y, x))
-            .is_some_and(|highlight| highlight.bg.is_some());
-        let mapped_theme_background = !selected_background
-            && chunk
-                .agent_theme
-                .as_ref()
-                .is_some_and(|palette| palette.theme_background(*character.styles));
-        let default_background = (matches!(styles.background, None | Some(AnsiCode::Reset))
-            || mapped_theme_background)
-            && styles.reverse != Some(AnsiCode::On)
-            && (chunk.pane_default_bg.is_none() || chunk.theme_background);
+        let default_background = uses_default_background(chunk, character, &styles, x);
         let mut styles =
             adjust_styles_for_custom_bg_fg(styles, chunk.pane_default_fg, chunk.pane_default_bg);
         let mut fg = color(

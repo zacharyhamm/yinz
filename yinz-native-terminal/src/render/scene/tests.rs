@@ -10,7 +10,7 @@ use yinz_types::structured_render::UNDERLINE_CURLY;
 use yinz_types::structured_render::UNDERLINE_DASHED;
 use yinz_types::structured_render::UNDERLINE_DOTTED;
 use yinz_types::structured_render::UNDERLINE_DOUBLE;
-use yinz_types::structured_render::{GraphicsRecord, PaneRect, PANE_SELECTABLE};
+use yinz_types::structured_render::{GraphicsRecord, PaneRect, WireColor, PANE_SELECTABLE};
 
 pub(super) fn cache() -> GlyphCache {
     GlyphCache::new(FontStack::embedded(DEFAULT_FONT_SIZE).unwrap())
@@ -1249,6 +1249,38 @@ fn see_through_padding_paints_only_cells_with_their_own_background() {
         painted(&opaque, -1, 0),
         None,
         "an opaque window leaves a cell matching the clear colour to the clear"
+    );
+}
+
+#[test]
+fn see_through_padding_lets_a_theme_default_edge_through() {
+    use yinz_types::structured_render::ATTR_THEME_BACKGROUND;
+    let theme = WireColor::Rgb(30, 20, 40);
+    let state = Painter::state(1, 2, |painter| {
+        painter.styled(0, 0, "a", |cell| {
+            cell.bg = theme.pack();
+            cell.attrs |= ATTR_THEME_BACKGROUND;
+        });
+        painter.styled(0, 1, "b", |cell| cell.bg = theme.pack());
+    });
+    let paints = Paints::default();
+    let metrics = cache().metrics();
+    let see_through = Transparency {
+        opacity: 0.5,
+        mode: OpacityMode::Background,
+    };
+    let rects = padding_rects(&state, &paints, metrics, see_through, margins());
+    assert_eq!(painted(&rects, -1, 0), None, "a theme default edge");
+    assert_eq!(
+        painted(&rects, 2 * metrics.width as i32, 0),
+        Some([30, 20, 40]),
+        "the same color chosen by a program extends solid"
+    );
+    let opaque = padding_rects(&state, &paints, metrics, Transparency::OPAQUE, margins());
+    assert_eq!(
+        painted(&opaque, -1, 0),
+        Some([30, 20, 40]),
+        "an opaque window extends the theme background"
     );
 }
 

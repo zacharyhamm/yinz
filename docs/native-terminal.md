@@ -173,9 +173,10 @@ session.
 
 `opacity_mode` chooses what `opacity` applies to, with the pinned source's
 spelling and semantics. `"background"` (the default when omitted) lets only the
-default background show through and keeps text, coloured cells, the cursor and
-images solid. `"everything"` fades the whole window evenly. The value is one plain
-string matched ASCII-case-insensitively (`"Everything"` is accepted);
+default background show through, including a session theme's terminal
+background, and keeps text, coloured cells, the cursor and images solid.
+`"everything"` fades the whole window evenly. The value is one plain string
+matched ASCII-case-insensitively (`"Everything"` is accepted);
 serialization always writes lowercase. Other strings such as `"sideways"`,
 non-strings, a bare node, type annotations, properties, children, extra arguments
 and repeated keys are errors that name both valid values (or the duplicate) and
@@ -183,7 +184,7 @@ point at the node. With `opacity 1` the mode makes no difference.
 
 | Layer | `"background"` | `"everything"` |
 |---|---|---|
-| Window clear, default-background cells, default padding | `opacity` | `opacity` |
+| Window clear, default-background cells (including a theme's terminal background), default padding | `opacity` | `opacity` |
 | Explicit and reverse-video backgrounds, selection | solid | `opacity` |
 | Text, underlines and other decorations | solid | `opacity` |
 | Cursor | solid | `opacity` |
@@ -197,11 +198,15 @@ point at the node. With `opacity 1` the mode makes no difference.
 look and the desktop shows through evenly. `"background"` instead leaves the
 default background unpainted over a see-through clear. The session switch notice
 is a Yinz addition drawn after the fade, so failure guidance stays readable in
-both modes. A session theme that supplies a terminal background (the default
-theme does) reaches native windows as each pane cell's explicit background, so in
-`"background"` mode pane cells stay solid and only the clear areas, such as
-`padding_color "background"` padding, show through; `"everything"` is not
-affected.
+both modes. A session theme with a `terminal` block (every bundled theme) gives
+panes a concrete default background. Native windows still treat pane cells on
+that theme background as default background: in `"background"` mode they show
+through like the rest of the clear, and the window draws the clear in its own
+background colour, taken from the `theme` in the configuration files it reads
+(normally the session's theme). A background a program sets explicitly, even to
+the theme's colour, stays solid, as does a pane default background set for one
+pane. The built-in `default` theme has no `terminal` block, so its pane cells
+already use the default background. `"everything"` is not affected.
 
 Startup uses the configured values. Saved file and drop-in edits reload live:
 a change to `opacity` or `opacity_mode` rebuilds the drawn rows once on the next
@@ -243,7 +248,10 @@ monitors were not used.
   blended every probed layer evenly with the desktop, for example the default
   background (24,19,30) became (116,11,120) at 0.6. `"background"` at 0.6 left
   `padding_color "background"` padding see-through at the same blend, and pane
-  cells stayed solid because of the theme background described above. Live edits
+  cells on the theme background stayed solid. That was before native windows
+  treated a theme background as the default background (described above); the
+  repaired behaviour is covered by scene and wire tests and was not observed
+  again on these outputs. Live edits
   switching the mode and opacity applied without changing the grid, the cell
   pixel size or the text-area pixel size reported by CSI 14t and 16t. An invalid
   `opacity_mode "sideways"` kept the working settings and logged the error.

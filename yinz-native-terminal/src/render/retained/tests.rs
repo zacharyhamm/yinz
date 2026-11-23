@@ -369,6 +369,62 @@ fn a_see_through_background_draws_only_the_backgrounds_a_program_chose() {
 }
 
 #[test]
+fn a_see_through_background_lets_a_theme_default_background_through() {
+    use yinz_types::structured_render::{WireColor, ATTR_REVERSE, ATTR_THEME_BACKGROUND};
+    let mut cache = cache();
+    // A session theme's `terminal` background reaches native windows as a concrete
+    // color marked as the pane default, distinct from the window's own default.
+    let theme = WireColor::Rgb(30, 20, 40).pack();
+    let state = Painter::state(4, 8, |painter| {
+        painter.styled(0, 0, "plain", |cell| {
+            cell.bg = theme;
+            cell.attrs |= ATTR_THEME_BACKGROUND;
+        });
+        painter.styled(1, 0, " ", |cell| cell.bg = theme);
+        painter.styled(2, 0, " ", |cell| {
+            cell.bg = theme;
+            cell.attrs |= ATTR_THEME_BACKGROUND | ATTR_REVERSE;
+        });
+    });
+
+    let mut opaque = RetainedScene::new();
+    refreshed(&mut opaque, &state, &mut cache);
+    assert_eq!(
+        rects_in_row(&opaque, 0),
+        5,
+        "a solid window keeps painting the theme background"
+    );
+
+    let mut clear = RetainedScene::new();
+    clear.set_transparency(see_through());
+    refreshed(&mut clear, &state, &mut cache);
+    assert_eq!(
+        rects_in_row(&clear, 0),
+        0,
+        "a theme default background must let the clear through"
+    );
+    assert!(!clear.rows()[0].glyphs.is_empty(), "text on it stays drawn");
+    assert_eq!(
+        rects_in_row(&clear, 1),
+        1,
+        "the same color chosen by a program stays solid"
+    );
+    assert_eq!(rects_in_row(&clear, 2), 1, "reverse video stays solid");
+
+    let mut faded = RetainedScene::new();
+    faded.set_transparency(Transparency {
+        opacity: 0.8,
+        mode: yinz_types::input::native_terminal::OpacityMode::Everything,
+    });
+    refreshed(&mut faded, &state, &mut cache);
+    assert_eq!(
+        rects_in_row(&faded, 0),
+        5,
+        "everything mode paints it and fades the frame"
+    );
+}
+
+#[test]
 fn hidden_text_on_a_see_through_background_leaves_no_ink() {
     use yinz_types::structured_render::{
         WireColor, ATTR_HIDDEN, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,

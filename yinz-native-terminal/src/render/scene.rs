@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use yinz_types::structured_render::{
-    GeometryRecord, WireCell, WireColor, ATTR_BOLD, ATTR_DIM, ATTR_GROUP_CONTINUE, ATTR_HIDDEN,
-    ATTR_ITALIC, ATTR_REVERSE, LINK_NONE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
+    GeometryRecord, WireCell, ATTR_BOLD, ATTR_DIM, ATTR_GROUP_CONTINUE, ATTR_HIDDEN, ATTR_ITALIC,
+    ATTR_REVERSE, LINK_NONE, UNDERLINE_SHIFT, UNDERLINE_STRAIGHT,
 };
 
 use crate::emulation::color::{self, Contrast, Paints, Srgb};
@@ -859,7 +859,7 @@ pub(crate) fn build_row_with_underlines(
         let explicit_background = inverted_by_cursor
             || selected
             || cell.has(ATTR_REVERSE)
-            || !matches!(WireColor::unpack(cell.bg), WireColor::Default);
+            || !cell.has_default_background();
         if context.transparent_background && paint.hidden && !explicit_background {
             paint.draw_glyph = false;
         }

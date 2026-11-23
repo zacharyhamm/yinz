@@ -776,8 +776,9 @@ background_opacity "85%"
 //     minimum_contrast 1.0
 //     // Window opacity from 0.0 to 1.0 (opaque, the default). opacity_mode
 //     // "background" (the default) lets only the default background show
-//     // through; "everything" fades the whole window evenly. Needs a
-//     // compositor; this is not the multiplexer's background_opacity.
+//     // through, including a theme's terminal background; "everything" fades
+//     // the whole window evenly. Needs a compositor; this is not the
+//     // multiplexer's background_opacity.
 //     opacity 1.0
 //     opacity_mode "background"
 // }

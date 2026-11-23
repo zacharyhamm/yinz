@@ -1,5 +1,5 @@
 use super::super::*;
-use yinz_types::structured_render::{decode, WireColor, ATTR_BOLD};
+use yinz_types::structured_render::{decode, WireColor, ATTR_BOLD, ATTR_THEME_BACKGROUND};
 
 #[test]
 fn native_palette_overrides_apply_to_all_cell_colors() {
@@ -77,6 +77,89 @@ fn native_palette_overrides_apply_to_all_cell_colors() {
             }
         }
     }
+}
+
+#[test]
+fn native_cells_mark_only_a_theme_default_background() {
+    let theme = AnsiCode::RgbCode((30, 20, 40));
+    let styled = |background, reverse| {
+        CharacterStyles {
+            background,
+            reverse,
+            ..DEFAULT_STYLES
+        }
+        .into()
+    };
+    let characters = || {
+        vec![
+            TerminalCharacter::new('a'),
+            TerminalCharacter::new_styled('b', styled(Some(theme), None)),
+            TerminalCharacter::new_styled('c', styled(None, Some(AnsiCode::On))),
+            TerminalCharacter::new('d'),
+            TerminalCharacter::new_styled('e', styled(Some(AnsiCode::Reset), None)),
+            TerminalCharacter::new('界'),
+        ]
+    };
+    let mut selection = Selection::default();
+    selection.set_start_and_end_positions(
+        yinz_types::position::Position::new(0, 3),
+        yinz_types::position::Position::new(0, 4),
+    );
+    let highlight = HighlightSelection {
+        selection,
+        bg: Some(AnsiCode::RgbCode((1, 2, 3))),
+        fg: None,
+        bold: false,
+        italic: false,
+        underline: false,
+        layer: HighlightLayer::Hint,
+    };
+    // A session theme supplies the pane default; a pane-specific default does not.
+    for theme_background in [true, false] {
+        let client = ClientId::new(1);
+        let mut output = Output::default();
+        let mut chunk = CharacterChunk::new(characters(), 0, 0);
+        chunk.add_pane_defaults(None, Some(theme));
+        chunk.theme_background = theme_background;
+        chunk.add_selection_and_colors(highlight, 0, 0);
+        output.client_character_chunks.insert(client, vec![chunk]);
+        let mut states = HashMap::from([(client, NativeRenderState::default())]);
+        let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+        let frame = decode(&frames[&client]).unwrap();
+        let (_, cells) = frame.rows().next().unwrap();
+        let marked: Vec<bool> = cells
+            .iter()
+            .map(|cell| cell.has(ATTR_THEME_BACKGROUND))
+            .collect();
+        let expected = if theme_background {
+            // default, explicit, reverse, selected, reset, wide head and tail
+            vec![true, false, false, false, true, true, true]
+        } else {
+            vec![false; 7]
+        };
+        assert_eq!(marked, expected, "theme_background {theme_background}");
+        for (col, cell) in cells.iter().enumerate() {
+            let bg = if col == 3 {
+                WireColor::Rgb(1, 2, 3)
+            } else {
+                WireColor::Rgb(30, 20, 40)
+            };
+            assert_eq!(WireColor::unpack(cell.bg), bg, "column {col}");
+        }
+    }
+
+    // Without a pane default the background stays the wire default, unmarked.
+    let client = ClientId::new(1);
+    let mut output = Output::default();
+    let mut chunk = CharacterChunk::new(vec![TerminalCharacter::new('a')], 0, 0);
+    chunk.theme_background = true;
+    output.client_character_chunks.insert(client, vec![chunk]);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let (_, cells) = frame.rows().next().unwrap();
+    assert!(cells[0].has_default_background());
+    assert!(!cells[0].has(ATTR_THEME_BACKGROUND));
 }
 
 #[test]
