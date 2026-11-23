@@ -5778,7 +5778,7 @@ fn a_display_without_transparency_draws_opaque_and_warns_once() {
     let mut app = app_with(Some(0.5));
     // Available (the default before a window exists): no warning.
     assert!(app.see_through());
-    assert!(!app.warn_if_opaque());
+    assert!(app.warn_if_opaque().is_none());
     assert!(!app.warned_opaque);
 
     app.transparency_available = false;
@@ -5791,11 +5791,17 @@ fn a_display_without_transparency_draws_opaque_and_warns_once() {
         }
     );
     assert!(!app.see_through());
-    assert!(app.warn_if_opaque(), "the first report");
+    assert!(app.warn_if_opaque().is_some(), "the first report");
     assert!(app.warned_opaque);
-    assert!(!app.warn_if_opaque(), "reported once per window process");
+    assert!(
+        app.warn_if_opaque().is_none(),
+        "reported once while unavailable"
+    );
     app.settings.opacity = Some(0.3);
-    assert!(!app.warn_if_opaque(), "a reload does not repeat it");
+    assert!(
+        app.warn_if_opaque().is_none(),
+        "a reload does not repeat it"
+    );
     app.draw().unwrap();
     assert_eq!(app.retained.transparency(), Transparency::OPAQUE);
 
@@ -5838,7 +5844,7 @@ fn a_display_without_transparency_draws_opaque_and_warns_once() {
     for opacity in [None, Some(1.0)] {
         let mut app = app_with(opacity);
         app.transparency_available = false;
-        assert!(!app.warn_if_opaque(), "{opacity:?}");
+        assert!(app.warn_if_opaque().is_none(), "{opacity:?}");
         assert!(!app.warned_opaque);
         assert_eq!(app.effective_transparency(), Transparency::OPAQUE);
     }
@@ -5876,7 +5882,110 @@ fn gl_config_selection_prefers_transparency_then_more_samples() {
 fn only_macos_requires_a_transparent_config_and_only_an_explicit_no_is_unavailable() {
     assert!(!requires_transparent_configs(Platform::Linux));
     assert!(requires_transparent_configs(Platform::MacOs));
-    assert!(transparency_available(Some(true)));
-    assert!(transparency_available(None));
-    assert!(!transparency_available(Some(false)));
+    for compositing in [Some(true), None] {
+        assert!(transparency_available(Some(true), compositing));
+        assert!(transparency_available(None, compositing));
+        assert!(!transparency_available(Some(false), compositing));
+    }
+    for config in [Some(true), None, Some(false)] {
+        assert!(
+            !transparency_available(config, Some(false)),
+            "no compositing manager rules it out whatever the config says: {config:?}"
+        );
+    }
+    assert_eq!(compositing_manager_selection(0), "_NET_WM_CM_S0");
+    assert_eq!(compositing_manager_selection(2), "_NET_WM_CM_S2");
+}
+
+/// Compositor-less X11 offers an ARGB visual, so the config reports
+/// transparency; the compositing manager check is what makes the window fall
+/// back to opaque and say why. It runs only on X11 while opacity is below 1.
+#[test]
+fn x11_without_a_compositing_manager_draws_opaque_and_warns_until_one_runs() {
+    use crate::render::scene::Transparency;
+    use yinz_types::input::native_terminal::OpacityMode;
+
+    let app_with = |opacity: Option<f32>| {
+        let mut config = Config::default();
+        config.terminal.system_fonts = Some(false);
+        config.terminal.opacity = opacity;
+        config.terminal.opacity_mode = Some(OpacityMode::Everything);
+        App::new(
+            TerminalArgs {
+                rows: Some(2),
+                cols: Some(18),
+                ..Default::default()
+            },
+            CliArgs::default(),
+            (config, Options::default()),
+            Arc::new(|_| true),
+            Clipboard::in_memory,
+        )
+        .unwrap()
+    };
+    let everything = |opacity| Transparency {
+        opacity,
+        mode: OpacityMode::Everything,
+    };
+    let mut app = app_with(Some(0.5));
+    app.config_transparency = Some(true);
+    app.x11 = true;
+    app.refresh_transparency_available(|| Some(false));
+    assert!(!app.transparency_available);
+    assert_eq!(app.effective_transparency(), Transparency::OPAQUE);
+    assert!(!app.see_through());
+    let message = app.warn_if_opaque().expect("the first report");
+    assert!(
+        message.contains("no X11 compositing manager is running"),
+        "{message}"
+    );
+    assert!(message.contains("opacity 0.5"), "{message}");
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), Transparency::OPAQUE);
+
+    // A reload that still finds none does not repeat the report.
+    app.settings.opacity = Some(0.4);
+    app.refresh_transparency_available(|| Some(false));
+    assert!(app.warn_if_opaque().is_none());
+
+    // A compositor started later applies on the next reload.
+    app.refresh_transparency_available(|| Some(true));
+    assert!(app.transparency_available);
+    assert_eq!(app.effective_transparency(), everything(0.4));
+    assert!(app.warn_if_opaque().is_none());
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), everything(0.4));
+
+    // Losing it again is reported again.
+    app.refresh_transparency_available(|| Some(false));
+    assert!(app.warn_if_opaque().is_some());
+
+    // A failed check is unknown and keeps the configured transparency.
+    app.refresh_transparency_available(|| None);
+    assert!(app.transparency_available);
+    assert_eq!(app.effective_transparency(), everything(0.4));
+
+    // A config that cannot show transparency still falls back with the
+    // generic message even when a compositing manager runs.
+    let mut app = app_with(Some(0.5));
+    app.config_transparency = Some(false);
+    app.x11 = true;
+    app.refresh_transparency_available(|| Some(true));
+    assert!(!app.transparency_available);
+    let message = app.warn_if_opaque().expect("reported");
+    assert!(
+        message.contains("offers no transparent surface"),
+        "{message}"
+    );
+
+    // The X server is asked only on X11 and only while opacity is below 1.
+    for (x11, opacity) in [(false, Some(0.5)), (true, None), (true, Some(1.0))] {
+        let mut app = app_with(opacity);
+        app.config_transparency = Some(true);
+        app.x11 = x11;
+        app.refresh_transparency_available(|| panic!("checked for {x11} {opacity:?}"));
+        assert!(app.transparency_available, "{x11} {opacity:?}");
+        assert_eq!(app.compositing, None);
+        assert!(app.warn_if_opaque().is_none());
+    }
 }

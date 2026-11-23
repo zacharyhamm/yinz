@@ -215,17 +215,24 @@ visual. On macOS Yinz asks for a transparent OpenGL config, as the pinned source
 does, and makes the window non-opaque only while the effective opacity is below 1,
 again after each reload. Among the configs the display offers, Yinz prefers one
 that reports transparency, then one that does not say, then one that cannot, and
-among equals the most antialiasing samples. When the chosen config cannot show
-transparency, the window draws opaque and logs one warning to the client log
-(`$TMPDIR/yinz-<UID>/yinz-log/yinz.log`): `terminal opacity 0.6 was requested, but
-the display offers no transparent surface (is a compositor running?), so the
-window stays opaque`. EGL reports transparency from the X11 visual's alpha
-channel, or from the config's alpha bits on Wayland, not from whether a
-compositor runs. Xorg and Xwayland normally offer an ARGB visual, so on an X11
-desktop without a compositing manager there is no warning: the window looks
-opaque but darkened, because the X server shows the premultiplied colours as they
-are. In `"everything"` mode the whole window darkens by `opacity`; in
-`"background"` mode the clear areas darken. Run a compositor or set `opacity 1`.
+among equals the most antialiasing samples. EGL reports transparency from the X11
+visual's alpha channel, or from the config's alpha bits on Wayland, not from
+whether a compositor runs. Xorg and Xwayland normally offer an ARGB visual, so on
+X11 Yinz also checks for a compositing manager, which owns the
+`_NET_WM_CM_S<screen>` selection, when the window opens and on each reload while
+`opacity` is below 1. When the chosen config cannot show transparency, or no X11
+compositing manager is running, the window draws opaque instead of darkened and
+logs one warning to the client log (`$TMPDIR/yinz-<UID>/yinz-log/yinz.log`), for
+example: `terminal opacity 0.6 was requested, but no X11 compositing manager is
+running (no _NET_WM_CM_S<screen> selection owner), so the window stays opaque;
+start a compositor and save the configuration again to apply it`. When the config
+is the cause the message reads `...but the display offers no transparent surface
+(is a compositor running?), so the window stays opaque`. A compositor started
+later applies on the next saved configuration change; Yinz does not watch for it
+in between, and a compositor that stops while the window is open leaves it
+darkened until that reload. The warning repeats only after transparency was
+available again. When the X server cannot be asked, Yinz logs that and keeps the
+configured opacity. Run a compositor or set `opacity 1`.
 
 Observed outcomes for this change, on Linux with Mesa 26.2 and this build. The
 outputs were headless sway 1.12 outputs over a magenta background, with text, an
@@ -240,9 +247,14 @@ monitors were not used.
   switching the mode and opacity applied without changing the grid, the cell
   pixel size or the text-area pixel size reported by CSI 14t and 16t. An invalid
   `opacity_mode "sideways"` kept the working settings and logged the error.
-- X11 without a compositing manager (rootful Xwayland, no window manager): both
-  modes looked opaque and darkened by the opacity, and no warning was logged, as
-  described above.
+- X11 without a compositing manager (rootful Xwayland 24 on headless sway, no
+  window manager): before the compositing manager check, both modes looked
+  opaque and darkened by the opacity, and no warning was logged. With the check,
+  `"everything"` at 0.5 drew opaque at full intensity (the status bar kept
+  (175,255,0)) and logged the X11 compositing manager warning once.
+- Xwayland managed by sway's own X11 window manager, which owns
+  `_NET_WM_CM_S0`: `"everything"` at 0.5 logged no warning and kept the
+  configured opacity.
 - macOS: not verified in this change.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero

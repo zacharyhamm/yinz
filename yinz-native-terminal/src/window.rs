@@ -143,11 +143,20 @@ struct App {
     recorded_window: Option<serde_json::Value>,
     started: Instant,
     error: Option<anyhow::Error>,
-    /// Whether the chosen GL config can show see-through pixels, see
+    /// Whether see-through pixels can reach the screen, see
     /// [`transparency_available`]. True until a window exists, so headless
     /// and test Apps draw the configured transparency.
     transparency_available: bool,
+    /// What the chosen GL config reports about transparency; `None` until a
+    /// window exists or when the config does not say.
+    config_transparency: Option<bool>,
+    /// Whether the window is on X11, where a compositing manager is checked.
+    x11: bool,
+    /// Whether an X11 compositing manager was running at the last check, see
+    /// [`x11_compositing_manager`]. `None` when not checked or unknown.
+    compositing: Option<bool>,
     /// Set once the opaque fallback has been reported, see `warn_if_opaque`.
+    /// Cleared when transparency becomes available again.
     warned_opaque: bool,
 }
 
@@ -594,13 +603,67 @@ pub(crate) fn requires_transparent_configs(platform: Platform) -> bool {
     platform == Platform::MacOs
 }
 
-/// Whether the chosen config can show see-through pixels (pinned source,
-/// Linux and macOS). EGL on X11 reports whether the visual has an alpha
-/// channel and EGL on Wayland whether the config has alpha bits, so neither
-/// says whether a compositor is running: compositor-less X11 with an ARGB
-/// visual still counts as available.
-pub(crate) fn transparency_available(supports_transparency: Option<bool>) -> bool {
-    supports_transparency != Some(false)
+/// Whether see-through pixels can reach the screen. The chosen config must not
+/// rule them out (pinned source, Linux and macOS), and on X11 a compositing
+/// manager must be running. EGL on X11 reports only whether the visual has an
+/// alpha channel and EGL on Wayland whether the config has alpha bits, so the
+/// config alone counts compositor-less X11 with an ARGB visual as available;
+/// `compositing` closes that gap. `None` in either argument means unknown and
+/// keeps the configured transparency.
+pub(crate) fn transparency_available(
+    supports_transparency: Option<bool>,
+    compositing: Option<bool>,
+) -> bool {
+    supports_transparency != Some(false) && compositing != Some(false)
+}
+
+/// The manager selection an X11 compositing manager owns for `screen`
+/// (EWMH `_NET_WM_CM_Sn`).
+pub(crate) fn compositing_manager_selection(screen: usize) -> String {
+    format!("_NET_WM_CM_S{screen}")
+}
+
+/// Whether an X11 compositing manager is running on the default screen of the
+/// display winit uses (`DISPLAY`): whether anyone owns that screen's
+/// [`compositing_manager_selection`]. `None` with a warning when the X server
+/// cannot be asked, so a failed check keeps the configured transparency.
+#[cfg(target_os = "linux")]
+fn x11_compositing_manager() -> Option<bool> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let check = || -> Result<bool> {
+        let (connection, screen) = x11rb::rust_connection::RustConnection::connect(None)
+            .context("connect to the X server")?;
+        let selection = compositing_manager_selection(screen);
+        let atom = connection
+            .intern_atom(true, selection.as_bytes())
+            .context("send InternAtom")?
+            .reply()
+            .with_context(|| format!("look up {selection}"))?
+            .atom;
+        // A selection nobody ever named cannot have an owner.
+        if atom == x11rb::NONE {
+            return Ok(false);
+        }
+        let owner = connection
+            .get_selection_owner(atom)
+            .context("send GetSelectionOwner")?
+            .reply()
+            .with_context(|| format!("get the owner of {selection}"))?
+            .owner;
+        Ok(owner != x11rb::NONE)
+    };
+    match check() {
+        Ok(running) => Some(running),
+        Err(error) => {
+            log::warn!("could not check for an X11 compositing manager: {error:#}");
+            None
+        },
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn x11_compositing_manager() -> Option<bool> {
+    None
 }
 
 /// Makes a macOS window see-through or opaque to match the effective
@@ -1407,6 +1470,9 @@ impl App {
             started: now,
             error: None,
             transparency_available: true,
+            config_transparency: None,
+            x11: false,
+            compositing: None,
             warned_opaque: false,
         })
     }
@@ -1521,7 +1587,9 @@ impl App {
                 },
             )
             .map_err(|error| anyhow!("create native terminal window: {error}"))?;
-        self.transparency_available = transparency_available(config.supports_transparency());
+        self.config_transparency = config.supports_transparency();
+        self.x11 = backend == WindowBackend::X11;
+        self.refresh_transparency_available(x11_compositing_manager);
         self.warn_if_opaque();
         let window = window.context("windowing system did not create a native window")?;
         set_see_through(&window, self.see_through());
@@ -1829,20 +1897,45 @@ impl App {
     fn see_through(&self) -> bool {
         self.effective_transparency().opacity < 1.0
     }
-    /// Reports once per window process that a requested opacity cannot be
-    /// shown, so the window draws opaque instead of silently ignoring it.
-    /// Returns whether this call reported.
-    fn warn_if_opaque(&mut self) -> bool {
+    /// Recomputes [`transparency_available`] from the chosen config and, on
+    /// X11 while the configured opacity is below 1, a fresh compositing
+    /// manager check from `check_compositing` (at window creation and on each
+    /// reload, so a compositor started later applies on the next reload).
+    fn refresh_transparency_available(&mut self, check_compositing: impl FnOnce() -> Option<bool>) {
+        self.compositing = if self.x11 && self.settings.opacity_value() < 1.0 {
+            check_compositing()
+        } else {
+            None
+        };
+        self.transparency_available =
+            transparency_available(self.config_transparency, self.compositing);
+        if self.transparency_available {
+            self.warned_opaque = false;
+        }
+    }
+    /// Reports once, until transparency becomes available again, that a
+    /// requested opacity cannot be shown, so the window draws opaque instead
+    /// of silently ignoring it. Returns the reported message.
+    fn warn_if_opaque(&mut self) -> Option<String> {
         let opacity = self.settings.opacity_value();
         if self.transparency_available || self.warned_opaque || opacity >= 1.0 {
-            return false;
+            return None;
         }
         self.warned_opaque = true;
-        log::warn!(
-            "terminal opacity {opacity} was requested, but the display offers no transparent \
-             surface (is a compositor running?), so the window stays opaque"
-        );
-        true
+        let message = if self.compositing == Some(false) {
+            format!(
+                "terminal opacity {opacity} was requested, but no X11 compositing manager is \
+                 running (no _NET_WM_CM_S<screen> selection owner), so the window stays opaque; start a \
+                 compositor and save the configuration again to apply it"
+            )
+        } else {
+            format!(
+                "terminal opacity {opacity} was requested, but the display offers no transparent \
+                 surface (is a compositor running?), so the window stays opaque"
+            )
+        };
+        log::warn!("{message}");
+        Some(message)
     }
     /// Padding fill for one frame, from the drawn grid at `origin` inside a
     /// `target`-sized surface (pinned source `draw.rs`). The right and bottom
@@ -1949,6 +2042,7 @@ impl App {
         if self.connection_geometry.received_frame && self.cursor_trail_enabled() {
             self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
         }
+        self.refresh_transparency_available(x11_compositing_manager);
         self.warn_if_opaque();
         if let Some(surfaces) = &self.surfaces {
             surfaces

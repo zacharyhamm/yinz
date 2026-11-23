@@ -7298,6 +7298,7 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "winit",
+ "x11rb",
  "yinz-cli",
  "yinz-client",
  "yinz-config",
