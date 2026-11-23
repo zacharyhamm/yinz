@@ -115,6 +115,11 @@ fn underline_metrics_setup_validation_points_to_a_copyable_example() {
     assert_eq!(example.terminal.underline_offset, Some(-2));
     assert_eq!(example.terminal.underline_thickness, Some(1));
     assert_eq!(example.terminal.minimum_contrast, Some(1.0));
+    assert_eq!(example.terminal.opacity, Some(1.0));
+    assert_eq!(
+        example.terminal.opacity_mode,
+        Some(yinz_types::input::native_terminal::OpacityMode::Background)
+    );
 }
 
 #[cfg(unix)]

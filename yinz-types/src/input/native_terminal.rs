@@ -1,10 +1,15 @@
 //! Settings shared with the native terminal client.
 use serde::{Deserialize, Serialize};
 
+/// Which layers `opacity` applies to. Unset means [`OpacityMode::Background`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OpacityMode {
+    /// Only the default background (and default padding) shows through; text,
+    /// coloured cells, the cursor and images stay solid.
     #[default]
     Background,
+    /// The whole window fades evenly.
     Everything,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -80,7 +85,12 @@ pub struct TerminalConfig {
     /// KDL accepts [`MIN_CONTRAST`]`..=`[`MAX_CONTRAST`]. Unset means 1.0 (off),
     /// see [`TerminalConfig::minimum_contrast_ratio`].
     pub minimum_contrast: Option<f32>,
+    /// Window opacity; KDL accepts 0..=1. Unset means 1.0 (opaque), see
+    /// [`TerminalConfig::opacity_value`].
     pub opacity: Option<f32>,
+    /// Which layers `opacity` applies to; unset means
+    /// [`OpacityMode::Background`], see [`TerminalConfig::opacity_mode_or_default`].
+    pub opacity_mode: Option<OpacityMode>,
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
     pub initial_columns: Option<u16>,
@@ -133,6 +143,16 @@ impl TerminalConfig {
     /// The effective minimum contrast ratio; unset means [`MIN_CONTRAST`] (off).
     pub fn minimum_contrast_ratio(&self) -> f32 {
         self.minimum_contrast.unwrap_or(MIN_CONTRAST)
+    }
+
+    /// The effective window opacity; unset means 1.0 (opaque).
+    pub fn opacity_value(&self) -> f32 {
+        self.opacity.unwrap_or(1.0)
+    }
+
+    /// The effective opacity mode; unset means [`OpacityMode::Background`].
+    pub fn opacity_mode_or_default(&self) -> OpacityMode {
+        self.opacity_mode.unwrap_or_default()
     }
 }
 

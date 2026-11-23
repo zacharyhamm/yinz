@@ -444,3 +444,53 @@ fn minimum_contrast_defaults_to_off_and_roundtrips() {
         );
     }
 }
+
+#[test]
+fn opacity_mode_defaults_to_background_and_serializes_lowercase() {
+    let default = TerminalConfig::default();
+    assert_eq!(default.opacity_mode, None);
+    assert_eq!(default.opacity_mode_or_default(), OpacityMode::Background);
+    assert_eq!(OpacityMode::default(), OpacityMode::Background);
+    assert_eq!(default.opacity, None);
+    assert_eq!(default.opacity_value(), 1.0);
+    for text in ["{}", r#"{"opacity_mode":null}"#] {
+        let config = serde_json::from_str::<TerminalConfig>(text).unwrap();
+        assert_eq!(config.opacity_mode, None);
+        assert!(
+            serde_json::to_value(&config).unwrap()["opacity_mode"].is_null(),
+            "omission stays unset"
+        );
+    }
+    for (mode, spelling) in [
+        (OpacityMode::Background, "background"),
+        (OpacityMode::Everything, "everything"),
+    ] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"opacity_mode": spelling, "opacity": 0.5}))
+                .unwrap();
+        assert_eq!(config.opacity_mode, Some(mode));
+        assert_eq!(config.opacity_mode_or_default(), mode);
+        assert_eq!(config.opacity_value(), 0.5);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["opacity_mode"], spelling);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    // KDL matches case-insensitively and stores lowercase; the model itself
+    // accepts only the canonical spelling.
+    for value in [
+        serde_json::json!("Everything"),
+        serde_json::json!("Background"),
+        serde_json::json!("sideways"),
+        serde_json::json!(true),
+        serde_json::json!(1),
+    ] {
+        assert!(
+            serde_json::from_value::<TerminalConfig>(serde_json::json!({"opacity_mode": value}))
+                .is_err(),
+            "{value}"
+        );
+    }
+}

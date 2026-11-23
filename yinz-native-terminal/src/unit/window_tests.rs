@@ -2162,8 +2162,8 @@ fn baseline_offset_equivalent_file_reloads(initial: Option<i32>, changes: &[Opti
                    settings: &TerminalConfig,
                    paints: &Paints| {
         retained.set_transparency(crate::render::scene::Transparency {
-            opacity: settings.opacity.unwrap_or(1.0),
-            mode: yinz_types::input::native_terminal::OpacityMode::Background,
+            opacity: settings.opacity_value(),
+            mode: settings.opacity_mode_or_default(),
         });
         retained.refresh(
             SceneInputs {
@@ -5193,7 +5193,7 @@ fn extended_padding_margins_follow_mode_origin_remainder_and_transparency() {
     // See-through windows paint only explicit or reverse backgrounds, using
     // the same transparency as the grid.
     app.settings.opacity = Some(0.5);
-    assert_eq!(app.transparency().opacity, 0.5);
+    assert_eq!(app.effective_transparency().opacity, 0.5);
     let see_through = app.padding_margins(window, origin);
     assert_eq!(padding_painted(&see_through, -1, h), Some(clear));
     assert_eq!(padding_painted(&see_through, -1, 0), Some(red));
@@ -5545,4 +5545,338 @@ fn minimum_contrast_is_applied_from_startup_configuration() {
     )
     .unwrap();
     assert_eq!(app.retained.contrast().minimum(), 7.0);
+}
+
+#[test]
+fn opacity_mode_reload_rebuilds_rows_once_without_fonts_or_geometry() {
+    use crate::render::scene::Transparency;
+    use yinz_types::input::native_terminal::OpacityMode;
+    use yinz_types::structured_render::WireColor;
+
+    let mut settings = embedded_settings();
+    let mut paints = Paints::default();
+    let active = effective_font_options(&settings, 1.0, 1.0);
+    let mut cache = GlyphCache::new(active.stack(1.0).unwrap());
+    let mut retained = RetainedScene::new();
+    let state = crate::testing::painter::Painter::state(2, 8, |painter| {
+        painter.text(0, 0, "Ag");
+        painter.styled(1, 0, "xy", |cell| {
+            cell.bg = WireColor::Rgb(200, 0, 0).pack();
+        });
+        // An explicit background equal to the clear colour.
+        let [r, g, b] = Paints::default().background;
+        painter.styled(1, 4, "c", |cell| cell.bg = WireColor::Rgb(r, g, b).pack());
+    });
+    let cells: Vec<_> = (0..2)
+        .flat_map(|row| (0..8).map(move |col| (row, col)))
+        .map(|(row, col)| state.screen().cell(row, col))
+        .collect();
+    retained.set_selection(Some(Selection::at(0, 0).extended_to(0, 1)));
+    // Mirrors App::draw: the configured transparency is synced every frame.
+    let refresh = |retained: &mut RetainedScene,
+                   cache: &mut GlyphCache,
+                   settings: &TerminalConfig,
+                   paints: &Paints| {
+        retained.set_transparency(Transparency {
+            opacity: settings.opacity_value(),
+            mode: settings.opacity_mode_or_default(),
+        });
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &mut cache, &settings, &paints);
+    assert!(retained.rebuilt_everything());
+    let generation = cache.generation();
+    let opaque = retained.flatten();
+    assert!(opaque.rects.iter().any(|rect| rect.color == [200, 0, 0]));
+    assert!(!opaque
+        .rects
+        .iter()
+        .any(|rect| rect.color == paints.background));
+    let geometry =
+        Geometry::calculate(400, 200, padding_layout(&settings, 1.0), cache.metrics()).unwrap();
+    let everything = Some(OpacityMode::Everything);
+    let background = Some(OpacityMode::Background);
+    for (opacity, mode, blur, rebuilds) in [
+        (Some(0.6), None, None, true),
+        (Some(0.6), everything, None, true),
+        (Some(0.6), everything, None, false),
+        (Some(0.6), everything, Some(true), false),
+        (Some(0.4), everything, Some(true), true),
+        (Some(0.4), background, Some(true), true),
+        (None, background, Some(false), true),
+        (None, None, None, false),
+    ] {
+        let label = format!("{opacity:?} {mode:?} {blur:?}");
+        let next = TerminalConfig {
+            opacity,
+            opacity_mode: mode,
+            blur,
+            ..settings.clone()
+        };
+        let requested = effective_font_options(&next, 1.0, 1.0);
+        assert!(matches!(
+            prepare_fonts(&active, &requested).unwrap(),
+            FontUpdate::Unchanged
+        ));
+        let next_paints = paints;
+        apply_settings(
+            &mut settings,
+            &mut paints,
+            &mut retained,
+            next.clone(),
+            next_paints,
+        );
+        refresh(&mut retained, &mut cache, &settings, &paints);
+        assert_eq!(retained.rebuilt_everything(), rebuilds, "{label}");
+        assert_eq!(settings, next);
+        assert_eq!(cache.generation(), generation, "{label}");
+        assert!(
+            Geometry::calculate(400, 200, padding_layout(&settings, 1.0), cache.metrics())
+                .unwrap()
+                .messages(Some(geometry))
+                .is_empty(),
+            "{label}"
+        );
+        let flat = retained.flatten();
+        assert_eq!(
+            flat.glyphs, opaque.glyphs,
+            "{label}: text and selection stay"
+        );
+        if retained.transparency().see_through_background() {
+            // The default background is left to the see-through clear, so an
+            // explicit background equal to it is filled; every opaque fill
+            // (explicit colour and selection) stays.
+            assert!(opaque.rects.iter().all(|rect| flat.rects.contains(rect)));
+            assert!(
+                flat.rects
+                    .iter()
+                    .any(|rect| rect.color == paints.background),
+                "{label}"
+            );
+        } else {
+            // Everything mode fades at draw time, so the rows match opaque.
+            assert_eq!(flat, opaque, "{label}");
+        }
+    }
+    let after: Vec<_> = (0..2)
+        .flat_map(|row| (0..8).map(move |col| (row, col)))
+        .map(|(row, col)| state.screen().cell(row, col))
+        .collect();
+    assert_eq!(after, cells);
+    // Positive control: the comparison still runs for other inputs.
+    let next = settings.clone();
+    let next_paints = Paints {
+        foreground: [12, 34, 56],
+        ..paints
+    };
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    refresh(&mut retained, &mut cache, &settings, &paints);
+    assert!(retained.rebuilt_everything());
+}
+
+#[test]
+#[cfg(unix)]
+fn opacity_mode_reaches_the_production_draw_path() {
+    use crate::render::scene::Transparency;
+    use yinz_types::input::native_terminal::OpacityMode;
+
+    let mut app = switch_app(CliArgs::default());
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), Transparency::OPAQUE);
+
+    app.settings.opacity = Some(0.6);
+    app.settings.opacity_mode = Some(OpacityMode::Everything);
+    let configured = Transparency {
+        opacity: 0.6,
+        mode: OpacityMode::Everything,
+    };
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), configured);
+
+    // A session switch replaces the scene; the next frame restores the value.
+    app.retained = RetainedScene::new();
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), configured);
+
+    app.settings.opacity_mode = None;
+    app.draw().unwrap();
+    assert_eq!(
+        app.retained.transparency(),
+        Transparency {
+            opacity: 0.6,
+            mode: OpacityMode::Background,
+        }
+    );
+}
+
+#[test]
+fn opacity_mode_is_applied_from_startup_configuration() {
+    use crate::render::scene::Transparency;
+    use yinz_types::input::native_terminal::OpacityMode;
+
+    let mut config = Config::default();
+    config.terminal.system_fonts = Some(false);
+    config.terminal.opacity = Some(0.6);
+    config.terminal.opacity_mode = Some(OpacityMode::Everything);
+    let mut app = App::new(
+        TerminalArgs {
+            rows: Some(2),
+            cols: Some(18),
+            ..Default::default()
+        },
+        CliArgs::default(),
+        (config, Options::default()),
+        Arc::new(|_| true),
+        Clipboard::in_memory,
+    )
+    .unwrap();
+    let expected = Transparency {
+        opacity: 0.6,
+        mode: OpacityMode::Everything,
+    };
+    assert_eq!(app.effective_transparency(), expected);
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), expected);
+}
+
+#[test]
+fn a_display_without_transparency_draws_opaque_and_warns_once() {
+    use crate::render::scene::Transparency;
+    use yinz_types::input::native_terminal::{OpacityMode, PaddingColor};
+    use yinz_types::structured_render::WireColor;
+
+    let app_with = |opacity: Option<f32>| {
+        let mut config = Config::default();
+        config.terminal.system_fonts = Some(false);
+        config.terminal.opacity = opacity;
+        config.terminal.opacity_mode = Some(OpacityMode::Everything);
+        config.terminal.padding = Some(8.0);
+        config.terminal.padding_color = Some(PaddingColor::Extend);
+        App::new(
+            TerminalArgs {
+                rows: Some(2),
+                cols: Some(18),
+                ..Default::default()
+            },
+            CliArgs::default(),
+            (config, Options::default()),
+            Arc::new(|_| true),
+            Clipboard::in_memory,
+        )
+        .unwrap()
+    };
+    let mut app = app_with(Some(0.5));
+    // Available (the default before a window exists): no warning.
+    assert!(app.see_through());
+    assert!(!app.warn_if_opaque());
+    assert!(!app.warned_opaque);
+
+    app.transparency_available = false;
+    assert_eq!(app.effective_transparency(), Transparency::OPAQUE);
+    assert_eq!(
+        app.configured_transparency(),
+        Transparency {
+            opacity: 0.5,
+            mode: OpacityMode::Everything,
+        }
+    );
+    assert!(!app.see_through());
+    assert!(app.warn_if_opaque(), "the first report");
+    assert!(app.warned_opaque);
+    assert!(!app.warn_if_opaque(), "reported once per window process");
+    app.settings.opacity = Some(0.3);
+    assert!(!app.warn_if_opaque(), "a reload does not repeat it");
+    app.draw().unwrap();
+    assert_eq!(app.retained.transparency(), Transparency::OPAQUE);
+
+    // Padding agrees with the grid. An explicit background equal to the clear
+    // colour is painted only in a see-through background window; the opaque
+    // fallback leaves it to the clear, as an opaque window does.
+    let clear = app.paints.background;
+    crate::testing::painter::Painter::apply(&mut app.state, |p| {
+        p.styled(0, 0, "a", |cell| cell.bg = WireColor::Rgb(200, 0, 0).pack());
+        p.styled(1, 0, "c", |cell| {
+            cell.bg = WireColor::Rgb(clear[0], clear[1], clear[2]).pack()
+        });
+    });
+    let metrics = app.cache.metrics();
+    let layout = app.padding_layout();
+    let window = (
+        layout.horizontal() + 18 * metrics.width,
+        layout.vertical() + 2 * metrics.height,
+    );
+    let origin = app.content_origin(window);
+    let second_row = metrics.height as i32;
+    let margins = |app: &App| app.padding_margins(window, origin);
+    assert_eq!(padding_painted(&margins(&app), -1, 0), Some([200, 0, 0]));
+    assert_eq!(padding_painted(&margins(&app), -1, second_row), None);
+    app.transparency_available = true;
+    app.settings.opacity_mode = Some(OpacityMode::Background);
+    assert_eq!(
+        padding_painted(&margins(&app), -1, second_row),
+        Some(clear),
+        "a see-through background window paints it"
+    );
+    app.settings.opacity_mode = Some(OpacityMode::Everything);
+    assert_eq!(
+        padding_painted(&margins(&app), -1, second_row),
+        None,
+        "everything mode paints padding like opaque and fades it at draw time"
+    );
+
+    // Opacity 1 never needs the fallback, so there is nothing to report.
+    for opacity in [None, Some(1.0)] {
+        let mut app = app_with(opacity);
+        app.transparency_available = false;
+        assert!(!app.warn_if_opaque(), "{opacity:?}");
+        assert!(!app.warned_opaque);
+        assert_eq!(app.effective_transparency(), Transparency::OPAQUE);
+    }
+}
+
+#[test]
+fn gl_config_selection_prefers_transparency_then_more_samples() {
+    assert_eq!(
+        best_config([(Some(false), 0), (Some(true), 4), (None, 0)].into_iter()),
+        Some(1)
+    );
+    assert_eq!(
+        best_config([(Some(false), 0), (None, 4), (Some(false), 0)].into_iter()),
+        Some(1),
+        "a config that does not say beats one that cannot"
+    );
+    assert_eq!(
+        best_config([(Some(false), 8), (None, 0)].into_iter()),
+        Some(1),
+        "transparency ranks before samples"
+    );
+    assert_eq!(
+        best_config([(Some(true), 0), (Some(true), 4), (Some(true), 4)].into_iter()),
+        Some(2),
+        "among equals more samples win and ties keep the last offered"
+    );
+    assert_eq!(
+        best_config([(Some(false), 2), (Some(false), 0)].into_iter()),
+        Some(0)
+    );
+    assert_eq!(best_config(std::iter::empty()), None);
+}
+
+#[test]
+fn only_macos_requires_a_transparent_config_and_only_an_explicit_no_is_unavailable() {
+    assert!(!requires_transparent_configs(Platform::Linux));
+    assert!(requires_transparent_configs(Platform::MacOs));
+    assert!(transparency_available(Some(true)));
+    assert!(transparency_available(None));
+    assert!(!transparency_available(Some(false)));
 }

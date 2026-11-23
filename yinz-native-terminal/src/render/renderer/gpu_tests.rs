@@ -2726,3 +2726,240 @@ fn extended_padding_pixels_follow_edge_cells_under_the_notice() {
         assert_eq!(px(&shown, far_x, row1), with_alpha(blue));
     });
 }
+
+#[test]
+fn opacity_modes_apply_alpha_per_layer() {
+    use crate::emulation::color::Paints;
+    use crate::emulation::screen_buffer::{CursorShape, TermSize};
+    use crate::render::cursor_trail::{CursorSnapshot, CursorTrail, TrailMesh};
+    use crate::render::scene::{
+        notice_scene, padding_rects, BlinkPhase, CursorOptions, Margins, Notice, Rect, SceneInputs,
+        Transparency,
+    };
+    use crate::render::scroll_animation::ScrollLayer;
+    use crate::testing::painter::{residency, Painter, Place};
+    use crate::window::effective_font_options;
+    use std::time::Instant;
+    use yinz_types::input::native_terminal::{OpacityMode, TerminalConfig};
+    use yinz_types::structured_render::WireColor;
+
+    with_renderer(|renderer| {
+        let options = effective_font_options(
+            &TerminalConfig {
+                system_fonts: Some(false),
+                ..TerminalConfig::default()
+            },
+            1.0,
+            1.0,
+        );
+        let mut cache = fixture_cache(&options);
+        let metrics = cache.metrics();
+        let (w, h) = (metrics.width, metrics.height);
+        let (red, green) = ([200, 0, 0], [0, 200, 0]);
+        let (below_background, below_text, above_text) =
+            ([250, 120, 0, 255], [120, 0, 250, 255], [0, 250, 250, 255]);
+        let rgb = |[r, g, b]: [u8; 3]| WireColor::Rgb(r, g, b).pack();
+        let state = Painter::state(4, 12, |p| {
+            p.text(0, 0, "█");
+            p.styled(0, 6, " ", |cell| cell.bg = rgb(red));
+            // The right edge extends into the padding.
+            p.styled(0, 11, " ", |cell| cell.bg = rgb(green));
+            p.cursor(2, 2, CursorShape::Block);
+            p.graphics(&[
+                residency(1, 4, 4, below_background),
+                residency(2, 4, 4, below_text),
+                residency(3, 4, 4, above_text),
+                Place::of(1, 4, 4).at(3, 0).depth(i32::MIN).record(),
+                Place::of(2, 4, 4).at(3, 3).depth(-1).record(),
+                Place::of(3, 4, 4).at(3, 6).depth(1).record(),
+            ]);
+        });
+        let paints = Paints {
+            background: [40, 40, 40],
+            foreground: [220, 220, 220],
+            cursor: Some([0, 200, 250]),
+            ..Paints::default()
+        };
+        let target = (768, 384);
+        let origin = (13, 9);
+        let margins = Margins {
+            left: 13,
+            top: 9,
+            right: target.0 - 13 - 12 * w,
+            bottom: target.1 - 9 - 4 * h,
+        };
+        // An active trail from column 10 back to the cursor on row 2.
+        let grid = TermSize { rows: 4, cols: 12 };
+        let start = Instant::now();
+        let mut trail = CursorTrail::default();
+        let mut mesh = TrailMesh::default();
+        for col in [10, 2] {
+            trail.observe(
+                CursorSnapshot {
+                    row: 2,
+                    col,
+                    visible: true,
+                    shape: CursorShape::Block,
+                    color: [0, 200, 250],
+                },
+                grid,
+                metrics,
+                true,
+                start,
+            );
+        }
+        assert!(trail.sample(start, &mut mesh));
+        let layer = ScrollLayer {
+            rects: vec![Rect {
+                x: (4 * w) as i32,
+                y: h as i32,
+                width: w,
+                height: h,
+                color: [250, 0, 150],
+            }],
+            ..Default::default()
+        };
+        let notice = notice_scene(
+            Notice::Text("Could not switch to destination. Esc dismisses."),
+            &mut cache,
+            target,
+            origin,
+            Margins::default(),
+        );
+        let mut retained = RetainedScene::new();
+        let mut draw = |transparency: Transparency, with_notice: bool| {
+            retained.set_transparency(transparency);
+            retained.refresh(
+                SceneInputs {
+                    state: &state,
+                    phase: BlinkPhase::On,
+                    paints: &paints,
+                    cursor: CursorOptions::default(),
+                    hovered_link: None,
+                    preedit: None,
+                },
+                &mut cache,
+            );
+            let rects = padding_rects(&state, &paints, metrics, transparency, margins);
+            renderer.draw_retained(
+                &retained,
+                cache.atlases(),
+                target,
+                Frame {
+                    origin,
+                    margins: &rects,
+                    layer: Some(&layer),
+                    trail: Some(&mesh),
+                    notice: with_notice.then_some(&notice),
+                },
+            );
+            read_framebuffer(renderer)
+        };
+        let px = |pixels: &[u8], x: u32, y: u32| baseline_offset_atlas_retry_pixel(pixels, x, y);
+        let cell = |row: u32, col: u32| (13 + col * w + w / 2, 9 + row * h + h / 2);
+        let image = |col: u32| (13 + col * w + 1, 9 + 3 * h + 1);
+        let probes = [
+            ("text ink", cell(0, 0)),
+            ("explicit background", cell(0, 6)),
+            ("default background", cell(1, 9)),
+            ("cursor", cell(2, 2)),
+            ("cursor trail", cell(2, 6)),
+            ("image below backgrounds", image(0)),
+            ("image below text", image(3)),
+            ("image above text", image(6)),
+            ("extend padding", (target.0 - 2, 9 + h / 2)),
+            ("default padding", (3, 9 + h + h / 2)),
+            ("overlay layer", cell(1, 4)),
+        ];
+        let panel = notice.rects[0];
+        let notice_probe = (
+            (origin.0 + panel.x + 1) as u32,
+            (origin.1 + panel.y + 1) as u32,
+        );
+
+        let opaque = draw(Transparency::OPAQUE, false);
+        let clear = [40, 40, 40, 255];
+        let expected = [
+            ("text ink", [220, 220, 220, 255]),
+            ("explicit background", [200, 0, 0, 255]),
+            ("default background", clear),
+            ("cursor", [0, 200, 250, 255]),
+            ("image below backgrounds", below_background),
+            ("image below text", below_text),
+            ("image above text", above_text),
+            ("extend padding", [0, 200, 0, 255]),
+            ("default padding", clear),
+            ("overlay layer", [250, 0, 150, 255]),
+        ];
+        for (name, at) in probes {
+            if let Some((_, color)) = expected.iter().find(|(probe, _)| *probe == name) {
+                assert_eq!(px(&opaque, at.0, at.1), *color, "opaque {name}");
+            }
+        }
+        let trail_pixel = px(&opaque, cell(2, 6).0, cell(2, 6).1);
+        assert_ne!(trail_pixel, clear, "the trail is drawn at its probe");
+        let opaque_notice = draw(Transparency::OPAQUE, true);
+        assert_eq!(
+            px(&opaque_notice, notice_probe.0, notice_probe.1),
+            [35, 29, 23, 255]
+        );
+
+        let mode = |opacity, mode| Transparency { opacity, mode };
+        // Opacity 1 is opaque in either mode.
+        for full in [
+            mode(1.0, OpacityMode::Everything),
+            mode(1.0, OpacityMode::Background),
+        ] {
+            assert_eq!(draw(full, false), opaque, "{full:?}");
+            assert_eq!(draw(full, true), opaque_notice, "{full:?}");
+        }
+
+        // Background mode: only the default background and default padding
+        // show through; every other layer stays solid.
+        let background = draw(mode(0.5, OpacityMode::Background), false);
+        let see_through = px(&background, cell(1, 9).0, cell(1, 9).1);
+        let has_alpha = see_through[3] < 255;
+        for channel in 0..3 {
+            assert!(see_through[channel].abs_diff(20) <= 1, "{see_through:?}");
+        }
+        for (name, at) in probes {
+            let (before, after) = (px(&opaque, at.0, at.1), px(&background, at.0, at.1));
+            match name {
+                "default background" | "default padding" => {
+                    assert_eq!(after, see_through, "background {name}");
+                },
+                // The trail blends over the see-through clear.
+                "cursor trail" => {},
+                _ => assert_eq!(after, before, "background {name}"),
+            }
+        }
+
+        // Everything mode: every layer, including padding, the trail and the
+        // overlay layer, is scaled evenly by the opacity.
+        let everything = draw(mode(0.5, OpacityMode::Everything), false);
+        for (name, at) in probes {
+            let (before, after) = (px(&opaque, at.0, at.1), px(&everything, at.0, at.1));
+            let channels = if has_alpha { 4 } else { 3 };
+            for channel in 0..channels {
+                let scaled = f32::from(before[channel]) * 0.5;
+                assert!(
+                    (f32::from(after[channel]) - scaled).abs() <= 1.0,
+                    "everything {name}: {before:?} -> {after:?}"
+                );
+            }
+        }
+
+        // The Yinz switch notice is drawn after the fade and stays solid in
+        // every mode, so failure guidance remains readable.
+        for transparency in [
+            mode(0.5, OpacityMode::Background),
+            mode(0.5, OpacityMode::Everything),
+        ] {
+            assert_eq!(
+                px(&draw(transparency, true), notice_probe.0, notice_probe.1),
+                [35, 29, 23, 255],
+                "{transparency:?}"
+            );
+        }
+    });
+}

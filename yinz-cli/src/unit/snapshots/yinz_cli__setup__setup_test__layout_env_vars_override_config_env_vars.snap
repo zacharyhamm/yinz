@@ -9220,6 +9220,7 @@ Config {
         padding_color: None,
         minimum_contrast: None,
         opacity: None,
+        opacity_mode: None,
         blur: None,
         startup_mode: None,
         initial_columns: None,

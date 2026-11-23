@@ -774,6 +774,12 @@ background_opacity "85%"
 //     // The lowest allowed contrast ratio between text and its background, from
 //     // 1.0 (off) to 21.0; text colours are adjusted when below it.
 //     minimum_contrast 1.0
+//     // Window opacity from 0.0 to 1.0 (opaque, the default). opacity_mode
+//     // "background" (the default) lets only the default background show
+//     // through; "everything" fades the whole window evenly. Needs a
+//     // compositor; this is not the multiplexer's background_opacity.
+//     opacity 1.0
+//     opacity_mode "background"
 // }
 
 // Enable or disable writing of session metadata to disk (if disabled, other sessions might not know

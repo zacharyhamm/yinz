@@ -913,3 +913,66 @@ fn startup_axes_disk_observations_use_host_values_and_canonical_live_remainder()
     .unwrap();
     assert_observation(false);
 }
+
+#[test]
+fn opacity_mode_watcher_reloads_saved_edits_and_keeps_settings_after_invalid_edit() {
+    use yinz_types::input::native_terminal::OpacityMode;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let main = root.join("config.kdl");
+    let drop_ins = root.join("config.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    std::fs::write(&main, "terminal { opacity 0.6; }").unwrap();
+    let logs = captured_config_logs();
+    let watching = Watching::start(main.clone(), root.clone());
+    let expect = |opacity: f32, mode: Option<OpacityMode>| {
+        watching.changes.wait_until_described(
+            &format!("reloaded opacity {opacity} with opacity_mode {mode:?}"),
+            WAIT,
+            |changes| {
+                let terminal = &changes.last()?.config.terminal;
+                (terminal.opacity == Some(opacity) && terminal.opacity_mode == mode).then_some(())
+            },
+            |changes| format!("{:?}", changes.last().map(|change| &change.config.terminal)),
+        );
+    };
+    Config::write_managed_fragment(&drop_ins, "terminal { opacity_mode \"everything\"; }").unwrap();
+    expect(0.6, Some(OpacityMode::Everything));
+
+    std::fs::write(
+        &main,
+        "terminal { opacity 0.4; opacity_mode \"sideways\"; }",
+    )
+    .unwrap();
+    logs.wait_until(
+        "watcher diagnostic for invalid opacity_mode",
+        WAIT,
+        |logs| {
+            logs.iter()
+                .find(|line| {
+                    line.contains("Failed to reload config")
+                        && line.contains(main.to_str().unwrap())
+                        && line.contains("opacity_mode must be \"background\" or \"everything\"")
+                })
+                .map(|_| ())
+        },
+    );
+    let last = watching
+        .changes
+        .lock()
+        .last()
+        .unwrap()
+        .config
+        .terminal
+        .clone();
+    assert_eq!(
+        (last.opacity, last.opacity_mode),
+        (Some(0.6), Some(OpacityMode::Everything)),
+        "an invalid edit keeps the working settings"
+    );
+
+    std::fs::write(&main, "terminal { opacity 0.4; }").unwrap();
+    expect(0.4, Some(OpacityMode::Everything));
+    Config::write_managed_fragment(&drop_ins, "terminal { opacity_mode \"BACKGROUND\"; }").unwrap();
+    expect(0.4, Some(OpacityMode::Background));
+}

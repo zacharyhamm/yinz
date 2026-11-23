@@ -54,6 +54,7 @@ terminal {
     padding_color "background"
     minimum_contrast 1.0
     opacity 1.0
+    opacity_mode "background"
     blur false
     cursor_style "block"
     cursor_blink true
@@ -116,8 +117,10 @@ colour the top and bottom strips, and the four corners use the corner cells. The
 right and bottom strips include any partial-cell remainder and the balancing
 offset, so every pixel outside the grid is covered. In an opaque window only
 backgrounds that differ from the default background are painted. With `opacity`
-below 1, only cells with an explicit background or reverse video are painted, and
-default-background edges stay see-through like the grid. Selection, the cursor,
+below 1 in `opacity_mode "background"`, only cells with an explicit background or
+reverse video are painted, and default-background edges stay see-through like the
+grid. In `opacity_mode "everything"` the padding is painted as in an opaque window
+and fades with the rest of the window. Selection, the cursor,
 IME preedit and link hover do not extend into the padding; the switch notice
 draws above it. Colours come from the session theme's effective palette and follow
 configuration and theme reloads (native theme adaptation is a separate issue).
@@ -158,6 +161,89 @@ the configured value. Saved file and drop-in edits reload live and take effect o
 the next frame; a change only redraws, without rebuilding fonts or geometry, and
 content and selection are kept. A palette or theme reload re-adjusts text against
 the new colours. A later layer wins and omission inherits.
+
+`opacity` sets how opaque the window is, from 0 (fully see-through) to 1 (opaque,
+the default when omitted). It takes one plain number (integer or decimal). Errors
+name the setting and its range and point at the node: values outside 0..1 such as
+`-0.01` or `1.01`, non-finite numbers, strings such as `"0.5"`, booleans, a bare
+node, type annotations, properties, children, extra arguments and repeated keys.
+This is not the multiplexer's `background_opacity`, the percentage background
+opacity of Agent, the command palette and translucent overlays inside the
+session.
+
+`opacity_mode` chooses what `opacity` applies to, with the pinned source's
+spelling and semantics. `"background"` (the default when omitted) lets only the
+default background show through and keeps text, coloured cells, the cursor and
+images solid. `"everything"` fades the whole window evenly. The value is one plain
+string matched ASCII-case-insensitively (`"Everything"` is accepted);
+serialization always writes lowercase. Other strings such as `"sideways"`,
+non-strings, a bare node, type annotations, properties, children, extra arguments
+and repeated keys are errors that name both valid values (or the duplicate) and
+point at the node. With `opacity 1` the mode makes no difference.
+
+| Layer | `"background"` | `"everything"` |
+|---|---|---|
+| Window clear, default-background cells, default padding | `opacity` | `opacity` |
+| Explicit and reverse-video backgrounds, selection | solid | `opacity` |
+| Text, underlines and other decorations | solid | `opacity` |
+| Cursor | solid | `opacity` |
+| Cursor trail | blends over the clear | `opacity` |
+| Inline images, at every depth | solid | `opacity` |
+| `padding_color "extend"` fills | solid; default edges see-through | `opacity` |
+| Scroll-animation layer | solid | `opacity` |
+| Session switch notice | solid | solid |
+
+`"everything"` fades the finished frame by `opacity`, so the window keeps its
+look and the desktop shows through evenly. `"background"` instead leaves the
+default background unpainted over a see-through clear. The session switch notice
+is a Yinz addition drawn after the fade, so failure guidance stays readable in
+both modes. A session theme that supplies a terminal background (the default
+theme does) reaches native windows as each pane cell's explicit background, so in
+`"background"` mode pane cells stay solid and only the clear areas, such as
+`padding_color "background"` padding, show through; `"everything"` is not
+affected.
+
+Startup uses the configured values. Saved file and drop-in edits reload live:
+a change to `opacity` or `opacity_mode` rebuilds the drawn rows once on the next
+frame, without rebuilding fonts or geometry, and content and selection are kept.
+A `blur` change does not redraw. A later layer wins and omission inherits. An
+invalid edit keeps the working settings and logs the reload error.
+
+See-through pixels need a compositor. Wayland compositors always composite. On
+X11 a compositing manager must be running and the window needs a 32-bit ARGB
+visual. On macOS Yinz asks for a transparent OpenGL config, as the pinned source
+does, and makes the window non-opaque only while the effective opacity is below 1,
+again after each reload. Among the configs the display offers, Yinz prefers one
+that reports transparency, then one that does not say, then one that cannot, and
+among equals the most antialiasing samples. When the chosen config cannot show
+transparency, the window draws opaque and logs one warning to the client log
+(`$TMPDIR/yinz-<UID>/yinz-log/yinz.log`): `terminal opacity 0.6 was requested, but
+the display offers no transparent surface (is a compositor running?), so the
+window stays opaque`. EGL reports transparency from the X11 visual's alpha
+channel, or from the config's alpha bits on Wayland, not from whether a
+compositor runs. Xorg and Xwayland normally offer an ARGB visual, so on an X11
+desktop without a compositing manager there is no warning: the window looks
+opaque but darkened, because the X server shows the premultiplied colours as they
+are. In `"everything"` mode the whole window darkens by `opacity`; in
+`"background"` mode the clear areas darken. Run a compositor or set `opacity 1`.
+
+Observed outcomes for this change, on Linux with Mesa 26.2 and this build. The
+outputs were headless sway 1.12 outputs over a magenta background, with text, an
+explicit background, a Kitty image and `padding_color "extend"` padding. Physical
+monitors were not used.
+
+- Wayland and Xwayland under sway (composited): `"everything"` at 0.6 and 0.3
+  blended every probed layer evenly with the desktop, for example the default
+  background (24,19,30) became (116,11,120) at 0.6. `"background"` at 0.6 left
+  `padding_color "background"` padding see-through at the same blend, and pane
+  cells stayed solid because of the theme background described above. Live edits
+  switching the mode and opacity applied without changing the grid, the cell
+  pixel size or the text-area pixel size reported by CSI 14t and 16t. An invalid
+  `opacity_mode "sideways"` kept the working settings and logged the error.
+- X11 without a compositing manager (rootful Xwayland, no window manager): both
+  modes looked opaque and darkened by the opacity, and no warning was logged, as
+  described above.
+- macOS: not verified in this change.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero
 or more string arguments:
@@ -320,8 +406,9 @@ running is discovered during the normal polling/debounce cycle.
 Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
 `underline_thickness`, `ligatures`, `font_ligatures`, `font_features`, effective
 padding (`padding`, `padding_top`, `padding_right`, `padding_bottom`,
-`padding_left`), `padding_balance`, effective `padding_color` or effective
-`minimum_contrast` with `action reconfigure` requires
+`padding_left`), `padding_balance`, effective `padding_color`, effective
+`minimum_contrast`, effective `opacity` or effective `opacity_mode` with `action
+reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
@@ -330,7 +417,8 @@ when the effective value is already the default. For `font_features`, omission a
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
 counts as a change. Padding compares the resolved sides and balance, so
 `padding_left 4` with a current `padding 4` is equivalent; `padding_color
-"background"` equals omission, and so does `minimum_contrast 1`. The refusal names the
+"background"` equals omission, and so do `minimum_contrast 1`, `opacity 1` and
+`opacity_mode "background"`. The refusal names the
 key that caused each change: `padding` when the shorthand changed a side, or the
 side's own key. Before this change, unsaved padding was accepted but never
 reached native windows, which read padding only from files. An invalid fragment, with or without `--write`, is refused with

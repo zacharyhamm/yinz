@@ -428,6 +428,55 @@ fn a_change_of_transparency_rebuilds_every_row() {
         retained.rebuilt_everything(),
         "a mode change did not rebuild"
     );
+
+    let everything = |opacity| Transparency {
+        opacity,
+        mode: yinz_types::input::native_terminal::OpacityMode::Everything,
+    };
+    retained.set_transparency(everything(0.4));
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(
+        retained.rebuilt_everything(),
+        "an everything-mode opacity change did not rebuild"
+    );
+    retained.set_transparency(everything(0.4));
+    refreshed(&mut retained, &state, &mut cache);
+    assert!(
+        !retained.rebuilt_everything(),
+        "an unchanged everything-mode setting rebuilt"
+    );
+}
+
+#[test]
+fn everything_mode_rows_match_opaque_rows_because_the_fade_happens_at_draw_time() {
+    use yinz_types::structured_render::{WireColor, ATTR_HIDDEN, ATTR_REVERSE};
+    let mut cache = cache();
+    let state = Painter::state(4, 8, |painter| {
+        painter.text(0, 0, "plain");
+        painter.styled(1, 0, " ", |cell| cell.bg = WireColor::Rgb(0, 0, 0).pack());
+        painter.styled(2, 0, " ", |cell| cell.attrs |= ATTR_REVERSE);
+        painter.styled(3, 0, "MM", |cell| cell.attrs |= ATTR_HIDDEN);
+    });
+    let mut opaque = RetainedScene::new();
+    refreshed(&mut opaque, &state, &mut cache);
+    for opacity in [0.0, 0.4, 1.0] {
+        let mut faded = RetainedScene::new();
+        faded.set_transparency(Transparency {
+            opacity,
+            mode: yinz_types::input::native_terminal::OpacityMode::Everything,
+        });
+        refreshed(&mut faded, &state, &mut cache);
+        assert_eq!(faded.flatten(), opaque.flatten(), "opacity {opacity}");
+    }
+    // Opacity 1 in background mode is the opaque setting itself.
+    let mut solid = RetainedScene::new();
+    solid.set_transparency(Transparency {
+        opacity: 1.0,
+        mode: yinz_types::input::native_terminal::OpacityMode::Background,
+    });
+    assert_eq!(solid.transparency(), Transparency::OPAQUE);
+    refreshed(&mut solid, &state, &mut cache);
+    assert_eq!(solid.flatten(), opaque.flatten());
 }
 
 #[test]

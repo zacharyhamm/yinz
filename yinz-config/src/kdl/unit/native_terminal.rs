@@ -153,6 +153,11 @@ fn documented_native_terminal_example_loads() {
         Some(yinz_types::input::native_terminal::PaddingColor::Background)
     );
     assert_eq!(config.terminal.minimum_contrast, Some(1.0));
+    assert_eq!(config.terminal.opacity, Some(1.0));
+    assert_eq!(
+        config.terminal.opacity_mode,
+        Some(yinz_types::input::native_terminal::OpacityMode::Background)
+    );
     assert_eq!(config.terminal.font_family.as_deref(), Some("Iosevka Term"));
     assert_eq!(config.terminal.font_bold, config.terminal.font_family);
     assert_eq!(config.terminal.font_italic, config.terminal.font_family);
@@ -1042,4 +1047,173 @@ fn minimum_contrast_validates_roundtrips_and_overlays() {
         Config::from_kdl("terminal { min_contrast 4.5; }", None).is_err(),
         "unknown spellings stay rejected"
     );
+}
+
+#[test]
+fn opacity_mode_validates_roundtrips_and_overlays() {
+    use yinz_types::input::native_terminal::OpacityMode;
+    let unset = Config::from_kdl("terminal { padding 2; }", None).unwrap();
+    assert_eq!(unset.terminal.opacity_mode, None);
+    assert_eq!(
+        unset.terminal.opacity_mode_or_default(),
+        OpacityMode::Background
+    );
+    assert!(!unset.to_string(false).unwrap().contains("opacity_mode"));
+    for (literal, mode, canonical) in [
+        ("\"background\"", OpacityMode::Background, "background"),
+        ("\"everything\"", OpacityMode::Everything, "everything"),
+        ("\"Everything\"", OpacityMode::Everything, "everything"),
+        ("\"BACKGROUND\"", OpacityMode::Background, "background"),
+    ] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ opacity_mode {literal}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.opacity_mode, Some(mode), "{literal}");
+        let text = config.to_string(false).unwrap();
+        assert!(
+            text.contains(&format!("opacity_mode \"{canonical}\"")),
+            "{literal}: {text}"
+        );
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal);
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.opacity_mode, Some(mode));
+        let (other, other_literal) = match mode {
+            OpacityMode::Background => (OpacityMode::Everything, "everything"),
+            OpacityMode::Everything => (OpacityMode::Background, "background"),
+        };
+        let overridden = Config::from_kdl(
+            &format!("terminal {{ opacity_mode \"{other_literal}\"; }}"),
+            Some(inherited),
+        )
+        .unwrap();
+        assert_eq!(overridden.terminal.opacity_mode, Some(other));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+        assert_eq!(overridden.terminal.opacity, Some(0.5));
+    }
+    let message = "terminal opacity_mode must be \"background\" or \"everything\"";
+    for (bad, expected) in [
+        ("opacity_mode \"sideways\"", message),
+        ("opacity_mode \"\"", message),
+        ("opacity_mode \"everything \"", message),
+        ("opacity_mode true", message),
+        ("opacity_mode 1", message),
+        ("opacity_mode null", message),
+        ("opacity_mode", message),
+        ("opacity_mode (s)\"everything\"", message),
+        ("(s)opacity_mode \"everything\"", message),
+        ("opacity_mode \"everything\" \"background\"", message),
+        ("opacity_mode value=\"everything\"", message),
+        ("opacity_mode \"everything\" {}", message),
+        (
+            "opacity_mode \"everything\"; opacity_mode \"everything\"",
+            "duplicate terminal setting opacity_mode",
+        ),
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert_eq!(error.error_message, expected, "{input}");
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let span = &input[offset..offset + len];
+        assert!(
+            span.contains("opacity_mode") && !span.starts_with("terminal"),
+            "{input}: span {span:?}"
+        );
+    }
+    // The duplicate is reported at the second node.
+    let input = "terminal { opacity_mode \"everything\"; opacity_mode \"background\"; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("expected KdlError");
+    };
+    assert!(input[error.offset.unwrap()..].starts_with("opacity_mode \"background\""));
+    assert!(
+        Config::from_kdl("terminal { opacity-mode \"everything\"; }", None).is_err(),
+        "unknown spellings stay rejected"
+    );
+}
+
+#[test]
+fn opacity_boundaries_are_validated_at_the_node() {
+    let unset = Config::from_kdl("terminal { padding 2; }", None).unwrap();
+    assert_eq!(unset.terminal.opacity, None);
+    assert_eq!(unset.terminal.opacity_value(), 1.0);
+    assert!(!unset.to_string(false).unwrap().contains("opacity"));
+    for (literal, opacity) in [
+        ("0", 0.0),
+        ("0.0", 0.0),
+        ("0.5", 0.5),
+        ("0.25", 0.25),
+        ("1", 1.0),
+        ("1.0", 1.0),
+    ] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ opacity {literal}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.opacity, Some(opacity), "{literal}");
+        let text = config.to_string(false).unwrap();
+        assert!(text.contains("opacity "), "{literal}: {text}");
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal, "{literal}: {text}");
+        let inherited =
+            Config::from_kdl("terminal { opacity_mode \"everything\"; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.opacity, Some(opacity));
+        let overridden = Config::from_kdl("terminal { opacity 0.75; }", Some(inherited)).unwrap();
+        assert_eq!(overridden.terminal.opacity, Some(0.75));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+        assert_eq!(
+            overridden.terminal.opacity_mode,
+            Some(yinz_types::input::native_terminal::OpacityMode::Everything)
+        );
+    }
+    let message = "terminal opacity must be a plain number from 0 to 1";
+    for (bad, expected) in [
+        ("opacity -0.01", message),
+        ("opacity 1.01", message),
+        ("opacity 2", message),
+        ("opacity -1", message),
+        ("opacity 1e400", message),
+        ("opacity -1e400", message),
+        ("opacity \"0.5\"", message),
+        ("opacity true", message),
+        ("opacity null", message),
+        ("opacity", message),
+        ("opacity (f)0.5", message),
+        ("(f)opacity 0.5", message),
+        ("opacity value=0.5", message),
+        ("opacity 0.5 0.6", message),
+        ("opacity 0.5 {}", message),
+        (
+            "opacity 0.5; opacity 0.5",
+            "duplicate terminal setting opacity",
+        ),
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; minimum_contrast 2; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert_eq!(error.error_message, expected, "{input}");
+        let offset = error.offset.unwrap();
+        let len = error.len.unwrap();
+        let span = &input[offset..offset + len];
+        assert!(
+            span.contains("opacity")
+                && !span.starts_with("terminal")
+                && !span.contains("padding")
+                && !span.contains("minimum_contrast"),
+            "{input}: span {span:?}"
+        );
+    }
+    // The duplicate is reported at the second node.
+    let input = "terminal { opacity 0.5; opacity 0.6; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("expected KdlError");
+    };
+    assert!(input[error.offset.unwrap()..].starts_with("opacity 0.6"));
 }

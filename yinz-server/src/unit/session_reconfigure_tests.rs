@@ -2332,6 +2332,25 @@ mod padding_reconfigure {
                     "padding 2; minimum_contrast 4.5;",
                     vec!["padding", "minimum_contrast"],
                 ),
+                ("", "opacity 0.5;", vec!["opacity"]),
+                ("opacity 0.5;", "opacity 0.6;", vec!["opacity"]),
+                ("opacity 0.5;", "opacity 1;", vec!["opacity"]),
+                ("", "opacity_mode \"everything\";", vec!["opacity_mode"]),
+                (
+                    "opacity_mode \"everything\";",
+                    "opacity_mode \"Background\";",
+                    vec!["opacity_mode"],
+                ),
+                (
+                    "",
+                    "opacity 0.5; opacity_mode \"everything\";",
+                    vec!["opacity", "opacity_mode"],
+                ),
+                (
+                    "",
+                    "padding 2; opacity_mode \"everything\";",
+                    vec!["padding", "opacity_mode"],
+                ),
             ] {
                 let fixture = with_current(&clients, current);
                 let before = fixture.snapshot();
@@ -2373,6 +2392,17 @@ mod padding_reconfigure {
                 ("", "minimum_contrast 1.0;"),
                 ("minimum_contrast 4.5;", "minimum_contrast 4.5;"),
                 ("minimum_contrast 4.5;", "padding 0;"),
+                ("", "opacity 1;"),
+                ("", "opacity 1.0;"),
+                ("opacity 0.5;", "opacity 0.5;"),
+                ("opacity 0.5;", "padding 0;"),
+                ("", "opacity_mode \"background\";"),
+                ("", "opacity_mode \"Background\";"),
+                (
+                    "opacity_mode \"everything\";",
+                    "opacity_mode \"EVERYTHING\";",
+                ),
+                ("opacity_mode \"everything\";", "padding 0;"),
             ] {
                 for all in [true, false] {
                     let fixture = with_current(&clients, current);
@@ -2409,7 +2439,8 @@ mod padding_reconfigure {
         for all in [true, false] {
             let fixture = with_current(&[CLIENT], "padding 4;");
             let fragment = "terminal { padding_left 6; padding_balance true; \
-                            padding_color \"extend\"; minimum_contrast 4.5; }";
+                            padding_color \"extend\"; minimum_contrast 4.5; \
+                            opacity 0.6; opacity_mode \"everything\"; }";
             if all {
                 assert_eq!(fixture.all(fragment, true).exit_status, None);
             } else {
@@ -2425,6 +2456,11 @@ mod padding_reconfigure {
                 Some(yinz_types::input::native_terminal::PaddingColor::Extend)
             );
             assert_eq!(saved.terminal.minimum_contrast, Some(4.5));
+            assert_eq!(saved.terminal.opacity, Some(0.6));
+            assert_eq!(
+                saved.terminal.opacity_mode,
+                Some(yinz_types::input::native_terminal::OpacityMode::Everything)
+            );
             assert_eq!(
                 std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
                 "// unchanged main\n"

@@ -1163,3 +1163,48 @@ fn native_terminal_minimum_contrast_drop_ins_override_inherit_and_reject_invalid
     assert_eq!(loaded.terminal.minimum_contrast, Some(7.0));
     assert_eq!(loaded.terminal.padding, Some(2.0));
 }
+
+#[test]
+fn native_terminal_opacity_mode_drop_ins_override_inherit_and_reject_invalid_writes() {
+    use yinz_types::input::native_terminal::OpacityMode;
+    let dir = tempfile::tempdir().unwrap();
+    let base = Config::from_kdl(
+        "terminal { opacity 0.6; opacity_mode \"everything\"; }",
+        None,
+    )
+    .unwrap();
+    for (name, text) in [
+        ("30-invalid.kdl", "terminal { opacity_mode \"sideways\"; }"),
+        ("25-invalid-opacity.kdl", "terminal { opacity 1.5; }"),
+        ("20-other.kdl", "terminal { padding 2; }"),
+        ("10-mode.kdl", "terminal { opacity_mode \"Background\"; }"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let loaded = base.clone().with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.opacity_mode, Some(OpacityMode::Background));
+    assert_eq!(loaded.terminal.opacity, Some(0.6));
+    assert_eq!(loaded.terminal.padding, Some(2.0));
+
+    let path = Config::write_managed_fragment(
+        dir.path(),
+        "terminal { opacity_mode \"everything\"; opacity 0.4; }",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let saved = Config::from_kdl(&before, None).unwrap();
+    assert_eq!(saved.terminal.opacity_mode, Some(OpacityMode::Everything));
+    assert_eq!(saved.terminal.opacity, Some(0.4));
+    for fragment in [
+        "terminal { opacity_mode \"sideways\"; }",
+        "terminal { opacity_mode \"everything\"; opacity_mode \"background\"; }",
+        "terminal { opacity -0.1; }",
+    ] {
+        assert!(Config::write_managed_fragment(dir.path(), fragment).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+    let loaded = base.with_overlay_dir(Some(dir.path()));
+    assert_eq!(loaded.terminal.opacity_mode, Some(OpacityMode::Everything));
+    assert_eq!(loaded.terminal.opacity, Some(0.4));
+    assert_eq!(loaded.terminal.padding, Some(2.0));
+}

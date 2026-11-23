@@ -42,6 +42,13 @@ fn validate_unsaved_native_settings(
     if current.terminal.minimum_contrast_ratio() != requested.terminal.minimum_contrast_ratio() {
         changed.push("minimum_contrast");
     }
+    // Effective values, so omission equals an explicit 1 / "background".
+    if current.terminal.opacity_value() != requested.terminal.opacity_value() {
+        changed.push("opacity");
+    }
+    if current.terminal.opacity_mode_or_default() != requested.terminal.opacity_mode_or_default() {
+        changed.push("opacity_mode");
+    }
     if !changed.is_empty() {
         return Err(anyhow!(
             "changing terminal {} requires a saved configuration: \

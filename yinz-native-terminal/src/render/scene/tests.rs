@@ -1253,6 +1253,57 @@ fn see_through_padding_paints_only_cells_with_their_own_background() {
 }
 
 #[test]
+fn everything_mode_and_full_opacity_pad_like_an_opaque_window() {
+    let state = Painter::state(1, 2, |painter| {
+        painter.styled(0, 0, "a", |cell| {
+            cell.bg = WireColor::Indexed(1).pack();
+        });
+        painter.text(0, 1, "b");
+    });
+    let paints = Paints {
+        background: color::test_helpers::indexed(1),
+        ..Default::default()
+    };
+    let metrics = cache().metrics();
+    let opaque = padding_rects(&state, &paints, metrics, Transparency::OPAQUE, margins());
+    for transparency in [
+        Transparency {
+            opacity: 0.5,
+            mode: OpacityMode::Everything,
+        },
+        Transparency {
+            opacity: 1.0,
+            mode: OpacityMode::Everything,
+        },
+        Transparency {
+            opacity: 1.0,
+            mode: OpacityMode::Background,
+        },
+    ] {
+        assert!(!transparency.see_through_background(), "{transparency:?}");
+        assert_eq!(transparency.clear_alpha(), 1.0, "{transparency:?}");
+        assert_eq!(
+            padding_rects(&state, &paints, metrics, transparency, margins()),
+            opaque,
+            "{transparency:?}"
+        );
+    }
+    // Only everything mode below 1 fades, and background mode below 1 alone
+    // makes the clear see-through.
+    let fade = |opacity, mode| Transparency { opacity, mode }.fade();
+    assert_eq!(fade(0.5, OpacityMode::Everything), Some(0.5));
+    assert_eq!(fade(0.0, OpacityMode::Everything), Some(0.0));
+    assert_eq!(fade(1.0, OpacityMode::Everything), None);
+    assert_eq!(fade(0.5, OpacityMode::Background), None);
+    let background = Transparency {
+        opacity: 0.5,
+        mode: OpacityMode::Background,
+    };
+    assert!(background.see_through_background());
+    assert_eq!(background.clear_alpha(), 0.5);
+}
+
+#[test]
 fn padding_with_no_margins_draws_nothing() {
     let rects = padding_rects(
         &edge_state(),

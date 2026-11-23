@@ -143,6 +143,12 @@ struct App {
     recorded_window: Option<serde_json::Value>,
     started: Instant,
     error: Option<anyhow::Error>,
+    /// Whether the chosen GL config can show see-through pixels, see
+    /// [`transparency_available`]. True until a window exists, so headless
+    /// and test Apps draw the configured transparency.
+    transparency_available: bool,
+    /// Set once the opaque fallback has been reported, see `warn_if_opaque`.
+    warned_opaque: bool,
 }
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
@@ -561,6 +567,53 @@ pub(crate) fn apply_fonts(
     retained.mark(&crate::emulation::damage::Damage::Everything);
 }
 
+/// Index of the GL config to draw with: one that reports transparency, then
+/// one that does not say, then one that cannot, as in the pinned source's
+/// `best_config`. Among equals Yinz keeps preferring more MSAA samples (the
+/// pinned source prefers fewer); `max_by_key` keeps the last of equal
+/// candidates, as the previous selection did.
+pub(crate) fn best_config(candidates: impl Iterator<Item = (Option<bool>, u8)>) -> Option<usize> {
+    candidates
+        .enumerate()
+        .max_by_key(|(_, (transparency, samples))| {
+            let rank = match transparency {
+                Some(true) => 2u8,
+                None => 1,
+                Some(false) => 0,
+            };
+            (rank, *samples)
+        })
+        .map(|(index, _)| index)
+}
+
+/// Whether config selection must ask for transparent configs. Without one a
+/// macOS window is always opaque (pinned source). On Linux an X11 display
+/// without a see-through visual would then offer no config at all, so EGL
+/// reports transparency per config instead and [`best_config`] ranks it.
+pub(crate) fn requires_transparent_configs(platform: Platform) -> bool {
+    platform == Platform::MacOs
+}
+
+/// Whether the chosen config can show see-through pixels (pinned source,
+/// Linux and macOS). EGL on X11 reports whether the visual has an alpha
+/// channel and EGL on Wayland whether the config has alpha bits, so neither
+/// says whether a compositor is running: compositor-less X11 with an ARGB
+/// visual still counts as available.
+pub(crate) fn transparency_available(supports_transparency: Option<bool>) -> bool {
+    supports_transparency != Some(false)
+}
+
+/// Makes a macOS window see-through or opaque to match the effective
+/// transparency (pinned source `set_see_through`). Elsewhere the surface's
+/// alpha decides, so this does nothing. It uses winit's own API, which also
+/// gives the NSWindow a clear background, instead of the pinned source's
+/// near-clear AppKit colour.
+fn set_see_through(window: &Window, see_through: bool) {
+    if Platform::current() == Platform::MacOs {
+        window.set_transparent(see_through);
+    }
+}
+
 pub(crate) fn apply_settings(
     settings: &mut TerminalConfig,
     paints: &mut Paints,
@@ -586,6 +639,14 @@ pub(crate) fn apply_settings(
     // which also syncs it.
     comparison.minimum_contrast = next_settings.minimum_contrast;
     retained.set_contrast(next_settings.minimum_contrast_ratio());
+    // The next draw passes the effective transparency to set_transparency,
+    // which rebuilds every row once when it changed, and only then: marking
+    // here would also rebuild when the effective value stays the same, such
+    // as on a display without a transparent surface. Blur is applied by the
+    // compositor and needs no redraw (pinned source: blur does not redraw).
+    comparison.opacity = next_settings.opacity;
+    comparison.opacity_mode = next_settings.opacity_mode;
+    comparison.blur = next_settings.blur;
     if comparison != next_settings || *paints != next_paints {
         retained.mark_everything();
     }
@@ -1345,6 +1406,8 @@ impl App {
             recorded_window: None,
             started: now,
             error: None,
+            transparency_available: true,
+            warned_opaque: false,
         })
     }
 
@@ -1440,20 +1503,28 @@ impl App {
             .with_window_attributes(Some(attrs))
             .build(
                 event_loop,
-                ConfigTemplateBuilder::new().with_alpha_size(8),
+                ConfigTemplateBuilder::new()
+                    .with_alpha_size(8)
+                    .with_transparency(requires_transparent_configs(Platform::current())),
                 |configs| {
+                    let configs: Vec<_> = configs.collect();
+                    let best = best_config(
+                        configs
+                            .iter()
+                            .map(|config| (config.supports_transparency(), config.num_samples())),
+                    )
+                    .expect("display returned no OpenGL configurations");
                     configs
-                        .max_by_key(|config| {
-                            (
-                                config.supports_transparency().unwrap_or(false),
-                                config.num_samples(),
-                            )
-                        })
-                        .expect("display returned no OpenGL configurations")
+                        .into_iter()
+                        .nth(best)
+                        .expect("the chosen config is one of those offered")
                 },
             )
             .map_err(|error| anyhow!("create native terminal window: {error}"))?;
+        self.transparency_available = transparency_available(config.supports_transparency());
+        self.warn_if_opaque();
         let window = window.context("windowing system did not create a native window")?;
+        set_see_through(&window, self.see_through());
         window.set_ime_allowed(true);
         self.update_fonts(self.zoom, window.scale_factor());
         let extent = window.inner_size();
@@ -1738,12 +1809,40 @@ impl App {
     fn padding_layout(&self) -> PaddingLayout {
         padding_layout(&self.settings, self.scale)
     }
-    /// The grid's transparency; padding uses the same value so the two agree.
-    fn transparency(&self) -> crate::render::scene::Transparency {
+    /// The configured `opacity` and `opacity_mode`.
+    fn configured_transparency(&self) -> crate::render::scene::Transparency {
         crate::render::scene::Transparency {
-            opacity: self.settings.opacity.unwrap_or(1.0),
-            mode: yinz_types::input::native_terminal::OpacityMode::Background,
+            opacity: self.settings.opacity_value(),
+            mode: self.settings.opacity_mode_or_default(),
         }
+    }
+    /// The transparency the grid is drawn with: the configured value, or
+    /// opaque when the display offers no transparent surface (pinned source
+    /// `effective_transparency`). Padding uses the same value so the two agree.
+    fn effective_transparency(&self) -> crate::render::scene::Transparency {
+        if self.transparency_available {
+            self.configured_transparency()
+        } else {
+            crate::render::scene::Transparency::OPAQUE
+        }
+    }
+    fn see_through(&self) -> bool {
+        self.effective_transparency().opacity < 1.0
+    }
+    /// Reports once per window process that a requested opacity cannot be
+    /// shown, so the window draws opaque instead of silently ignoring it.
+    /// Returns whether this call reported.
+    fn warn_if_opaque(&mut self) -> bool {
+        let opacity = self.settings.opacity_value();
+        if self.transparency_available || self.warned_opaque || opacity >= 1.0 {
+            return false;
+        }
+        self.warned_opaque = true;
+        log::warn!(
+            "terminal opacity {opacity} was requested, but the display offers no transparent \
+             surface (is a compositor running?), so the window stays opaque"
+        );
+        true
     }
     /// Padding fill for one frame, from the drawn grid at `origin` inside a
     /// `target`-sized surface (pinned source `draw.rs`). The right and bottom
@@ -1766,7 +1865,7 @@ impl App {
                     &self.state,
                     &self.paints,
                     metrics,
-                    self.transparency(),
+                    self.effective_transparency(),
                     Margins {
                         left,
                         top,
@@ -1850,10 +1949,12 @@ impl App {
         if self.connection_geometry.received_frame && self.cursor_trail_enabled() {
             self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
         }
+        self.warn_if_opaque();
         if let Some(surfaces) = &self.surfaces {
             surfaces
                 .window
                 .set_blur(self.settings.blur.unwrap_or(false));
+            set_see_through(&surfaces.window, self.see_through());
             #[cfg(target_os = "macos")]
             {
                 use winit::platform::macos::WindowExtMacOS;
@@ -2185,7 +2286,10 @@ impl App {
         }
         let preedit = self.composition.shown();
         self.retained.set_selection(self.selection.range());
-        self.retained.set_transparency(self.transparency());
+        // Synced every frame: a fresh RetainedScene (startup, session switch)
+        // starts opaque, and set_transparency rebuilds rows only on a change.
+        self.retained
+            .set_transparency(self.effective_transparency());
         // Synced every frame (pinned source draw.rs) because a fresh
         // RetainedScene, at startup or after a session switch, starts off.
         self.retained

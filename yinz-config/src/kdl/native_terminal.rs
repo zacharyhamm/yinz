@@ -110,6 +110,50 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 ));
             }
         }
+        if name == "opacity" {
+            // 0..=1 as in the pinned source, compared in f64; a valid value is
+            // stored by the generic path, which also reports a repeated node.
+            let opacity =
+                (plain_positional && node.ty().is_none() && node.entries()[0].ty().is_none())
+                    .then(|| {
+                        let value = node.entries()[0].value();
+                        value
+                            .as_i64()
+                            .map(|value| value as f64)
+                            .or_else(|| value.as_f64())
+                    })
+                    .flatten();
+            if !opacity.is_some_and(|opacity| opacity.is_finite() && (0.0..=1.0).contains(&opacity))
+            {
+                return Err(kdl_parsing_error!(
+                    "terminal opacity must be a plain number from 0 to 1".to_owned(),
+                    node
+                ));
+            }
+        }
+        if name == "opacity_mode" {
+            // Matched ASCII-case-insensitively like the pinned source; stored
+            // (and therefore serialized) in canonical lowercase.
+            let mode =
+                (plain_positional && node.ty().is_none() && node.entries()[0].ty().is_none())
+                    .then(|| node.entries()[0].value().as_string())
+                    .flatten()
+                    .map(str::to_ascii_lowercase)
+                    .filter(|mode| matches!(mode.as_str(), "background" | "everything"));
+            let Some(mode) = mode else {
+                return Err(kdl_parsing_error!(
+                    "terminal opacity_mode must be \"background\" or \"everything\"".to_owned(),
+                    node
+                ));
+            };
+            if object.insert(name.to_owned(), mode.into()).is_some() {
+                return Err(kdl_parsing_error!(
+                    "duplicate terminal setting opacity_mode".to_owned(),
+                    node
+                ));
+            }
+            continue;
+        }
         if name == "padding_color" {
             // Matched ASCII-case-insensitively like the pinned source; stored
             // (and therefore serialized) in canonical lowercase.
@@ -229,16 +273,15 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
     }
     let config: TerminalConfig = serde_json::from_value(object.into())
         .map_err(|error| kdl_parsing_error!(error.to_string(), block))?;
-    for (name, value, min, max) in [
-        ("font_size", config.font_size, 3.0, 384.0),
-        ("opacity", config.opacity, 0.0, 1.0),
-    ] {
-        if value.is_some_and(|value| !value.is_finite() || value < min || value > max) {
-            return Err(kdl_parsing_error!(
-                format!("terminal {name} must be between {min} and {max}"),
-                block
-            ));
-        }
+    // opacity is range-checked at its node above.
+    if config
+        .font_size
+        .is_some_and(|value| !value.is_finite() || !(3.0..=384.0).contains(&value))
+    {
+        return Err(kdl_parsing_error!(
+            "terminal font_size must be between 3 and 384".to_owned(),
+            block
+        ));
     }
     if config
         .font_weight
