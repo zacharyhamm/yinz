@@ -922,10 +922,24 @@ basename and first token. The server checks the file under its own pinned
 directory and returns the second token. Both peers validate the proof. A failed
 probe selects portable output. A forwarded client always offers portable media.
 
+Chunked (bit 4) splits portable Kitty RGBA into transfer chunks carried by
+ordinary frames and paced by ACKs (see
+[Pacing, budgets and cleanup](#pacing-budgets-and-cleanup)). Every revision-1
+reader offers it, and the server selects it only with Kitty. It is optional
+on acceptance, as Shared is. A reader accepts an agreement without it, so an
+older server keeps sending inline images to a newer reader. An older reader
+never offers the bit, so it is never sent chunks. Chunk, cancel and transfer
+residency records appear only on attachments that agreed Chunked, and the
+reader fails a frame that carries them otherwise. Portable frames never carry
+a usable server path: the reader refuses a shared-file residency unless Shared
+was agreed.
+
 For an agreed shared transfer the server stages a Kitty upload of at least
-256 KiB as a file when the viewer's media budget has room (see
-[Pacing, budgets and cleanup](#pacing-budgets-and-cleanup)). Smaller uploads,
-and viewers without shared media, receive inline bytes. The reader requires a generated image basename directly
+256 KiB as a file when the viewer's media budget has room. A chunked viewer
+without shared media receives such an upload as a chunked transfer. Smaller
+uploads travel inline. For a chunked viewer they travel inline only while they
+fit the frame's media allowance; the rest become transfers. Viewers with
+neither shared nor chunked media receive inline bytes. The reader requires a generated image basename directly
 beneath its pinned directory. It opens without following symlinks and verifies
 ownership, private mode, regular-file type and exact RGBA length before copying.
 A failing live read fails the frame. A placement needs an owned image and a
@@ -944,22 +958,37 @@ is not waited for. The native client applies frames through a bounded queue,
 so slow application backs up its socket. There is no one-frame-in-flight
 window.
 
-Shared media is paced by ACKs. Every negotiated viewer has its own media
-budget: at most 32 retained entries and 128 MiB, including any withdrawn or
-sealed prefix that viewer still holds. Staging reserves from the budget before
-creating a file. A refused reservation never creates one. Budgets are not
-shared, so a stalled viewer can never delay another viewer's images. Any image
-up to the 100 MiB shared limit fits a viewer with nothing outstanding.
+Shared and chunked media are paced by ACKs. Every negotiated viewer has its own
+media budget: at most 32 retained entries and 128 MiB, including any withdrawn
+or sealed prefix that viewer still holds. Staging reserves from the budget
+before creating a file or copying a transfer buffer. A refused reservation
+creates neither. Budgets are not shared, so a stalled viewer can never delay
+another viewer's images. Any image up to the 100 MiB shared limit fits a
+viewer with nothing outstanding.
 
 When the budget is exhausted, the image is deferred. That frame omits the
 image's residency and placement and takes down any placement that showed
 another image at the same position. Cells, links, cursor, geometry, sideband
 and deletes are still delivered in order. The server logs one warning per
 overload episode. When the viewer's next ACK releases media, the screen
-re-renders the deferred panes and the image arrives as a shared file. A budget
-refusal never falls back to inline bytes. An image above the 100 MiB shared
-limit is dropped with a warning. Inline fallback remains only for viewers
-without shared media, images below 256 KiB and a failed file write.
+re-renders the deferred panes and the image arrives as a shared file or
+transfer. A budget refusal never falls back to inline bytes. An image above
+the 100 MiB shared limit is dropped with a warning. A chunked viewer whose
+file write fails receives a transfer instead. Inline fallback remains only for
+viewers with neither shared nor chunked media, images below 256 KiB and a
+failed file write without chunked media.
+
+A chunked transfer holds one lease for its whole image. One frame carries at
+most 8 MiB of media to a chunked viewer, counting inline residencies and chunk
+bytes, so a 100 MiB image takes 13 frames. New chunk bytes wait until the
+viewer ACKs the last frame that carried chunks, or that ran out of allowance
+for them. At most one such frame is unacknowledged, and the queue stays far
+below the writer's limit. Throughput is about 8 MiB per round trip. A placement
+whose transfer is incomplete is withheld like a deferred one, without a
+warning, and the ACK that opens the window re-renders its pane. The frame that
+carries the last chunk also carries the residency and placement. The server
+keeps its copy of the pixels until the last chunk, then only the lease, which
+accounts for the client's assembly.
 
 A viewer that reads frames but never ACKs keeps at most its budget and sees
 later large images deferred. No ACK deadline applies outside a sealed drain. A
@@ -979,18 +1008,19 @@ Staged files are unlinked when their consuming frame is ACKed, and otherwise
 when the viewer detaches, its peer disappears, a write to it fails, it
 withdraws and then ACKs or closes, its sealed drain is abandoned, or the
 session exits. Each file returns its share of the budget only after it is
-unlinked.
+unlinked. Transfer leases are released on the same occasions. Turning Kitty
+support off for a viewer, or a frame that clears its images, also abandons its
+pending transfers.
 
 Limitations: a crash, `SIGKILL` or panic exit can leave `yinz-native-image-*`
 files in the temporary directory. Budgets are per viewer, so the total grows
-with the number of attached shared viewers. A frame carrying more than 64 MiB
-of sub-threshold inline images still ends native output as described below.
+with the number of attached shared or chunked viewers. For a peer without
+chunked media, a frame carrying more than 64 MiB of sub-threshold inline images
+still ends native output as described below.
 
-Portable delivery must charge the same budget.
 `yinz_runtime::native_media::MediaBudget` reserves `MediaLease`s, and each
-lease returns its entry and bytes when dropped. Portable transfer buffers and
-assembled images reserve from the viewer's budget
-(`NativeRenderState::media_budget`) under the same deferral rule.
+lease returns its entry and bytes when dropped
+(`NativeRenderState::media_budget`).
 
 ### Sequence, withdrawal and oversized frames
 
@@ -998,22 +1028,43 @@ Frames belong to one attachment and arrive in order, beginning with a full
 repaint. The viewer ACKs a sequence only after successfully applying every
 covered frame and copying all data needed later. For a residency copied in
 frame R, ACK(R) or a later contiguous ACK releases the staging file, even if the
-GPU draws later. For a future transfer staged in T and first consumed in C,
-ACK(C) permits release once all earlier dependencies have been applied and no
-future read from staging is necessary. ACK(T), receipt, socket write, queueing,
+GPU draws later. ACK of an earlier frame, receipt, socket write, queueing,
 recording and header decoding alone are insufficient.
+
+A chunked transfer staged in frame T takes its wire id when its first chunk is
+emitted, so first chunks carry strictly increasing ids within an attachment.
+Ids need not be contiguous. A transfer abandoned before its first chunk (it is
+replaced, hidden, cleared, cancelled, withdrawn or sealed) leaves no record and
+returns its lease at once. A started transfer is completed in frame C, which
+carries the last chunk followed by its `Transfer` residency, or abandoned by a
+`TransferCancel` naming its id, or by a frame that clears. Its lease is released
+by ACK(C), or by the ACK of the cancelling or clearing frame. ACK(T) alone
+releases nothing.
+
+The reader validates every transfer before allocating. A new id must exceed
+every id started on the attachment and begin at offset 0, with a total of at
+most 100 MiB. At most 32 transfers may be incomplete, with at most 128 MiB of
+declared totals. Each chunk continues at exactly the received length and stays
+within its total. A cancel names an incomplete transfer. A `Transfer` residency
+names a transfer completed in the same frame whose length matches the RGBA
+dimensions. A transfer completed but not consumed by its frame, or any
+violation, fails the live frame. Incomplete transfers are discarded at the
+start of a frame that clears or fully repaints, and on a new attachment, so a
+late or reused id cannot complete.
 
 Duplicate frames have no repeated side effects. Duplicate and stale ACKs are
 idempotent. Future ACKs cannot release files. A missing predecessor or failed
 consuming frame ends the stream at the last successfully applied sequence.
-Reattach for a fresh full repaint. ACKs never cross attachments. Implementations
-adding credit accounting or chunked transfers must preserve these ownership and
-consumption rules and reserve from the viewer's media budget.
+Reattach for a fresh full repaint. ACKs never cross attachments. Chunk records
+carry no attachment generation of their own: their envelopes are generation
+tagged, and both peers keep transfer state per attachment.
 
 A revision-1 withdrawal stops production at the screen transition. The ordered
 Withdrawn result names the last emitted sequence H. The client can apply and ACK
 the in-flight prefix through H or close and abandon it. The server retains that
 prefix's media until application is acknowledged or the connection closes.
+Started transfers that have not completed are retained at H; unstarted ones are
+released at the withdrawal.
 A different native profile requires a fresh attachment. A duplicate offer
 cannot reset the stream.
 
@@ -1026,8 +1077,11 @@ An actual partial-write or socket failure abandons the broken stream. A drain
 with no socket-write or advancing ACK progress for 30 seconds is abandoned.
 Local socket progress can include bytes buffered by a forward. Only the
 receiver's application ACK releases media during an orderly drain. Other
-viewers continue receiving output. Large portable images are subject to these
-limits until a chunked transport exists.
+viewers continue receiving output. Chunked media keeps every frame far below
+these limits. A frame can still exceed them through cells alone, such as an
+explicit-margin presentation for a very large terminal, or through Sixel, which
+stays inline as a cropped visible slice. Peers without chunked media remain
+subject to them for large inline images.
 
 ## Diagnostics
 
@@ -1053,8 +1107,10 @@ yinz terminal demo --create --headless --duration-secs 5 --record demo.frames
 
 A recording contains repeated little-endian u32 frame lengths followed by frame
 bytes. Decode each frame with `yinz_types::structured_render::decode`. Inline
-images are replayable from the recording. A raw capture of shared media records
-its temporary pathname. The referenced file can disappear after its consuming
+and chunked images are replayable from the recording: a capture contains the
+chunk, cancel and transfer residency records, and replay assembles them with
+the reader's rules, reporting and skipping what a live reader would refuse. A
+raw capture of shared media records its temporary pathname. The referenced file can disappear after its consuming
 frame is acknowledged or its attachment closes.
 
 Windows, remote web attachment, tray/background services, desktop session/inbox

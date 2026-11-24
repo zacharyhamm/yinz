@@ -1568,3 +1568,244 @@ fn attachment_generation_superseded_reports_cannot_override_shared_colors() {
         );
     }
 }
+
+/// A zlib-compressed RGBA Kitty upload of a `side`-pixel square, placed at the cursor.
+fn kitty_rgba_upload(id: u32, side: u32, shade: u8) -> Vec<u8> {
+    use base64::Engine;
+    use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder
+        .write_all(&[shade, 72, 13, 255].repeat((side * side) as usize))
+        .unwrap();
+    let payload = base64::engine::general_purpose::STANDARD.encode(encoder.finish().unwrap());
+    let mut bytes = Vec::new();
+    let parts: Vec<_> = payload.as_bytes().chunks(4096).collect();
+    for (index, part) in parts.iter().enumerate() {
+        let more = u8::from(index + 1 < parts.len());
+        let head = if index == 0 {
+            format!("a=T,f=32,s={side},v={side},i={id},o=z,C=1,")
+        } else {
+            String::new()
+        };
+        bytes.extend_from_slice(format!("\x1b_G{head}q=2,m={more};").as_bytes());
+        bytes.extend_from_slice(part);
+        bytes.extend_from_slice(b"\x1b\\");
+    }
+    bytes
+}
+
+/// Chunk (id, offset, length) records, cancels and completed transfer ids in `client`'s
+/// frames, and the last frame's sequence number.
+#[derive(Debug, Default)]
+struct Transfers {
+    chunks: Vec<(u64, u32, usize)>,
+    cancels: Vec<u64>,
+    completed: Vec<u64>,
+    last: Option<u64>,
+}
+
+fn drain_transfers(receiver: &ServerReceiver, client: ClientId) -> Transfers {
+    use yinz_types::structured_render::{decode, GraphicsMedium, GraphicsRecord};
+    let mut seen = Transfers::default();
+    for (event, _) in receiver.try_iter() {
+        let ServerInstruction::RenderFrames(frames) = event else {
+            continue;
+        };
+        let Some(bytes) = frames.get(&client) else {
+            continue;
+        };
+        let view = decode(bytes).unwrap();
+        seen.last = Some(view.header().seq);
+        for record in view.graphics() {
+            match record {
+                GraphicsRecord::TransferChunk {
+                    transfer_id,
+                    offset,
+                    data,
+                    ..
+                } => seen.chunks.push((transfer_id, offset, data.len())),
+                GraphicsRecord::TransferCancel { transfer_id } => seen.cancels.push(transfer_id),
+                GraphicsRecord::Residency {
+                    medium: GraphicsMedium::Transfer,
+                    data,
+                    ..
+                } => seen
+                    .completed
+                    .push(u64::from_le_bytes(data.as_slice().try_into().unwrap())),
+                GraphicsRecord::Residency { medium, .. } => {
+                    assert_ne!(
+                        medium,
+                        GraphicsMedium::SharedFile,
+                        "portable frame named a path"
+                    )
+                },
+                _ => {},
+            }
+        }
+    }
+    seen
+}
+
+/// A forwarded viewer with a 16 MiB transfer half sent and a 256 KiB one waiting, unstarted,
+/// for the ACK of the frame that carried the first half.
+fn portable_viewer_mid_transfer() -> (Screen, ServerReceiver, u64) {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    use yinz_types::render_negotiation::{Offer, Request, CHUNKED};
+    let size = Size { cols: 80, rows: 24 };
+    let (mut screen, _, receiver) = create_new_screen_with_capture(size, true, true, true, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    *screen.core.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 16,
+    });
+    screen
+        .negotiate_render(CLIENT_1, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    assert_ne!(
+        screen.core.native_render_clients[&CLIENT_1].agreement.media & CHUNKED,
+        0
+    );
+    screen.render_to_clients().unwrap();
+    receiver.try_iter().for_each(drop);
+    let pane = |screen: &mut Screen| {
+        screen
+            .get_active_tab_mut(CLIENT_1)
+            .unwrap()
+            .get_active_pane_mut(CLIENT_1)
+            .unwrap()
+            .handle_pty_bytes(b"\x1b[1;1H".to_vec());
+    };
+    pane(&mut screen);
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .unwrap()
+        .get_active_pane_mut(CLIENT_1)
+        .unwrap()
+        .handle_pty_bytes(kitty_rgba_upload(1, 2048, 1));
+    screen.render_to_clients().unwrap();
+    let first = drain_transfers(&receiver, CLIENT_1);
+    assert_eq!(
+        first.chunks,
+        [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)],
+        "{first:?}"
+    );
+    let high = first.last.unwrap();
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .unwrap()
+        .get_active_pane_mut(CLIENT_1)
+        .unwrap()
+        .handle_pty_bytes([b"\x1b[20;1H".to_vec(), kitty_rgba_upload(2, 256, 2)].concat());
+    screen.render_to_clients().unwrap();
+    let waiting = drain_transfers(&receiver, CLIENT_1);
+    assert!(
+        waiting.chunks.is_empty(),
+        "the window is closed: {waiting:?}"
+    );
+    let usage = screen.core.native_render_clients[&CLIENT_1].media_usage();
+    assert_eq!(
+        (usage.entries, usage.bytes),
+        (2, 2048 * 2048 * 4 + 256 * 256 * 4)
+    );
+    (screen, receiver, high)
+}
+
+#[test]
+fn render_negotiation_portable_ack_opens_the_window_and_continues_transfers() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let (mut screen, receiver, high) = portable_viewer_mid_transfer();
+    // A stale ACK opens nothing and renders nothing.
+    screen.acknowledge_native_frame(CLIENT_1, high - 1).unwrap();
+    screen.render_to_clients().unwrap();
+    assert!(drain_transfers(&receiver, CLIENT_1).chunks.is_empty());
+    // The ACK of the chunk frame re-renders the waiting pane, which carries the rest.
+    screen.acknowledge_native_frame(CLIENT_1, high).unwrap();
+    screen.render_to_clients().unwrap();
+    let rest = drain_transfers(&receiver, CLIENT_1);
+    assert_eq!(
+        rest.chunks,
+        [(
+            1,
+            PORTABLE_FRAME_MEDIA_BYTES as u32,
+            PORTABLE_FRAME_MEDIA_BYTES
+        )]
+    );
+    assert_eq!(rest.completed, [1]);
+    // The second image starts on the next opened window, with the next id.
+    screen
+        .acknowledge_native_frame(CLIENT_1, rest.last.unwrap())
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    let second = drain_transfers(&receiver, CLIENT_1);
+    assert_eq!(second.chunks, [(2, 0, 256 * 256 * 4)]);
+    assert_eq!(second.completed, [2]);
+    screen
+        .acknowledge_native_frame(CLIENT_1, second.last.unwrap())
+        .unwrap();
+    let usage = screen.core.native_render_clients[&CLIENT_1].media_usage();
+    assert_eq!((usage.entries, usage.bytes), (0, 0));
+}
+
+#[test]
+fn render_negotiation_withdraw_mid_transfer_releases_leases_on_ack() {
+    use yinz_types::render_negotiation::{Decision, Offer, Request};
+    let (mut screen, receiver, _) = portable_viewer_mid_transfer();
+    let withdrawn_at = screen.core.native_render_clients[&CLIENT_1].seq;
+    screen
+        .negotiate_render(CLIENT_1, Request::Withdraw)
+        .unwrap();
+    assert!(receiver.try_iter().any(|(event, _)| matches!(
+        event,
+        ServerInstruction::NativeRenderResult(id, Decision::Withdrawn(h)) if id == CLIENT_1 && h == withdrawn_at
+    )));
+    // The unstarted transfer is released at once; the started one waits for ACK(H).
+    let retired = |screen: &Screen| screen.core.retired_native_clients[&CLIENT_1].media_usage();
+    assert_eq!(
+        (retired(&screen).entries, retired(&screen).bytes),
+        (1, 2048 * 2048 * 4)
+    );
+    // A reattached viewer starts its own transfers under its own budget.
+    let next = ClientId::new(2);
+    screen.add_client(next).unwrap();
+    screen
+        .set_client_size(next, Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .negotiate_render(next, Request::Offer(Offer::reader(None)))
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    let reattached = drain_transfers(&receiver, next);
+    assert_eq!(
+        reattached.chunks.first().map(|c| (c.0, c.1)),
+        Some((1, 0)),
+        "{reattached:?}"
+    );
+    let fresh = |screen: &Screen| screen.core.native_render_clients[&next].media_usage();
+    let held = fresh(&screen);
+    assert!(held.entries >= 1, "{held:?}");
+    screen
+        .acknowledge_native_frame(CLIENT_1, withdrawn_at + 1)
+        .unwrap();
+    assert_eq!(retired(&screen).entries, 1);
+    screen
+        .acknowledge_native_frame(CLIENT_1, withdrawn_at)
+        .unwrap();
+    assert_eq!(retired(&screen).entries, 0);
+    assert_eq!(
+        fresh(&screen),
+        held,
+        "the old attachment's ACK released the new one's"
+    );
+    // Withdraw then close releases on removal instead.
+    let (mut screen, _receiver, _) = portable_viewer_mid_transfer();
+    screen
+        .negotiate_render(CLIENT_1, Request::Withdraw)
+        .unwrap();
+    let budget = screen.core.retired_native_clients[&CLIENT_1]
+        .media_budget()
+        .cloned()
+        .unwrap();
+    assert_eq!(budget.usage().entries, 1);
+    screen.remove_client(CLIENT_1).unwrap();
+    assert_eq!(budget.usage().entries, 0);
+}

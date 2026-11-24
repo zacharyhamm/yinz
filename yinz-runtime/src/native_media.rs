@@ -33,6 +33,18 @@ pub const VIEWER_MEDIA_BYTES: usize = 128 * 1024 * 1024;
 // A viewer with nothing outstanding can always take any image the reader would accept.
 const _: () = assert!(VIEWER_MEDIA_BYTES >= MAX_SHARED_IMAGE_BYTES && VIEWER_MEDIA_ENTRIES > 0);
 
+/// Inline residency and transfer-chunk bytes one native frame may carry to a viewer that
+/// agreed chunked media. Larger images continue in later frames, one un-ACKed chunk frame
+/// at a time.
+pub const PORTABLE_FRAME_MEDIA_BYTES: usize = 8 * 1024 * 1024;
+/// Room left in a portable frame for cells, records, sideband and the IPC envelope.
+pub const PORTABLE_FRAME_HEADROOM_BYTES: usize = 32 * 1024 * 1024;
+
+// A frame carrying its full media allowance stays far below the IPC frame limit.
+const _: () = assert!(
+    PORTABLE_FRAME_MEDIA_BYTES + PORTABLE_FRAME_HEADROOM_BYTES <= crate::consts::MAX_IPC_FRAME_LEN
+);
+
 /// Retained media held against one viewer's budget.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MediaUsage {
@@ -67,8 +79,8 @@ struct BudgetInner {
     used: Mutex<MediaUsage>,
 }
 
-/// One viewer's accounting for retained media: staged files today, and the transfer
-/// buffers and assembled images of portable delivery. Reserve before allocating; the
+/// One viewer's accounting for retained media: staged files, and the transfer buffers
+/// and assembled images of chunked portable delivery. Reserve before allocating; the
 /// returned lease gives its share back when dropped.
 #[derive(Clone, Debug)]
 pub struct MediaBudget(Arc<BudgetInner>);

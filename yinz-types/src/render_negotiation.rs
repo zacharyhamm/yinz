@@ -14,6 +14,9 @@ pub const SHIFTS: u32 = 16;
 pub const SCROLL: u32 = 32;
 pub const INLINE: u32 = 1;
 pub const SHARED: u32 = 2;
+/// Portable Kitty images split into ACK-paced transfer chunks. Selected only with Kitty,
+/// and optional on acceptance so a reader still accepts an older server's agreement.
+pub const CHUNKED: u32 = 4;
 const PRODUCED: u32 = GEOMETRY | LINKS | KITTY | SIXEL;
 const READABLE: u32 = PRODUCED | SHIFTS;
 
@@ -70,7 +73,7 @@ impl Offer {
         Self {
             versions: vec![4, 3, 2],
             features: READABLE,
-            media: INLINE | if proof.is_some() { SHARED } else { 0 },
+            media: INLINE | CHUNKED | if proof.is_some() { SHARED } else { 0 },
             proof,
         }
     }
@@ -80,14 +83,18 @@ impl Offer {
             &[crate::structured_render::WIRE_VERSION.into()],
             PRODUCED,
             response,
+            true,
         )
     }
 
+    // `chunked` says whether the writer produces transfer chunks, as `response` says
+    // whether it proved the shared root. Both are optional for a reader to accept.
     fn intersect(
         &self,
         writable: &[u32],
         supported: u32,
         response: Option<Vec<u8>>,
+        chunked: bool,
     ) -> Result<Agreement, String> {
         let version = writable
             .iter()
@@ -125,6 +132,9 @@ impl Offer {
         if !proof_response.is_empty() {
             media |= SHARED;
         }
+        if chunked && features & KITTY != 0 && self.media & CHUNKED != 0 {
+            media |= CHUNKED;
+        }
         Ok(Agreement {
             version,
             features,
@@ -147,8 +157,13 @@ impl Offer {
         } else {
             None
         };
-        self.intersect(&[agreement.version], agreement.features, proof)
-            .as_ref()
+        self.intersect(
+            &[agreement.version],
+            agreement.features,
+            proof,
+            agreement.media & CHUNKED != 0,
+        )
+        .as_ref()
             == Ok(agreement)
     }
 }

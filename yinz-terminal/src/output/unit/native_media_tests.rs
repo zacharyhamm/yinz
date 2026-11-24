@@ -27,7 +27,7 @@ fn shared_uploads_survive_until_the_frame_is_acknowledged() {
     let second_path = second.path();
     let mut state = NativeRenderState {
         seq: 2,
-        media: vec![(1, first), (2, second)],
+        media: vec![(1, Retained::File(first)), (2, Retained::File(second))],
         ..Default::default()
     };
     assert!(state.acknowledge(1));
@@ -108,6 +108,8 @@ mod budget {
         states: HashMap<ClientId, NativeRenderState>,
         _dir: tempfile::TempDir,
         root: MediaRoot,
+        /// What each viewer's client has seen of its transfers, checked on every frame.
+        wire: HashMap<ClientId, Wire>,
     }
 
     #[derive(Debug, Default)]
@@ -116,6 +118,105 @@ mod budget {
         inline: usize,
         placements: usize,
         cells: bool,
+        seq: u64,
+        cleared: bool,
+        /// (transfer id, offset, length) of every chunk.
+        chunks: Vec<(u64, u32, usize)>,
+        cancels: Vec<u64>,
+        /// Wire ids named by transfer residencies.
+        transfers: Vec<u64>,
+        /// Inline residency and chunk bytes, the part bounded by the frame allowance.
+        media: usize,
+        /// Concatenated chunk data per transfer id.
+        data: HashMap<u64, Vec<u8>>,
+    }
+
+    impl Frame {
+        fn first_chunks(&self) -> Vec<u64> {
+            self.chunks
+                .iter()
+                .filter(|(_, offset, _)| *offset == 0)
+                .map(|(id, _, _)| *id)
+                .collect()
+        }
+    }
+
+    /// The wire rules a client enforces: first chunks carry strictly increasing ids,
+    /// continuations and cancels name a started incomplete transfer, offsets follow
+    /// each other, and a transfer residency names a transfer its frame completed.
+    #[derive(Default)]
+    struct Wire {
+        highest: u64,
+        incomplete: HashMap<u64, (u32, u32)>,
+    }
+
+    impl Wire {
+        fn check(&mut self, cleared: bool, records: &[GraphicsRecord]) {
+            if cleared {
+                self.incomplete.clear();
+            }
+            let mut completed = HashSet::new();
+            for record in records {
+                match record {
+                    GraphicsRecord::TransferChunk {
+                        transfer_id,
+                        total,
+                        offset,
+                        data,
+                    } => {
+                        assert!(!data.is_empty(), "empty chunk of {transfer_id}");
+                        let received = match self.incomplete.get(transfer_id) {
+                            Some(&(declared, received)) => {
+                                assert_eq!(declared, *total);
+                                assert_eq!(
+                                    received, *offset,
+                                    "chunk of {transfer_id} out of order"
+                                );
+                                received
+                            },
+                            None => {
+                                assert!(
+                                    *transfer_id > self.highest,
+                                    "first chunk of {transfer_id} after {}",
+                                    self.highest
+                                );
+                                assert_eq!(*offset, 0);
+                                self.highest = *transfer_id;
+                                0
+                            },
+                        };
+                        let received = received + data.len() as u32;
+                        assert!(received <= *total);
+                        if received == *total {
+                            self.incomplete.remove(transfer_id);
+                            completed.insert(*transfer_id);
+                        } else {
+                            self.incomplete.insert(*transfer_id, (*total, received));
+                        }
+                    },
+                    GraphicsRecord::TransferCancel { transfer_id } => {
+                        assert!(
+                            self.incomplete.remove(transfer_id).is_some(),
+                            "cancel of unstarted or complete transfer {transfer_id}"
+                        );
+                    },
+                    GraphicsRecord::Residency {
+                        medium: GraphicsMedium::Transfer,
+                        data,
+                        ..
+                    } => {
+                        let id = u64::from_le_bytes(data.as_slice().try_into().unwrap());
+                        assert!(completed.remove(&id), "residency of incomplete {id}");
+                    },
+                    GraphicsRecord::Residency {
+                        medium: GraphicsMedium::SharedFile,
+                        ..
+                    } => {},
+                    _ => {},
+                }
+            }
+            assert!(completed.is_empty(), "unconsumed transfers {completed:?}");
+        }
     }
 
     impl Scene {
@@ -127,11 +228,30 @@ mod budget {
                 states: HashMap::new(),
                 _dir: dir,
                 root,
+                wire: HashMap::new(),
             }
         }
 
         fn viewer(&mut self, id: ClientId, budget: MediaBudget) {
             let state = shared(&self.root, budget);
+            self.add(id, state);
+        }
+
+        /// A forwarded viewer: chunked media, no shared root, `allowance` bytes per frame.
+        fn portable(&mut self, id: ClientId, budget: MediaBudget, allowance: usize) {
+            let mut state = NativeRenderState::negotiated(
+                caps::Agreement {
+                    media: caps::INLINE | caps::CHUNKED,
+                    ..Default::default()
+                },
+                None,
+                Some(budget),
+            );
+            state.frame_media = Some(allowance);
+            self.add(id, state);
+        }
+
+        fn add(&mut self, id: ClientId, state: NativeRenderState) {
             self.states.insert(id, state);
             self.output.add_clients(
                 &HashSet::from([id]),
@@ -167,8 +287,18 @@ mod budget {
 
         /// One frame in which each listed pane renders its placements.
         fn render_panes(&mut self, panes: &[(PaneId, &[Shown])]) -> HashMap<ClientId, Frame> {
+            self.render_with(panes, |_, _| {})
+        }
+
+        /// Like `render_panes`, with `extra` adding more to each viewer's frame.
+        fn render_with(
+            &mut self,
+            panes: &[(PaneId, &[Shown])],
+            mut extra: impl FnMut(&mut Output, ClientId),
+        ) -> HashMap<ClientId, Frame> {
             let ids: Vec<_> = self.states.keys().copied().collect();
             for id in ids {
+                extra(&mut self.output, id);
                 self.output.client_character_chunks.insert(
                     id,
                     vec![CharacterChunk::new(vec![TerminalCharacter::new('Z')], 0, 0)],
@@ -201,25 +331,65 @@ mod budget {
                 .map(|(id, bytes)| {
                     assert!(bytes.len() <= yinz_ipc_frame_limit());
                     let view = decode(&bytes).unwrap();
+                    let header = view.header();
                     let mut frame = Frame {
                         cells: view.rows().any(|(_, cells)| cells[0].character() == 'Z'),
+                        seq: header.seq,
+                        cleared: header.full_repaint() || header.clear(),
                         ..Default::default()
                     };
-                    for record in view.graphics() {
+                    let records = view.graphics();
+                    self.wire
+                        .entry(id)
+                        .or_default()
+                        .check(frame.cleared, &records);
+                    for record in records {
                         match record {
                             GraphicsRecord::Residency {
                                 medium: GraphicsMedium::SharedFile,
                                 data,
                                 ..
                             } => frame.shared.push(String::from_utf8(data).unwrap().into()),
-                            GraphicsRecord::Residency { .. } => frame.inline += 1,
+                            GraphicsRecord::Residency {
+                                medium: GraphicsMedium::Transfer,
+                                data,
+                                ..
+                            } => frame
+                                .transfers
+                                .push(u64::from_le_bytes(data.as_slice().try_into().unwrap())),
+                            GraphicsRecord::Residency { data, .. } => {
+                                frame.inline += 1;
+                                frame.media += data.len();
+                            },
                             GraphicsRecord::Placement { .. } => frame.placements += 1,
+                            GraphicsRecord::TransferChunk {
+                                transfer_id,
+                                offset,
+                                data,
+                                ..
+                            } => {
+                                frame.chunks.push((transfer_id, offset, data.len()));
+                                frame.media += data.len();
+                                frame.data.entry(transfer_id).or_default().extend(data);
+                            },
+                            GraphicsRecord::TransferCancel { transfer_id } => {
+                                frame.cancels.push(transfer_id)
+                            },
                             _ => {},
                         }
                     }
                     (id, frame)
                 })
                 .collect()
+        }
+
+        fn render_one(&mut self, viewer: ClientId, pane_id: PaneId, placements: &[Shown]) -> Frame {
+            self.render(pane_id, placements).remove(&viewer).unwrap()
+        }
+
+        fn ack_last(&mut self, id: ClientId) -> BTreeSet<PaneId> {
+            let seq = self.states[&id].seq;
+            self.ack(id, seq)
         }
 
         fn ack(&mut self, id: ClientId, seq: u64) -> BTreeSet<PaneId> {
@@ -413,14 +583,50 @@ mod budget {
         assert!(frame.cells);
         assert!(scene.states[&viewer].deferred_panes.is_empty());
         assert_eq!(budget.usage(), MediaUsage::default());
-        // A portable viewer without a shared root keeps today's inline delivery.
+        // A portable viewer from before chunking keeps inline delivery, unbudgeted.
         let mut portable = NativeRenderState::negotiated(
             Default::default(),
             None,
             Some(MediaBudget::new(4, 2 * IMAGE)),
         );
-        assert_eq!(portable.stage_image(&vec![0; 4 * IMAGE]), Staging::Inline);
+        assert_eq!(
+            portable.stage_image(transfer_image(1), &vec![0; 4 * IMAGE]),
+            Staging::Inline
+        );
         assert_eq!(portable.media_usage(), MediaUsage::default());
+        // A chunked viewer sends what its budget can hold as a transfer and drops the rest.
+        let mut chunked = NativeRenderState::negotiated(
+            caps::Agreement {
+                media: caps::INLINE | caps::CHUNKED,
+                ..Default::default()
+            },
+            None,
+            Some(MediaBudget::new(4, 2 * IMAGE)),
+        );
+        assert_eq!(
+            chunked.stage_image(transfer_image(1), &vec![0; 4 * IMAGE]),
+            Staging::Dropped
+        );
+        assert_eq!(
+            chunked.stage_image(transfer_image(2), &vec![0; 2 * IMAGE]),
+            Staging::Transfer
+        );
+        assert_eq!(
+            chunked.media_usage(),
+            MediaUsage {
+                entries: 1,
+                bytes: 2 * IMAGE
+            }
+        );
+    }
+
+    fn transfer_image(id: InternalImageId) -> TransferImage {
+        TransferImage {
+            key: (id, None),
+            raster_revision: 0,
+            width: 1,
+            height: 1,
+        }
     }
 
     #[test]
@@ -502,5 +708,430 @@ mod budget {
         assert_eq!(other_budget.usage(), MediaUsage::default());
         // An ACK for a removed client is a no-op.
         assert!(scene.ack(other, 1).is_empty());
+    }
+
+    // Chunked portable delivery: transfers paced by ACKs under each viewer's budget.
+
+    /// A 256 KiB image needs three frames at this allowance.
+    const ALLOWANCE: usize = 100_000;
+
+    fn portable_scene(budget: MediaBudget, allowance: usize) -> (Scene, ClientId) {
+        let mut scene = Scene::new();
+        let viewer = ClientId::new(1);
+        scene.portable(viewer, budget, allowance);
+        (scene, viewer)
+    }
+
+    fn assert_portable(frame: &Frame, allowance: usize) {
+        assert!(frame.shared.is_empty(), "portable frames carry no paths");
+        assert!(frame.media <= allowance, "{} > {allowance}", frame.media);
+    }
+
+    #[test]
+    fn render_negotiation_portable_large_image_splits_into_acked_frames() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let image = scene.store(256, 7);
+        let mut assembled: Vec<u8> = Vec::new();
+        let mut frames = Vec::new();
+        loop {
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+            assert_portable(&frame, ALLOWANCE);
+            assert_eq!(frame.inline, 0);
+            assert_eq!(frame.chunks.len(), 1, "{frame:?}");
+            assembled.extend(frame.data.values().flatten());
+            if let [id] = frame.transfers.as_slice() {
+                assert_eq!(frame.placements, 1);
+                assert_eq!(frame.chunks[0].0, *id);
+                frames.push(frame);
+                break;
+            }
+            assert_eq!(frame.placements, 0);
+            frames.push(frame);
+            // Without an ACK, a re-render carries no further chunk.
+            let stalled = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+            assert!(stalled.chunks.is_empty() && stalled.transfers.is_empty());
+            assert_eq!(scene.ack_last(viewer), BTreeSet::from([pane(1)]));
+        }
+        assert_eq!(frames.len(), IMAGE.div_ceil(ALLOWANCE));
+        assert_eq!(assembled, vec![7; IMAGE]);
+        // The completing frame's ACK returns the lease.
+        assert_eq!(budget.usage().entries, 1);
+        assert!(scene.ack_last(viewer).is_empty());
+        assert_eq!(budget.usage(), MediaUsage::default());
+    }
+
+    #[test]
+    fn render_negotiation_portable_100_mib_image_stays_within_the_frame_limit() {
+        use yinz_runtime::native_media::{MAX_SHARED_IMAGE_BYTES, PORTABLE_FRAME_MEDIA_BYTES};
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), PORTABLE_FRAME_MEDIA_BYTES);
+        scene.states.get_mut(&viewer).unwrap().frame_media = None;
+        let image = scene.store(5120, 3);
+        let mut received = 0;
+        let mut frames = 0;
+        loop {
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, 5120)]);
+            assert_portable(&frame, PORTABLE_FRAME_MEDIA_BYTES);
+            frames += 1;
+            received += frame.media;
+            assert_eq!(
+                budget.usage(),
+                MediaUsage {
+                    entries: 1,
+                    bytes: MAX_SHARED_IMAGE_BYTES
+                }
+            );
+            if !frame.transfers.is_empty() {
+                assert_eq!(frame.placements, 1);
+                break;
+            }
+            scene.ack_last(viewer);
+        }
+        assert_eq!(received, MAX_SHARED_IMAGE_BYTES);
+        assert_eq!(frames, 13);
+        scene.ack_last(viewer);
+        assert_eq!(budget.usage(), MediaUsage::default());
+    }
+
+    #[test]
+    fn render_negotiation_portable_threshold_images_are_never_inline() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), 3 * 64 * 64 * 4);
+        let large = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(large, 1, 256)]);
+        assert_eq!((frame.inline, frame.chunks.len()), (0, 1));
+        scene.ack_last(viewer);
+        // Small images ride inline while they fit the frame's allowance; the rest is chunked.
+        let small: Vec<_> = (0..4u8).map(|shade| scene.store(64, 10 + shade)).collect();
+        let shown: Vec<Shown> = small
+            .iter()
+            .enumerate()
+            .map(|(uid, image)| (*image, 10 + uid as u64, 64))
+            .collect();
+        let frame = scene.render_one(viewer, pane(2), &shown);
+        assert_eq!(frame.inline, 3, "{frame:?}");
+        assert_eq!(frame.chunks.len(), 0, "the allowance is spent: {frame:?}");
+        assert_eq!(frame.placements, 3);
+        assert_eq!(frame.media, 3 * 64 * 64 * 4);
+        // The fourth waits as a transfer for the ACK of the frame that spent the allowance.
+        assert_eq!(scene.ack_last(viewer), BTreeSet::from([pane(1), pane(2)]));
+        let frame = scene.render_one(viewer, pane(2), &shown);
+        assert_eq!(
+            (frame.inline, frame.chunks.len(), frame.transfers.len()),
+            (0, 1, 1)
+        );
+    }
+
+    #[test]
+    fn render_negotiation_portable_non_acking_reader_gets_one_chunk_frame() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let image = scene.store(256, 1);
+        let other = scene.store(256, 2);
+        let mut chunk_frames = 0;
+        for _ in 0..6 {
+            let frames =
+                scene.render_panes(&[(pane(1), &[(image, 1, 256)]), (pane(2), &[(other, 2, 256)])]);
+            let frame = &frames[&viewer];
+            assert!(frame.cells);
+            chunk_frames += usize::from(!frame.chunks.is_empty());
+        }
+        assert_eq!(chunk_frames, 1);
+        let usage = budget.usage();
+        assert_eq!(usage.entries, 2, "both transfers hold leases while waiting");
+        // A stale, duplicate or future ACK opens nothing.
+        let seq = scene.states[&viewer].seq;
+        assert!(scene.ack(viewer, seq + 1).is_empty());
+        assert!(scene.ack(viewer, 0).is_empty());
+    }
+
+    #[test]
+    fn render_negotiation_portable_withheld_acks_defer_replacement_within_budget() {
+        let budget = MediaBudget::new(32, IMAGE);
+        let (mut scene, viewer) = portable_scene(budget.clone(), PORTABLE_FRAME_MEDIA_BYTES_TEST);
+        let mut image = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+        assert_eq!((frame.transfers.len(), frame.placements), (1, 1));
+        for shade in 2..=5u8 {
+            image = scene.replace(image, 256, shade);
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+            assert!(frame.cells);
+            assert_eq!(
+                (
+                    frame.inline,
+                    frame.chunks.len(),
+                    frame.transfers.len(),
+                    frame.placements
+                ),
+                (0, 0, 0, 0),
+                "deferred, never inline: {frame:?}"
+            );
+            let usage = budget.usage();
+            assert!(usage.entries <= 1 && usage.bytes <= IMAGE, "{usage:?}");
+        }
+        assert_eq!(
+            scene.states[&viewer].deferred_panes,
+            BTreeSet::from([pane(1)])
+        );
+        // The completing frame's ACK releases its lease and retries the deferred pane.
+        let completed = scene.states[&viewer].seq - 4;
+        assert_eq!(scene.ack(viewer, completed), BTreeSet::from([pane(1)]));
+        assert_eq!(budget.usage(), MediaUsage::default());
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+        assert_eq!((frame.transfers.len(), frame.placements), (1, 1));
+        assert_eq!(frame.data.values().next().unwrap()[0], 5);
+    }
+
+    /// Large enough for a 256 KiB image in one frame.
+    const PORTABLE_FRAME_MEDIA_BYTES_TEST: usize = 2 * IMAGE;
+
+    #[test]
+    fn render_negotiation_portable_viewers_keep_separate_budgets() {
+        let mut scene = Scene::new();
+        let viewers = [ClientId::new(1), ClientId::new(2)];
+        let budgets = viewers.map(|_| MediaBudget::new(32, IMAGE));
+        for (viewer, budget) in viewers.iter().zip(&budgets) {
+            scene.portable(*viewer, budget.clone(), PORTABLE_FRAME_MEDIA_BYTES_TEST);
+        }
+        let mut image = scene.store(256, 1);
+        for shade in 2..=4u8 {
+            let frames = scene.render(pane(1), &[(image, 1, 256)]);
+            // Viewer 2 ACKs every frame; viewer 1 stalls after its first.
+            assert_eq!(frames[&viewers[1]].transfers.len(), 1, "{shade}");
+            assert_eq!(frames[&viewers[0]].transfers.len(), usize::from(shade == 2));
+            scene.ack_last(viewers[1]);
+            assert_eq!(budgets[1].usage(), MediaUsage::default());
+            assert_eq!(budgets[0].usage().bytes, IMAGE);
+            image = scene.replace(image, 256, shade);
+        }
+    }
+
+    #[test]
+    fn render_negotiation_portable_replacement_mid_transfer_cancels_and_releases_on_ack() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let first = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(first, 1, 256)]);
+        let [started] = frame.first_chunks()[..] else {
+            panic!("expected one started transfer: {frame:?}")
+        };
+        scene.ack_last(viewer);
+        let second = scene.replace(first, 256, 2);
+        let frame = scene.render_one(viewer, pane(1), &[(second, 1, 256)]);
+        assert_eq!(frame.cancels, [started]);
+        let [replacement] = frame.first_chunks()[..] else {
+            panic!("expected the replacement to start: {frame:?}")
+        };
+        assert!(replacement > started);
+        // The cancelled lease waits for this frame's ACK; the replacement keeps its own.
+        assert_eq!(budget.usage().entries, 2);
+        scene.ack_last(viewer);
+        assert_eq!(budget.usage().entries, 1);
+    }
+
+    #[test]
+    fn render_negotiation_portable_cleared_frame_abandons_without_cancel() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let image = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+        assert_eq!(frame.first_chunks().len(), 1);
+        // A waiting, unstarted second transfer.
+        let other = scene.store(256, 2);
+        scene.render_one(viewer, pane(2), &[(other, 2, 256)]);
+        assert_eq!(budget.usage().entries, 2);
+        scene.states.get_mut(&viewer).unwrap().force_repaint();
+        let frame = scene.render_panes(&[]).remove(&viewer).unwrap();
+        assert!(frame.cleared);
+        assert!(
+            frame.cancels.is_empty() && frame.chunks.is_empty(),
+            "{frame:?}"
+        );
+        // The unstarted lease is gone; the started one waits for the clearing frame's ACK.
+        assert_eq!(budget.usage().entries, 1);
+        scene.ack_last(viewer);
+        assert_eq!(budget.usage(), MediaUsage::default());
+        assert!(scene.states[&viewer].transfers.is_empty());
+    }
+
+    #[test]
+    fn render_negotiation_portable_seal_and_removal_release_leases_once() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let started = scene.store(256, 1);
+        scene.render_one(viewer, pane(1), &[(started, 1, 256)]);
+        let high = scene.states[&viewer].seq;
+        let unstarted = scene.store(256, 2);
+        scene.render_one(viewer, pane(2), &[(unstarted, 2, 256)]);
+        assert_eq!(budget.usage().entries, 2);
+        let mut prefix = scene.states.remove(&viewer).unwrap();
+        prefix.retain_prefix(high);
+        assert!(prefix.transfers.is_empty());
+        assert_eq!(
+            budget.usage().entries,
+            1,
+            "the unstarted lease is released at once"
+        );
+        let mut retired = HashMap::from([(viewer, prefix)]);
+        let mut active = HashMap::new();
+        for (seq, entries) in [(high + 1, 1), (high - 1, 1), (high, 0), (high, 0)] {
+            assert!(NativeRenderState::acknowledge_recipient(
+                &mut active,
+                &mut retired,
+                viewer,
+                seq
+            )
+            .is_empty());
+            assert_eq!(budget.usage().entries, entries, "ACK {seq}");
+        }
+        // Removing a viewer mid-transfer returns its whole budget.
+        let other = ClientId::new(2);
+        let other_budget = MediaBudget::viewer();
+        scene.portable(other, other_budget.clone(), ALLOWANCE);
+        scene.render_one(other, pane(1), &[(started, 1, 256)]);
+        scene.render_one(other, pane(2), &[(unstarted, 2, 256)]);
+        assert_eq!(other_budget.usage().entries, 2);
+        scene.states.remove(&other);
+        assert_eq!(other_budget.usage(), MediaUsage::default());
+    }
+
+    #[test]
+    fn render_negotiation_portable_waiting_transfers_start_in_increasing_id_order() {
+        // Trigger A: a later-sorted pane stages first while the window is closed.
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), 3 * IMAGE);
+        let opener = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(3), &[(opener, 3, 256)]);
+        assert_eq!(frame.transfers.len(), 1);
+        let late = scene.store(256, 2);
+        let early = scene.store(256, 3);
+        assert!(scene
+            .render_one(viewer, pane(2), &[(late, 2, 256)])
+            .chunks
+            .is_empty());
+        assert!(scene
+            .render_one(viewer, pane(1), &[(early, 1, 256)])
+            .chunks
+            .is_empty());
+        let retried = scene.ack(viewer, frame.seq);
+        assert_eq!(retried, BTreeSet::from([pane(1), pane(2)]));
+        let frame = scene
+            .render_panes(&[(pane(2), &[(late, 2, 256)]), (pane(1), &[(early, 1, 256)])])
+            .remove(&viewer)
+            .unwrap();
+        // Pane 1 sorts first, so its transfer takes the lower id; the wire checker in
+        // `render_with` asserts the order across every frame.
+        let started = frame.first_chunks();
+        assert_eq!(started.len(), 2, "{frame:?}");
+        assert!(started[0] < started[1]);
+        assert_eq!(frame.data[&started[0]][0], 3);
+        assert_eq!(frame.transfers, started);
+    }
+
+    #[test]
+    fn render_negotiation_portable_unstarted_replacement_cancels_silently() {
+        // Trigger B: a transfer that never reached the wire is replaced.
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), 2 * IMAGE);
+        let opener = scene.store(256, 1);
+        let opened = scene.render_one(viewer, pane(2), &[(opener, 2, 256)]);
+        let [opener_id] = opened.transfers[..] else {
+            panic!("expected the opener to complete")
+        };
+        let waiting = scene.store(256, 2);
+        scene.render_one(viewer, pane(1), &[(waiting, 1, 256)]);
+        assert_eq!(budget.usage().entries, 2);
+        let replacement = scene.replace(waiting, 256, 3);
+        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 256)]);
+        assert!(
+            frame.cancels.is_empty() && frame.chunks.is_empty(),
+            "{frame:?}"
+        );
+        // The unstarted lease went at once; the replacement holds its own.
+        assert_eq!(budget.usage().entries, 2);
+        assert_eq!(scene.ack(viewer, opened.seq), BTreeSet::from([pane(1)]));
+        assert_eq!(budget.usage().entries, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 256)]);
+        assert_eq!(frame.first_chunks(), [opener_id + 1]);
+        assert_eq!(frame.data[&(opener_id + 1)][0], 3);
+    }
+
+    #[test]
+    fn render_negotiation_portable_kitty_disable_cancels_pending_transfers() {
+        for cleared in [false, true] {
+            let budget = MediaBudget::viewer();
+            let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+            let started = scene.store(256, 1);
+            let frame = scene.render_one(viewer, pane(1), &[(started, 1, 256)]);
+            let [started_id] = frame.first_chunks()[..] else {
+                panic!("expected a started transfer")
+            };
+            let unstarted = scene.store(256, 2);
+            scene.render_one(viewer, pane(2), &[(unstarted, 2, 256)]);
+            assert_eq!(budget.usage().entries, 2);
+            scene
+                .output
+                .kitty_host_capabilities
+                .borrow_mut()
+                .insert(viewer, false);
+            if cleared {
+                scene.states.get_mut(&viewer).unwrap().force_repaint();
+            }
+            let frame = scene.render_one(viewer, pane(1), &[(started, 1, 256)]);
+            assert_eq!(frame.cleared, cleared);
+            let expected: &[u64] = if cleared { &[] } else { &[started_id] };
+            assert_eq!(frame.cancels, expected, "cleared={cleared}");
+            assert!(frame.chunks.is_empty() && frame.placements == 0);
+            assert_eq!(budget.usage().entries, 1, "cleared={cleared}");
+            scene.ack_last(viewer);
+            assert_eq!(budget.usage(), MediaUsage::default(), "cleared={cleared}");
+        }
+    }
+
+    #[test]
+    fn render_negotiation_portable_overlay_update_keeps_pending_transfer() {
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        let image = scene.store(256, 1);
+        let badge = scene.store(8, 9);
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+        let [id] = frame.first_chunks()[..] else {
+            panic!("expected a started transfer")
+        };
+        // An overlay placement of the same pane updates without the pane re-rendering.
+        let cell = SizeInPixels {
+            width: 8,
+            height: 16,
+        };
+        let frame = scene
+            .render_with(&[], |output, client| {
+                output.add_overlay_kitty_image(client, pane(1), chunk(badge, 7, 8), cell)
+            })
+            .remove(&viewer)
+            .unwrap();
+        assert!(frame.cancels.is_empty(), "{frame:?}");
+        assert_eq!(frame.inline, 1);
+        assert_eq!(budget.usage().entries, 1);
+        // The transfer continues and completes after the ACKs.
+        loop {
+            let retried = scene.ack_last(viewer);
+            assert!(retried.contains(&pane(1)), "{retried:?}");
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+            assert!(frame.cancels.is_empty());
+            assert!(frame.chunks.iter().all(|(chunk, _, _)| *chunk == id));
+            if frame.transfers == [id] {
+                break;
+            }
+        }
+        // A real re-render without the image abandons a pending transfer.
+        let next = scene.store(256, 2);
+        scene.ack_last(viewer);
+        let frame = scene.render_one(viewer, pane(1), &[(next, 1, 256)]);
+        let [pending] = frame.first_chunks()[..] else {
+            panic!("expected the next transfer to start")
+        };
+        let frame = scene.render_one(viewer, pane(1), &[]);
+        assert_eq!(frame.cancels, [pending]);
     }
 }

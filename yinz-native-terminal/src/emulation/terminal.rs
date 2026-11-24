@@ -1,11 +1,13 @@
 use std::sync::Arc;
-use yinz_runtime::native_media::MediaRoot;
+use yinz_runtime::native_media::{
+    MediaRoot, MAX_SHARED_IMAGE_BYTES, VIEWER_MEDIA_BYTES, VIEWER_MEDIA_ENTRIES,
+};
 use yinz_types::render_negotiation as caps;
 use yinz_types::structured_render::{
     self, DecodeError, GeometryRecord, GraphicsMedium, GraphicsRecord, GRAPHICS_FORMAT_RGBA8,
 };
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::emulation::damage::Damage;
 use crate::emulation::kitty::{
@@ -117,6 +119,126 @@ fn assembled(title: String, body: String) -> Option<Notification> {
     }
 }
 
+/// One transfer's bytes so far, toward its declared total.
+struct Assembly {
+    total: usize,
+    data: Vec<u8>,
+}
+
+/// Chunked transfers of the current attachment. Only incomplete transfers persist
+/// between frames: a frame that completes one must consume it.
+#[derive(Default)]
+struct Transfers {
+    incomplete: BTreeMap<u64, Assembly>,
+    /// Completed by the frame being consumed, waiting for its residency.
+    completed: HashMap<u64, Vec<u8>>,
+    /// The highest id any chunk started. Ids increase but need not be contiguous.
+    highest: u64,
+    /// Declared totals of every incomplete and completed transfer.
+    bytes: usize,
+}
+
+impl Transfers {
+    fn discard(&mut self) {
+        let highest = self.highest;
+        *self = Self {
+            highest,
+            ..Self::default()
+        };
+    }
+
+    fn chunk(
+        &mut self,
+        transfer_id: u64,
+        total: u32,
+        offset: u32,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let total = total as usize;
+        let offset = offset as usize;
+        if data.is_empty() {
+            return Err("empty transfer chunk".into());
+        }
+        let assembly = match self.incomplete.get_mut(&transfer_id) {
+            Some(assembly) => {
+                if assembly.total != total || assembly.data.len() != offset {
+                    return Err(format!("transfer {transfer_id} chunk out of sequence"));
+                }
+                assembly
+            },
+            None => {
+                if transfer_id <= self.highest {
+                    return Err(format!("late or unknown transfer {transfer_id}"));
+                }
+                if offset != 0 {
+                    return Err(format!("transfer {transfer_id} starts at offset {offset}"));
+                }
+                if total == 0 || total > MAX_SHARED_IMAGE_BYTES {
+                    return Err(format!("transfer {transfer_id} declares {total} bytes"));
+                }
+                // Refuse before reserving, so a refused chunk leaves no assembly behind.
+                if data.len() > total {
+                    return Err(format!("transfer {transfer_id} chunk overruns its total"));
+                }
+                if self.incomplete.len() + self.completed.len() >= VIEWER_MEDIA_ENTRIES
+                    || total > VIEWER_MEDIA_BYTES - self.bytes
+                {
+                    return Err("too many or too large concurrent transfers".into());
+                }
+                self.highest = transfer_id;
+                self.bytes += total;
+                self.incomplete.entry(transfer_id).or_insert(Assembly {
+                    total,
+                    data: Vec::with_capacity(total),
+                })
+            },
+        };
+        if data.len() > assembly.total - assembly.data.len() {
+            return Err(format!("transfer {transfer_id} chunk overruns its total"));
+        }
+        assembly.data.extend_from_slice(data);
+        if assembly.data.len() == assembly.total
+            && let Some(assembly) = self.incomplete.remove(&transfer_id)
+        {
+            self.completed.insert(transfer_id, assembly.data);
+        }
+        Ok(())
+    }
+
+    fn cancel(&mut self, transfer_id: u64) -> Result<(), String> {
+        let assembly = self
+            .incomplete
+            .remove(&transfer_id)
+            .ok_or_else(|| format!("cancel of unknown transfer {transfer_id}"))?;
+        self.bytes -= assembly.total;
+        Ok(())
+    }
+
+    fn take(&mut self, id: &[u8], expected: usize) -> Result<Vec<u8>, String> {
+        let id = <[u8; 8]>::try_from(id)
+            .map(u64::from_le_bytes)
+            .map_err(|_| "transfer residency needs an 8-byte id".to_owned())?;
+        let pixels = self
+            .completed
+            .remove(&id)
+            .ok_or_else(|| format!("transfer {id} is not complete"))?;
+        self.bytes -= pixels.len();
+        if pixels.len() != expected {
+            return Err(format!("transfer {id} length differs from RGBA dimensions"));
+        }
+        Ok(pixels)
+    }
+
+    /// End a frame. A completed transfer the frame did not consume is dropped and named.
+    fn finish_frame(&mut self) -> Option<u64> {
+        let unconsumed = self.completed.keys().min().copied();
+        for (_, pixels) in self.completed.drain() {
+            self.bytes -= pixels.len();
+        }
+        unconsumed
+    }
+}
+
 pub struct TerminalState {
     screen: ScreenBuffer,
     filter: ApcFilter,
@@ -129,6 +251,7 @@ pub struct TerminalState {
     shared_media: bool,
     live: Option<(caps::Agreement, Option<Arc<MediaRoot>>)>,
     applied_seq: Option<u64>,
+    transfers: Transfers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +275,7 @@ impl TerminalState {
             shared_media: true,
             live: None,
             applied_seq: None,
+            transfers: Transfers::default(),
         }
     }
 
@@ -159,6 +283,8 @@ impl TerminalState {
     pub fn negotiate(&mut self, agreement: caps::Agreement, root: Option<Arc<MediaRoot>>) {
         self.live = Some((agreement, root));
         self.applied_seq = None;
+        // A new attachment starts its own transfers; nothing of the last one completes.
+        self.transfers = Transfers::default();
     }
 
     pub fn set_shared_media(&mut self, allowed: bool) {
@@ -256,6 +382,10 @@ impl TerminalState {
                 .filter(|g| !h.full_repaint() && !h.clear() && **g != self.geometry);
             let validate_retained_sixels =
                 replacement.is_some() && self.sixels.chunks().next().is_some();
+            // The server abandons every pending transfer on the frames that clear.
+            if h.full_repaint() || h.clear() {
+                self.transfers.discard();
+            }
             if !records.is_empty() || validate_retained_sixels {
                 let mut graphics = self.graphics.clone();
                 let mut sixels = self.sixels.clone();
@@ -269,18 +399,23 @@ impl TerminalState {
                 } else {
                     &self.geometry
                 };
-                Self::consume_graphics(
+                // Assemblies stay out of the cloned staging. A failed live frame ends the
+                // stream, so a partial change to them is never observed.
+                let mut transfers = std::mem::take(&mut self.transfers);
+                let consumed = Self::consume_graphics(
                     &records,
                     &mut graphics,
                     &mut sixels,
+                    &mut transfers,
                     false,
                     Some((
                         agreement,
                         root.as_deref(),
                         geometry.as_ref().unwrap_or(previous_geometry),
                     )),
-                )
-                .map_err(|reason| FrameError::Protocol(h.seq, reason))?;
+                );
+                self.transfers = transfers;
+                consumed.map_err(|reason| FrameError::Protocol(h.seq, reason))?;
                 // New Sixels paint over row damage. Validate the chunks left by both operations.
                 if sixels.chunks().next().is_some() {
                     sixels.cut_spans(&ScreenBuffer::written_spans(&view, &shifts.entries));
@@ -339,10 +474,14 @@ impl TerminalState {
             self.sixels = sixels;
         } else {
             if self.live.is_none() {
+                if view.header().full_repaint() || view.header().clear() {
+                    self.transfers.discard();
+                }
                 let _ = Self::consume_graphics(
                     &records,
                     &mut self.graphics,
                     &mut self.sixels,
+                    &mut self.transfers,
                     self.shared_media,
                     None,
                 );
@@ -375,6 +514,29 @@ impl TerminalState {
         records: &[GraphicsRecord],
         graphics: &mut Graphics,
         sixels: &mut Sixels,
+        transfers: &mut Transfers,
+        shared_media: bool,
+        live: Option<(&caps::Agreement, Option<&MediaRoot>, &GeometryRecord)>,
+    ) -> Result<(), String> {
+        let consumed =
+            Self::consume_records(records, graphics, sixels, transfers, shared_media, live);
+        // Incomplete transfers never become residencies, and only they persist.
+        let unconsumed = transfers.finish_frame();
+        consumed?;
+        if let Some(id) = unconsumed {
+            if live.is_some() {
+                return Err(format!("transfer {id} completed without a residency"));
+            }
+            report!("transfer {} completed without a residency", id);
+        }
+        Ok(())
+    }
+
+    fn consume_records(
+        records: &[GraphicsRecord],
+        graphics: &mut Graphics,
+        sixels: &mut Sixels,
+        transfers: &mut Transfers,
         shared_media: bool,
         live: Option<(&caps::Agreement, Option<&MediaRoot>, &GeometryRecord)>,
     ) -> Result<(), String> {
@@ -387,6 +549,18 @@ impl TerminalState {
                 };
                 if agreement.features & feature == 0 {
                     return Err("unnegotiated graphics record".into());
+                }
+                let chunked = matches!(
+                    record,
+                    GraphicsRecord::TransferChunk { .. }
+                        | GraphicsRecord::TransferCancel { .. }
+                        | GraphicsRecord::Residency {
+                            medium: GraphicsMedium::Transfer,
+                            ..
+                        }
+                );
+                if chunked && agreement.media & caps::CHUNKED == 0 {
+                    return Err("chunked media was not agreed".into());
                 }
                 if let GraphicsRecord::Placement { cell_x, cell_y, .. }
                 | GraphicsRecord::SixelChunk { cell_x, cell_y, .. } = record
@@ -454,6 +628,14 @@ impl TerminalState {
                         GraphicsMedium::SharedFile => match std::str::from_utf8(data) {
                             Ok(path) => kitty::read_shared_media(path, expected),
                             Err(_) => None,
+                        },
+                        GraphicsMedium::Transfer => match transfers.take(data, expected) {
+                            Ok(pixels) => Some(pixels),
+                            Err(reason) if live.is_some() => return Err(reason),
+                            Err(reason) => {
+                                report!("image {}: {}", id, reason);
+                                None
+                            },
                         },
                     };
                     let Some(pixels) = pixels else {
@@ -528,6 +710,27 @@ impl TerminalState {
                         && live.is_some()
                     {
                         return Err("invalid Sixel raster".into());
+                    }
+                },
+                GraphicsRecord::TransferChunk {
+                    transfer_id,
+                    total,
+                    offset,
+                    data,
+                } => {
+                    if let Err(reason) = transfers.chunk(*transfer_id, *total, *offset, data) {
+                        if live.is_some() {
+                            return Err(reason);
+                        }
+                        report!("{}", reason);
+                    }
+                },
+                GraphicsRecord::TransferCancel { transfer_id } => {
+                    if let Err(reason) = transfers.cancel(*transfer_id) {
+                        if live.is_some() {
+                            return Err(reason);
+                        }
+                        report!("{}", reason);
                     }
                 },
             }

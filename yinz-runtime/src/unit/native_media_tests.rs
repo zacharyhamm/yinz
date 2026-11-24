@@ -251,3 +251,17 @@ fn render_negotiation_proof_and_image_use_the_pinned_directory() {
     assert_eq!(std::fs::read(&replacement_probe).unwrap(), b"replacement");
     assert_eq!(std::fs::read_link(image_path).unwrap(), outside.path());
 }
+
+#[test]
+fn native_media_portable_frame_allowance_fits_the_ipc_frame_with_headroom() {
+    let limit = crate::consts::MAX_IPC_FRAME_LEN;
+    assert!(PORTABLE_FRAME_MEDIA_BYTES + PORTABLE_FRAME_HEADROOM_BYTES <= limit);
+    // Every transfer the reader accepts spans whole frames: the largest image takes more
+    // than one, and a threshold-sized image fits in one.
+    const { assert!(MAX_SHARED_IMAGE_BYTES > PORTABLE_FRAME_MEDIA_BYTES) };
+    const { assert!(SHARED_MEDIA_MIN_BYTES <= PORTABLE_FRAME_MEDIA_BYTES) };
+    assert_eq!(
+        MAX_SHARED_IMAGE_BYTES.div_ceil(PORTABLE_FRAME_MEDIA_BYTES),
+        13
+    );
+}

@@ -44,6 +44,22 @@ if sys.argv[1] == "replace":
         os.write(1, b"\033[5;1H")
         transmit(n, 2048, 2048, "i=1,x=0,y=0,w=64,h=64,")
         print(f"\033[1;1HREPLACED-{n:03}", flush=True)
+if sys.argv[1] == "large":
+    # One 5120x5120 RGBA image, exactly the 100 MiB decode limit, then a text marker
+    # that must arrive in order with the chunked frames around it.
+    wait_for(lambda: (root / "image-1").exists())
+    os.write(1, b"\033[3;1H")
+    transmit(1, 5120, 5120, "i=1,")
+    print("\033[1;1HLARGE-SENT", flush=True)
+    wait_for(lambda: False)
+if sys.argv[1] == "ordered":
+    # Threshold-sized images, each followed by a marker naming it.
+    for n in range(1, 4):
+        wait_for(lambda: (root / f"image-{n}").exists())
+        os.write(1, f"\033[3;{8 * n}H".encode())
+        transmit(n, 256, 256, f"i={n},")
+        print(f"\033[1;1HSENT-{n:03}", flush=True)
+    wait_for(lambda: False)
 for n in range(1, int(sys.argv[1]) + 1):
     wait_for(lambda: (root / f"image-{n}").exists())
     width, height = (256, 256) if n < 33 else (4096, 4097)

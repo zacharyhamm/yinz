@@ -544,6 +544,96 @@ fn a_graphics_record_of_an_unknown_kind_is_rejected() {
     assert_eq!(error_of(&frame), Some(DecodeError::BadGraphicsRecord));
 }
 
+fn transfer_chunk(transfer_id: u64, total: u32, offset: u32, data: &[u8]) -> GraphicsRecord {
+    GraphicsRecord::TransferChunk {
+        transfer_id,
+        total,
+        offset,
+        data: data.to_vec(),
+    }
+}
+
+fn one_record_frame(record: &GraphicsRecord) -> (Vec<u8>, usize) {
+    let mut builder = FrameBuilder::new(4, 1, 0);
+    builder.push_graphics(record);
+    let frame = builder.finish();
+    let at = decode(&frame).unwrap().header().graphics_offset as usize;
+    (frame, at)
+}
+
+#[test]
+fn structured_render_transfer_records_round_trip_in_emission_order() {
+    let records = vec![
+        transfer_chunk(7, 8, 0, &[1, 2, 3]),
+        transfer_chunk(7, 8, 3, &[4, 5, 6, 7, 8]),
+        residency(9, GraphicsMedium::Transfer, &7u64.to_le_bytes()),
+        GraphicsRecord::TransferCancel { transfer_id: 5 },
+        transfer_chunk(u64::MAX, u32::MAX, u32::MAX - 1, &[0]),
+    ];
+    let mut builder = FrameBuilder::new(4, 1, 0);
+    builder.extend_graphics(records.iter());
+    let frame = builder.finish();
+    assert_eq!(decode(&frame).unwrap().graphics(), records);
+}
+
+#[test]
+fn structured_render_transfer_chunk_lengths_must_match_their_payload() {
+    let (frame, at) = one_record_frame(&transfer_chunk(1, 8, 0, &[1, 2, 3, 4]));
+    // data_len sits at payload offset 16, after the 8-byte record header.
+    let data_len = at + 8 + 16;
+    for (declared, error) in [
+        (4u32, None),
+        (5, Some(DecodeError::BadGraphicsRecord)),
+        (3, Some(DecodeError::BadGraphicsRecord)),
+        (u32::MAX, Some(DecodeError::BadGraphicsRecord)),
+    ] {
+        let mut frame = frame.clone();
+        frame[data_len..data_len + 4].copy_from_slice(&declared.to_le_bytes());
+        assert_eq!(error_of(&frame), error, "declared {declared}");
+    }
+    // A payload shorter than the chunk header is truncated.
+    let mut frame = frame.clone();
+    frame[at + 4..at + 8].copy_from_slice(&20u32.to_le_bytes());
+    assert_eq!(error_of(&frame), Some(DecodeError::BadGraphicsRecord));
+}
+
+#[test]
+fn structured_render_transfer_cancel_requires_exactly_an_id() {
+    let (frame, at) = one_record_frame(&GraphicsRecord::TransferCancel { transfer_id: 3 });
+    for (len, error) in [(8u32, None), (4, Some(DecodeError::BadGraphicsRecord))] {
+        let mut frame = frame.clone();
+        frame[at + 4..at + 8].copy_from_slice(&len.to_le_bytes());
+        assert_eq!(error_of(&frame), error, "length {len}");
+    }
+    // A cancel padded past its id is overlong, not a newer layout.
+    let mut builder = FrameBuilder::new(4, 1, 0);
+    builder.push_record(
+        GRAPHICS_KIND_TRANSFER_CANCEL,
+        GRAPHICS_MEDIUM_INLINE,
+        |out| out.extend_from_slice(&[0; 12]),
+    );
+    assert_eq!(
+        error_of(&builder.finish()),
+        Some(DecodeError::BadGraphicsRecord)
+    );
+}
+
+#[test]
+fn structured_render_transfer_kinds_and_medium_are_new_to_older_decoders() {
+    // A decoder from before chunked media knew kinds 0..=10 and media 0..=1 and rejects
+    // anything else, which is why only chunked agreements carry these records.
+    for kind in [GRAPHICS_KIND_TRANSFER_CHUNK, GRAPHICS_KIND_TRANSFER_CANCEL] {
+        assert!(kind > RECORD_KIND_SHIFT);
+    }
+    const { assert!(GRAPHICS_MEDIUM_TRANSFER > GRAPHICS_MEDIUM_SHARED_FILE) };
+    let (mut frame, at) = one_record_frame(&GraphicsRecord::TransferCancel { transfer_id: 3 });
+    frame[at] = GRAPHICS_KIND_TRANSFER_CANCEL + 1;
+    assert_eq!(error_of(&frame), Some(DecodeError::BadGraphicsRecord));
+    let (mut frame, at) = one_record_frame(&residency(1, GraphicsMedium::Transfer, &[0; 8]));
+    frame[at + 1] = GRAPHICS_MEDIUM_TRANSFER + 1;
+    assert_eq!(error_of(&frame), Some(DecodeError::BadGraphicsRecord));
+}
+
 #[test]
 fn an_overlay_replays_the_graphics_records_it_absorbed() {
     let mut first = FrameBuilder::new(4, 1, 1);

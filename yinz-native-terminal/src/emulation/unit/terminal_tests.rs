@@ -770,3 +770,284 @@ fn render_negotiation_row_shifts_require_an_incremental_fitting_rectangle() {
     assert_eq!(row_text(&state, 1), "g X kl");
     assert_eq!(row_text(&state, 2), "mnopqr");
 }
+
+mod transfers {
+    use super::*;
+    use yinz_runtime::native_media::{
+        MAX_SHARED_IMAGE_BYTES, VIEWER_MEDIA_BYTES, VIEWER_MEDIA_ENTRIES,
+    };
+
+    fn chunked() -> caps::Agreement {
+        caps::Agreement {
+            media: caps::INLINE | caps::CHUNKED,
+            ..caps::Agreement::default()
+        }
+    }
+
+    fn chunk(transfer_id: u64, total: u32, offset: u32, data: &[u8]) -> GraphicsRecord {
+        GraphicsRecord::TransferChunk {
+            transfer_id,
+            total,
+            offset,
+            data: data.to_vec(),
+        }
+    }
+
+    /// A 2x2 RGBA residency naming transfer `transfer_id`.
+    fn resident(id: u64, transfer_id: u64) -> GraphicsRecord {
+        residency(
+            id,
+            GraphicsMedium::Transfer,
+            transfer_id.to_le_bytes().to_vec(),
+        )
+    }
+
+    /// A live client and the next frame sequence it expects.
+    struct Live {
+        state: TerminalState,
+        seq: u64,
+    }
+
+    impl Live {
+        fn new(agreement: caps::Agreement) -> Self {
+            let mut state = TerminalState::new(6, 12);
+            state.negotiate(agreement, None);
+            let mut live = Self { state, seq: 0 };
+            live.apply(true, &[]).unwrap();
+            live
+        }
+
+        fn apply(&mut self, repaint: bool, records: &[GraphicsRecord]) -> Result<(), String> {
+            self.seq += 1;
+            let mut frame = FrameBuilder::new(12, 6, self.seq);
+            frame.set_full_repaint(repaint);
+            frame.extend_graphics(records.iter());
+            self.state
+                .apply_frame(&frame.finish())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        }
+
+        /// A refused frame leaves the applied sequence where it was.
+        fn rejects(&mut self, records: &[GraphicsRecord], reason: &str) {
+            let error = self.apply(false, records).unwrap_err();
+            self.seq -= 1;
+            assert!(error.contains(reason), "{error} lacks {reason:?}");
+        }
+
+        fn pixels(&self, id: u64) -> Vec<u8> {
+            self.state.graphics().image(id).unwrap().pixels.clone()
+        }
+    }
+
+    #[test]
+    fn render_negotiation_transfer_assembles_the_interleavings_a_server_produces() {
+        let mut live = Live::new(chunked());
+        let a = rgba([1, 2, 3, 255], 4);
+        let b = rgba([4, 5, 6, 255], 4);
+        // Two transfers start in one frame, with an id gap between them.
+        live.apply(false, &[chunk(3, 16, 0, &a[..5]), chunk(9, 16, 0, &b[..7])])
+            .unwrap();
+        // A lower id continues after a higher one started, and both complete apart.
+        live.apply(false, &[chunk(3, 16, 5, &a[5..]), resident(1, 3)])
+            .unwrap();
+        assert_eq!(live.pixels(1), a);
+        live.apply(false, &[chunk(9, 16, 7, &b[7..12])]).unwrap();
+        live.apply(false, &[chunk(9, 16, 12, &b[12..]), resident(2, 9)])
+            .unwrap();
+        assert_eq!(live.pixels(2), b);
+        // A completed transfer is consumed, so its id cannot be named again.
+        live.rejects(&[resident(3, 9)], "not complete");
+    }
+
+    #[test]
+    fn render_negotiation_transfer_rejects_every_rule_violation() {
+        let pixels = rgba([7, 7, 7, 255], 4);
+        let cases: Vec<(&str, Vec<GraphicsRecord>, &str)> = vec![
+            (
+                "continuation of an unknown id",
+                vec![chunk(1, 16, 4, &pixels[4..])],
+                "starts at offset",
+            ),
+            (
+                "empty chunk",
+                vec![chunk(1, 16, 0, &[])],
+                "empty transfer chunk",
+            ),
+            ("zero total", vec![chunk(1, 0, 0, &[1])], "declares 0 bytes"),
+            (
+                "total above the decode limit",
+                vec![chunk(1, MAX_SHARED_IMAGE_BYTES as u32 + 1, 0, &[1])],
+                "declares",
+            ),
+            (
+                "chunk past its total",
+                vec![chunk(1, 2, 0, &[1, 2, 3])],
+                "overruns",
+            ),
+            (
+                "out-of-order offset",
+                vec![chunk(1, 16, 0, &pixels[..4]), chunk(1, 16, 8, &pixels[8..])],
+                "out of sequence",
+            ),
+            (
+                "changed total",
+                vec![
+                    chunk(1, 16, 0, &pixels[..4]),
+                    chunk(1, 15, 4, &pixels[4..15]),
+                ],
+                "out of sequence",
+            ),
+            (
+                "cancel of an unstarted id",
+                vec![GraphicsRecord::TransferCancel { transfer_id: 1 }],
+                "cancel of unknown",
+            ),
+            (
+                "residency of an unstarted id",
+                vec![resident(1, 1)],
+                "not complete",
+            ),
+            (
+                "residency of an incomplete transfer",
+                vec![chunk(1, 16, 0, &pixels[..4]), resident(1, 1)],
+                "not complete",
+            ),
+            (
+                "residency with a short id",
+                vec![
+                    chunk(1, 16, 0, &pixels),
+                    residency(1, GraphicsMedium::Transfer, vec![1, 0, 0]),
+                ],
+                "8-byte id",
+            ),
+            (
+                "length differing from the dimensions",
+                vec![chunk(1, 12, 0, &pixels[..12]), resident(1, 1)],
+                "differs from RGBA",
+            ),
+            (
+                "completed without a residency",
+                vec![chunk(1, 16, 0, &pixels)],
+                "without a residency",
+            ),
+        ];
+        for (case, records, reason) in cases {
+            let mut live = Live::new(chunked());
+            let error = live.apply(false, &records).unwrap_err();
+            assert!(error.contains(reason), "{case}: {error}");
+        }
+        // Ids only increase: a late or reused id is refused.
+        let mut live = Live::new(chunked());
+        live.apply(false, &[chunk(5, 16, 0, &pixels[..4])]).unwrap();
+        live.rejects(&[chunk(4, 16, 0, &pixels[..4])], "late or unknown");
+        live.rejects(&[chunk(5, 16, 0, &pixels[..4])], "out of sequence");
+        // Without the chunked bit every transfer record fails the frame.
+        for record in [
+            chunk(1, 16, 0, &pixels),
+            GraphicsRecord::TransferCancel { transfer_id: 1 },
+            resident(1, 1),
+        ] {
+            let mut live = Live::new(caps::Agreement::default());
+            live.rejects(&[record], "chunked media was not agreed");
+        }
+        let mut text = Live::new(caps::Agreement {
+            features: 0,
+            media: 0,
+            ..chunked()
+        });
+        text.rejects(&[chunk(1, 16, 0, &pixels)], "unnegotiated graphics record");
+    }
+
+    #[test]
+    fn render_negotiation_transfer_bounds_concurrent_assemblies() {
+        let mut live = Live::new(chunked());
+        let starts: Vec<_> = (1..=VIEWER_MEDIA_ENTRIES as u64)
+            .map(|id| chunk(id, 16, 0, &[0]))
+            .collect();
+        live.apply(false, &starts).unwrap();
+        live.rejects(
+            &[chunk(VIEWER_MEDIA_ENTRIES as u64 + 1, 16, 0, &[0])],
+            "too many or too large",
+        );
+        // Declared totals are bounded before anything is allocated for them.
+        let mut live = Live::new(chunked());
+        let max = MAX_SHARED_IMAGE_BYTES as u32;
+        live.apply(false, &[chunk(1, max, 0, &[0])]).unwrap();
+        let rest = (VIEWER_MEDIA_BYTES - MAX_SHARED_IMAGE_BYTES) as u32;
+        live.apply(false, &[chunk(2, rest, 0, &[0])]).unwrap();
+        live.rejects(&[chunk(3, 1, 0, &[0])], "too many or too large");
+        // A cancel returns its share.
+        let mut live = Live::new(chunked());
+        live.apply(false, &[chunk(1, max, 0, &[0])]).unwrap();
+        live.apply(false, &[GraphicsRecord::TransferCancel { transfer_id: 1 }])
+            .unwrap();
+        live.apply(false, &[chunk(2, max, 0, &[0])]).unwrap();
+        live.apply(false, &[chunk(3, rest, 0, &[0])]).unwrap();
+    }
+
+    #[test]
+    fn render_negotiation_transfer_is_discarded_on_clear_repaint_and_negotiate() {
+        let pixels = rgba([9, 9, 9, 255], 4);
+        for discard in ["full repaint", "clear", "negotiate"] {
+            let mut live = Live::new(chunked());
+            live.apply(false, &[chunk(4, 16, 0, &pixels[..8])]).unwrap();
+            match discard {
+                "full repaint" => live.apply(true, &[]).unwrap(),
+                "clear" => {
+                    live.seq += 1;
+                    let mut frame = FrameBuilder::new(12, 6, live.seq);
+                    frame.set_clear(true);
+                    live.state.apply_frame(&frame.finish()).unwrap();
+                },
+                _ => {
+                    live.state.negotiate(chunked(), None);
+                    live.seq = 0;
+                    live.apply(true, &[]).unwrap();
+                },
+            }
+            live.rejects(&[chunk(4, 16, 8, &pixels[8..])], "");
+            // A new transfer starts fresh in the same frame as the discard.
+            let mut live = Live::new(chunked());
+            live.apply(false, &[chunk(4, 16, 0, &pixels[..8])]).unwrap();
+            live.apply(true, &[chunk(5, 16, 0, &pixels), resident(1, 5)])
+                .unwrap();
+            assert_eq!(live.pixels(1), pixels, "{discard}");
+        }
+        // After negotiate, ids restart for the new attachment.
+        let mut live = Live::new(chunked());
+        live.apply(false, &[chunk(8, 16, 0, &pixels[..8])]).unwrap();
+        live.state.negotiate(chunked(), None);
+        live.seq = 0;
+        live.apply(true, &[chunk(1, 16, 0, &pixels), resident(1, 1)])
+            .unwrap();
+    }
+
+    #[test]
+    fn render_negotiation_transfer_replays_from_a_recording() {
+        let pixels = rgba([3, 1, 4, 255], 4);
+        let mut state = TerminalState::new(6, 12);
+        let frames: Vec<Vec<GraphicsRecord>> = vec![
+            vec![chunk(2, 16, 0, &pixels[..6])],
+            vec![
+                chunk(2, 16, 6, &pixels[6..]),
+                resident(7, 2),
+                placement(7, 1),
+            ],
+            // Replay reports and skips what a live client would refuse.
+            vec![
+                GraphicsRecord::TransferCancel { transfer_id: 9 },
+                resident(8, 9),
+            ],
+        ];
+        for (seq, records) in frames.iter().enumerate() {
+            let mut frame = FrameBuilder::new(12, 6, seq as u64 + 1);
+            frame.set_full_repaint(seq == 0);
+            frame.extend_graphics(records.iter());
+            state.apply_frame(&frame.finish()).unwrap();
+        }
+        assert_eq!(state.graphics().image(7).unwrap().pixels, pixels);
+        assert!(state.graphics().image(8).is_none());
+        assert_eq!(state.graphics().placements().count(), 1);
+    }
+}

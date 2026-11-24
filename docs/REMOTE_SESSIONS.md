@@ -1,7 +1,8 @@
 # Remote sessions over SSH
 
 The native library accepts an already-established SSH-forwarded IPC stream. It
-negotiates portable inline media and uses the remote server's session settings.
+negotiates portable media, inline or in ACK-paced chunks, and never relies on a
+path on the remote host. It uses the remote server's session settings.
 See [native attachment and recovery](native-terminal.md#structured-rendering-protocol)
 for the wire contract and the current CLI boundary.
 
@@ -139,6 +140,14 @@ Run these commands from an isolated worktree:
 cargo x test -p yinz-client
 cargo x remote-test --build
 cargo x remote-test --test -- --exact remote_client_ssh::remote_client_reconnects_after_repeated_network_cuts
+```
+
+A forwarded headless consumer assembles a chunked 100 MiB Kitty image from a
+remote session, with its frames bounded by the IPC limit:
+
+```sh
+cargo x remote-test --build
+cargo x remote-test --test -- --exact tests::native_media_ssh::sequential_ssh::forwarded_viewer_assembles_a_chunked_100_mib_image
 ```
 
 The SSH suite uses a Linux container and real local clients. Run it on a macOS host to verify a macOS client against Linux. Linux-only results do not establish macOS compatibility.

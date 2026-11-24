@@ -550,21 +550,30 @@ fn render_negotiation_established_forward_uses_portable_pixels_and_terminal_asse
         if let Server::RenderFrame { frame } = message {
             let applied = state.apply_frame(&frame).unwrap();
             forward_ack(&mut client, &mut upstream, applied.seq, &generation);
-            if let Some(id) = decode(&frame)
-                .unwrap()
-                .graphics()
-                .into_iter()
-                .find_map(|r| match r {
-                    GraphicsRecord::Residency {
-                        id, medium, data, ..
-                    } => {
-                        assert_eq!(medium, GraphicsMedium::Inline);
-                        assert_eq!(data, [1, 72, 13, 255].repeat(256 * 256));
-                        Some(id)
-                    },
-                    _ => None,
-                })
+            let carried = Carried::of(&frame);
+            if let Some((id, wire_id)) =
+                decode(&frame)
+                    .unwrap()
+                    .graphics()
+                    .into_iter()
+                    .find_map(|r| match r {
+                        // A threshold-sized image is chunked for a forwarded viewer: the
+                        // residency names a transfer whose chunks this frame carried.
+                        GraphicsRecord::Residency {
+                            id,
+                            medium,
+                            data,
+                            byte_len,
+                            ..
+                        } => {
+                            assert_eq!(medium, GraphicsMedium::Transfer);
+                            assert_eq!(byte_len, 256 * 256 * 4);
+                            Some((id, u64::from_le_bytes(data.try_into().unwrap())))
+                        },
+                        _ => None,
+                    })
             {
+                assert_eq!(carried.data[&wire_id], [1, 72, 13, 255].repeat(256 * 256));
                 break id;
             }
         }
@@ -651,6 +660,254 @@ fn scripted_attachment(
         Client::AttachClient { .. }
     ));
     (child, peer)
+}
+
+/// What one native frame carried for chunked portable delivery. Construction asserts
+/// that it names no server-local file.
+#[derive(Debug, Default)]
+struct Carried {
+    seq: u64,
+    /// (transfer id, offset, length) of each chunk.
+    chunks: Vec<(u64, u32, usize)>,
+    cancels: Vec<u64>,
+    /// Wire ids named by transfer residencies.
+    transfers: Vec<u64>,
+    inline: usize,
+    placements: usize,
+    /// Each transfer's chunk bytes in this frame.
+    data: std::collections::HashMap<u64, Vec<u8>>,
+}
+
+impl Carried {
+    fn of(frame: &[u8]) -> Self {
+        let view = decode(frame).unwrap();
+        let mut carried = Self {
+            seq: view.header().seq,
+            ..Default::default()
+        };
+        for record in view.graphics() {
+            match record {
+                GraphicsRecord::TransferChunk {
+                    transfer_id,
+                    offset,
+                    data,
+                    ..
+                } => {
+                    carried.chunks.push((transfer_id, offset, data.len()));
+                    carried.data.entry(transfer_id).or_default().extend(data);
+                },
+                GraphicsRecord::TransferCancel { transfer_id } => carried.cancels.push(transfer_id),
+                GraphicsRecord::Residency {
+                    medium: GraphicsMedium::Transfer,
+                    data,
+                    ..
+                } => carried
+                    .transfers
+                    .push(u64::from_le_bytes(data.try_into().unwrap())),
+                GraphicsRecord::Residency {
+                    medium: GraphicsMedium::SharedFile,
+                    ..
+                } => panic!("a portable frame named a server-local file"),
+                GraphicsRecord::Residency { .. } => carried.inline += 1,
+                GraphicsRecord::Placement { .. } => carried.placements += 1,
+                _ => {},
+            }
+        }
+        carried
+    }
+
+    fn first_chunks(&self) -> Vec<u64> {
+        self.chunks
+            .iter()
+            .filter(|(_, offset, _)| *offset == 0)
+            .map(|(id, _, _)| *id)
+            .collect()
+    }
+}
+
+fn shows(state: &TerminalState, marker: &str) -> bool {
+    let size = state.size();
+    (0..size.rows).any(|r| {
+        (0..size.cols)
+            .map(|c| state.screen().cell(r, c).character())
+            .collect::<String>()
+            .contains(marker)
+    })
+}
+
+#[test]
+fn render_negotiation_headless_accepts_an_older_server_inline_agreement() {
+    let fixture = NativeFixture::new();
+    let (proxy, listener) = scripted_listener(SESSION);
+    let capture = proxy.path().join("older.frames");
+    let (child, mut peer) =
+        scripted_attachment(&fixture, proxy.path(), &listener, SESSION, &capture, "30");
+    write_packet(&mut peer, &advertisement(Some(1)));
+    let Client::NativeRenderRequest(caps::Request::Offer(offer)) =
+        client_message(&read_packet(&mut peer))
+    else {
+        panic!("expected native offer")
+    };
+    assert_ne!(offer.media & caps::CHUNKED, 0);
+    let send_server = |peer: &mut UnixStream, msg: Server| {
+        write_packet(peer, &wire::ServerToClientMsg::from(msg).encode_to_vec())
+    };
+    // Exactly what a server from before chunked media selects for this offer.
+    let older = caps::Agreement {
+        version: 4,
+        features: caps::GEOMETRY | caps::LINKS | caps::KITTY | caps::SIXEL,
+        media: caps::INLINE,
+        proof_response: Vec::new(),
+    };
+    send_server(
+        &mut peer,
+        Server::NativeRenderResult(caps::Decision::Selected(older)),
+    );
+    let mut frame = yinz_types::structured_render::FrameBuilder::new(80, 24, 1);
+    frame.set_full_repaint(true);
+    frame.extend_graphics(&[GraphicsRecord::Residency {
+        id: 5,
+        width: 2,
+        height: 2,
+        format: yinz_types::structured_render::GRAPHICS_FORMAT_RGBA8,
+        medium: GraphicsMedium::Inline,
+        byte_len: 16,
+        data: [9, 8, 7, 255].repeat(4),
+    }]);
+    let frame = frame.finish();
+    let mut expected = (frame.len() as u32).to_le_bytes().to_vec();
+    expected.extend_from_slice(&frame);
+    send_server(&mut peer, Server::RenderFrame { frame });
+    assert_eq!(
+        client_message(&read_packet(&mut peer)),
+        Client::RenderFrameAck { seq: 1 }
+    );
+    send_server(
+        &mut peer,
+        Server::Exit {
+            exit_reason: ExitReason::NormalDetached,
+        },
+    );
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(&capture).unwrap(), expected);
+}
+
+#[test]
+fn render_negotiation_established_forward_assembles_a_chunked_100_mib_image() {
+    use interprocess::os::unix::uds_local_socket::Stream;
+    use yinz_runtime::native_media::{MAX_SHARED_IMAGE_BYTES, PORTABLE_FRAME_MEDIA_BYTES};
+    let fixture = start_images("large");
+    let _text = text_viewer(&fixture);
+    let (local, client) = UnixStream::pair().unwrap();
+    let mut client = bounded(client);
+    let capture = fixture.fixture.path().join("large.frames");
+    let args = yinz_cli::args::TerminalArgs {
+        headless: true,
+        session_name: Some(SESSION.into()),
+        record: Some(capture.clone()),
+        ..Default::default()
+    };
+    let consumer = std::thread::spawn(move || {
+        yinz_native_terminal::run_forwarded(
+            args,
+            yinz_cli::args::CliArgs {
+                config: Some("/missing/local-config".into()),
+                layout: Some("/missing/local-layout".into()),
+                ..Default::default()
+            },
+            Stream::from(local).into(),
+            Some("test-forward".into()),
+            SESSION.into(),
+            &yinz_types::data::SessionConnection {
+                tab_position: Some(yinz_types::internal_ids::TabNumber::new(1)),
+                ..Default::default()
+            },
+        )
+    });
+    let mut upstream = server(&fixture);
+    let (mut state, generation) = exchange(&mut client, &mut upstream, false);
+    trigger(&fixture, "image-1");
+    // Relay every packet unchanged. `read_packet` bounds each by MAX_IPC_FRAME_LEN, and
+    // the relay's own client validates every frame as the consumer does.
+    let mut frames = 0;
+    let mut first_chunk = None;
+    let mut marker = None;
+    let mut received = 0;
+    let (image_id, wire_id) = loop {
+        let packet = read_packet(&mut upstream);
+        let message = server_message(&packet);
+        write_packet(&mut client, &packet);
+        let Server::RenderFrame { frame } = message else {
+            assert!(
+                !matches!(message, Server::Exit { .. }),
+                "native output ended"
+            );
+            continue;
+        };
+        frames += 1;
+        let carried = Carried::of(&frame);
+        let media: usize = carried.chunks.iter().map(|(_, _, len)| len).sum();
+        assert!(media <= PORTABLE_FRAME_MEDIA_BYTES);
+        received += media;
+        if !carried.chunks.is_empty() {
+            first_chunk.get_or_insert(frames);
+        }
+        let applied = state.apply_frame(&frame).unwrap();
+        forward_ack(&mut client, &mut upstream, applied.seq, &generation);
+        if marker.is_none() && shows(&state, "LARGE-SENT") {
+            marker = Some(frames);
+        }
+        if let [wire_id] = carried.transfers[..] {
+            let id = decode(&frame)
+                .unwrap()
+                .graphics()
+                .into_iter()
+                .find_map(|record| match record {
+                    GraphicsRecord::Residency { id, .. } => Some(id),
+                    _ => None,
+                })
+                .unwrap();
+            break (id, wire_id);
+        }
+    };
+    assert_eq!(received, MAX_SHARED_IMAGE_BYTES);
+    assert_eq!(wire_id, 1);
+    // Text printed after the image is not held behind its chunks.
+    let (first_chunk, marker) = (first_chunk.unwrap(), marker.unwrap());
+    assert!(
+        first_chunk <= marker && marker < frames,
+        "{first_chunk} {marker} {frames}"
+    );
+    let expected = [1, 72, 13, 255].repeat(5120 * 5120);
+    assert!(state.graphics().image(image_id).unwrap().pixels == expected);
+    assert!(state
+        .graphics()
+        .placements()
+        .any(|p| p.image_id == image_id));
+    let mut exit = wire::ServerToClientMsg::from(Server::Exit {
+        exit_reason: ExitReason::NormalDetached,
+    });
+    exit.attachment_generation = Some(generation);
+    write_packet(&mut client, &exit.encode_to_vec());
+    let closed = read_packet(&mut client);
+    assert_eq!(client_message(&closed), Client::ClientExited);
+    write_packet(&mut upstream, &closed);
+    consumer.join().unwrap().unwrap();
+    // The consumer's recording replays the chunked image exactly.
+    let mut replay = Recording {
+        state: Some(TerminalState::new(40, 120)),
+        ..Default::default()
+    };
+    replay.state.as_mut().unwrap().set_shared_media(false);
+    replay.read(&capture);
+    let state = replay.state.unwrap();
+    assert!(state.graphics().image(image_id).unwrap().pixels == expected);
+    assert!(shows(&state, "LARGE-SENT"));
 }
 
 #[test]
@@ -1996,4 +2253,234 @@ fn native_media_disconnect_races() {
     // (3) ACKs racing a seal are covered by native_media_reattach_keeps_leases_apart.
     // Each file was removed exactly once: a second unlink would log an error.
     assert!(!fixture.log_text().contains("remove staged native media"));
+}
+
+// Chunked portable delivery through the real server and writer, read by a forwarded-style
+// attachment (no shared root) that validates every frame with the production client.
+
+enum PortableEvent {
+    Frame(Carried),
+    Withdrawn(u64),
+    Rejected,
+}
+
+struct PortableViewer {
+    stream: UnixStream,
+    tag: Vec<u8>,
+    state: TerminalState,
+    last: u64,
+}
+
+impl PortableViewer {
+    /// Attach, negotiate chunked media without a proof and return the unacknowledged
+    /// first full repaint.
+    fn attach(fixture: &NativeFixture) -> (Self, Carried) {
+        let (stream, tag) = advertised_attachment(fixture);
+        let mut viewer = Self {
+            stream,
+            tag,
+            state: TerminalState::new(40, 120),
+            last: 0,
+        };
+        viewer.send(Client::NativeRenderRequest(caps::Request::Offer(
+            caps::Offer::reader(None),
+        )));
+        let first = viewer.frame();
+        (viewer, first)
+    }
+
+    fn send(&mut self, message: Client) {
+        send_tagged(&mut self.stream, &self.tag.clone(), message);
+    }
+
+    fn ack(&mut self, seq: u64) {
+        self.send(Client::RenderFrameAck { seq });
+    }
+
+    fn next(&mut self) -> PortableEvent {
+        loop {
+            let packet =
+                wire::ServerToClientMsg::decode(read_packet(&mut self.stream).as_slice()).unwrap();
+            let owned = packet.attachment_generation.as_deref() == Some(self.tag.as_slice());
+            let message = Server::try_from(packet).unwrap();
+            if matches!(
+                message,
+                Server::NativeRenderResult(_) | Server::RenderFrame { .. }
+            ) {
+                assert!(owned, "native output without this attachment's generation");
+            }
+            match message {
+                Server::NativeRenderResult(caps::Decision::Selected(agreement)) => {
+                    assert_eq!(agreement.media, caps::INLINE | caps::CHUNKED);
+                    self.state.negotiate(agreement, None);
+                },
+                Server::NativeRenderResult(caps::Decision::Withdrawn(high)) => {
+                    return PortableEvent::Withdrawn(high)
+                },
+                Server::NativeRenderResult(caps::Decision::Rejected(reason)) => {
+                    assert!(reason.contains("reattach"), "{reason}");
+                    return PortableEvent::Rejected;
+                },
+                Server::RenderFrame { frame } => {
+                    let carried = Carried::of(&frame);
+                    self.state.apply_frame(&frame).unwrap();
+                    self.last = self.last.max(carried.seq);
+                    return PortableEvent::Frame(carried);
+                },
+                Server::Exit { exit_reason } => panic!("viewer ended: {exit_reason:?}"),
+                _ => {},
+            }
+        }
+    }
+
+    fn frame(&mut self) -> Carried {
+        match self.next() {
+            PortableEvent::Frame(carried) => carried,
+            _ => panic!("expected a frame"),
+        }
+    }
+
+    /// Frames up to the one showing `marker`, without acknowledging any.
+    fn frames_until(&mut self, marker: &str) -> Vec<Carried> {
+        let mut frames = Vec::new();
+        while !shows(&self.state, marker) {
+            frames.push(self.frame());
+        }
+        frames
+    }
+
+    /// Acknowledge every frame until one completes a transfer; returns all of them.
+    fn complete(&mut self) -> Vec<Carried> {
+        let mut frames = Vec::new();
+        loop {
+            self.ack(self.last);
+            let frame = self.frame();
+            let done = !frame.transfers.is_empty();
+            frames.push(frame);
+            if done {
+                return frames;
+            }
+        }
+    }
+
+    fn image_shades(&self) -> Vec<u8> {
+        let mut shades: Vec<_> = self
+            .state
+            .graphics()
+            .placements()
+            .filter_map(|placement| self.state.graphics().image(placement.image_id))
+            .map(|image| image.pixels[0])
+            .collect();
+        shades.sort_unstable();
+        shades.dedup();
+        shades
+    }
+}
+
+#[test]
+fn native_media_portable_withheld_acks_defer_replacement_within_budget() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let (mut viewer, first) = PortableViewer::attach(&fixture);
+    viewer.ack(first.seq);
+    // The first 16 MiB replacement starts; its second half waits for an ACK withheld below.
+    trigger(&fixture, "replace-1");
+    let frames = viewer.frames_until("REPLACED-001");
+    let chunks: Vec<_> = frames.iter().flat_map(|f| f.chunks.clone()).collect();
+    assert_eq!(chunks, [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)]);
+    let mut cancels = Vec::new();
+    for n in 2..=5 {
+        trigger(&fixture, &format!("replace-{n}"));
+        for frame in viewer.frames_until(&format!("REPLACED-{n:03}")) {
+            assert!(
+                frame.chunks.is_empty() && frame.transfers.is_empty() && frame.inline == 0,
+                "replacement {n} was sent without an ACK: {frame:?}"
+            );
+            cancels.extend(frame.cancels);
+        }
+    }
+    // Only the started transfer is cancelled; waiting replacements leave no record.
+    assert_eq!(cancels, [1]);
+    assert!(viewer.image_shades().is_empty());
+    assert!(!fixture.log_text().contains("native viewer media budget"));
+    // The releasing ACK resumes the latest replacement under a fresh id.
+    let frames = viewer.complete();
+    let started: Vec<_> = frames.iter().flat_map(Carried::first_chunks).collect();
+    assert_eq!(started, [2]);
+    assert_eq!(frames.last().unwrap().transfers, [2]);
+    assert_eq!(viewer.image_shades(), [5]);
+    replace(&fixture, &mut text, 6);
+}
+
+#[test]
+fn native_media_portable_waiting_transfers_apply_in_order() {
+    let fixture = start_images("ordered");
+    let _text = text_viewer(&fixture);
+    let (mut viewer, first) = PortableViewer::attach(&fixture);
+    viewer.ack(first.seq);
+    trigger(&fixture, "image-1");
+    let frames = viewer.frames_until("SENT-001");
+    let completed: Vec<_> = frames.iter().flat_map(|f| f.transfers.clone()).collect();
+    assert_eq!(completed, [1]);
+    // The chunk frame stays unacknowledged while two more images are staged.
+    for n in 2..=3 {
+        trigger(&fixture, &format!("image-{n}"));
+        for frame in viewer.frames_until(&format!("SENT-{n:03}")) {
+            assert!(frame.chunks.is_empty(), "{frame:?}");
+        }
+    }
+    let mut started = Vec::new();
+    while started.len() < 2 {
+        for frame in viewer.complete() {
+            started.extend(frame.first_chunks());
+        }
+    }
+    // Each first chunk took the next id when it reached the wire, and the client
+    // accepted every frame.
+    assert_eq!(started, [2, 3]);
+    assert_eq!(viewer.image_shades(), [1, 2, 3]);
+}
+
+#[test]
+fn native_media_portable_disconnect_and_withdraw_races() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    replace(&fixture, &mut text, 1);
+    let half = [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)];
+    // (1) Peer loss mid-transfer.
+    let (lost, first) = PortableViewer::attach(&fixture);
+    assert_eq!(first.chunks, half);
+    drop(lost);
+    // (2) Withdrawal mid-transfer: nothing further reaches the withdrawn attachment.
+    let (mut withdrawn, first) = PortableViewer::attach(&fixture);
+    assert_eq!(
+        first.chunks, half,
+        "each attachment numbers its own transfers"
+    );
+    withdrawn.send(Client::NativeRenderRequest(caps::Request::Withdraw));
+    let high = loop {
+        match withdrawn.next() {
+            PortableEvent::Withdrawn(high) => break high,
+            PortableEvent::Frame(frame) => assert!(frame.transfers.is_empty()),
+            PortableEvent::Rejected => panic!("withdrawal was rejected"),
+        }
+    };
+    assert_eq!(high, withdrawn.last);
+    withdrawn.ack(high);
+    withdrawn.send(Client::NativeRenderRequest(caps::Request::Offer(
+        caps::Offer::reader(None),
+    )));
+    assert!(matches!(withdrawn.next(), PortableEvent::Rejected));
+    // (3) A reattached viewer gets a fresh transfer that completes.
+    let (mut fresh, first) = PortableViewer::attach(&fixture);
+    assert_eq!(first.chunks, half);
+    let frames = fresh.complete();
+    assert_eq!(frames.last().unwrap().transfers, [1]);
+    assert_eq!(fresh.image_shades(), [1]);
+    drop(withdrawn);
+    // The session keeps rendering after every race.
+    replace(&fixture, &mut text, 2);
+    assert!(!fixture.log_text().contains("released twice"));
 }

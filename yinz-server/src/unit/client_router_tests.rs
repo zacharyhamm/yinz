@@ -1233,7 +1233,7 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
     use yinz_bus::os_input_output::ClientTransport;
     use yinz_ipc::ipc::IpcSenderWithContext;
     use yinz_runtime::native_media::{MediaBudget, MediaRoot, MediaUsage};
-    use yinz_terminal::output::{NativeRenderState, Staging};
+    use yinz_terminal::output::{NativeRenderState, Staging, TransferImage};
     use yinz_types::{
         render_negotiation::{Decision, Offer, Request},
         structured_render::FrameBuilder,
@@ -1349,7 +1349,13 @@ fn attachment_generation_refusal_and_replacement_have_independent_frame_one() {
                 Some(MediaBudget::viewer()),
             );
             render.seq = 1;
-            let Staging::Shared(path) = render.stage_image(&vec![3; 256 * 1024]) else {
+            let image = TransferImage {
+                key: (1, None),
+                raster_revision: 0,
+                width: 256,
+                height: 256,
+            };
+            let Staging::Shared(path) = render.stage_image(image, &vec![3; 256 * 1024]) else {
                 panic!("expected a staged image")
             };
             let mut frame = FrameBuilder::new(1, 1, 1);

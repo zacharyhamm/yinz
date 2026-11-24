@@ -152,6 +152,14 @@ const SEND_QUEUE_CONTROL_CAPACITY: usize = 8;
 // can make a single render several MiB. The writer may hold one more in flight.
 #[cfg(not(test))]
 const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
+// A viewer's chunked media is paced to one un-ACKed chunk frame. That frame and one more
+// frame at its media allowance fit the production queue, with room for cells and records.
+#[cfg(not(test))]
+const _: () = assert!(
+    2 * yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES
+        + yinz_runtime::native_media::PORTABLE_FRAME_HEADROOM_BYTES
+        <= SEND_QUEUE_RENDER_BYTE_CAPACITY
+);
 #[cfg(test)]
 const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 1024;
 

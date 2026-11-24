@@ -21,6 +21,10 @@ const RECORD_KIND_LINKS: u8 = 7;
 const RECORD_KIND_SCROLL: u8 = 8;
 const RECORD_KIND_CLUSTERS: u8 = 9;
 const RECORD_KIND_SHIFT: u8 = 10;
+// Chunk and cancel records appear only on attachments that agreed chunked media.
+const GRAPHICS_KIND_TRANSFER_CHUNK: u8 = 11;
+const GRAPHICS_KIND_TRANSFER_CANCEL: u8 = 12;
+const TRANSFER_CHUNK_HEADER_LEN: usize = 24;
 
 const GEOMETRY_HEADER_LEN: usize = 8;
 const GEOMETRY_ENTRY_LEN: usize = 16;
@@ -45,6 +49,7 @@ pub const MAX_LINK_URI_LEN: usize = u16::MAX as usize;
 
 const GRAPHICS_MEDIUM_INLINE: u8 = 0;
 const GRAPHICS_MEDIUM_SHARED_FILE: u8 = 1;
+const GRAPHICS_MEDIUM_TRANSFER: u8 = 2;
 
 pub const PANE_FRAMED: u8 = 1 << 0;
 pub const PANE_FOCUSED: u8 = 1 << 1;
@@ -233,6 +238,8 @@ pub struct RowRecord {
 pub enum GraphicsMedium {
     Inline,
     SharedFile,
+    /// The data is the 8-byte little-endian id of a transfer this frame completed.
+    Transfer,
 }
 
 impl GraphicsMedium {
@@ -240,6 +247,7 @@ impl GraphicsMedium {
         match self {
             GraphicsMedium::Inline => GRAPHICS_MEDIUM_INLINE,
             GraphicsMedium::SharedFile => GRAPHICS_MEDIUM_SHARED_FILE,
+            GraphicsMedium::Transfer => GRAPHICS_MEDIUM_TRANSFER,
         }
     }
 
@@ -247,6 +255,7 @@ impl GraphicsMedium {
         match medium {
             GRAPHICS_MEDIUM_INLINE => Some(GraphicsMedium::Inline),
             GRAPHICS_MEDIUM_SHARED_FILE => Some(GraphicsMedium::SharedFile),
+            GRAPHICS_MEDIUM_TRANSFER => Some(GraphicsMedium::Transfer),
             _ => None,
         }
     }
@@ -293,6 +302,17 @@ pub enum GraphicsRecord {
         pixel_height: u32,
         payload: Vec<u8>,
     },
+    /// `data` belongs at `offset` of the `total`-byte image the transfer assembles.
+    TransferChunk {
+        transfer_id: u64,
+        total: u32,
+        offset: u32,
+        data: Vec<u8>,
+    },
+    /// Abandon an incomplete transfer that an earlier chunk started.
+    TransferCancel {
+        transfer_id: u64,
+    },
 }
 
 fn put_u32(out: &mut Vec<u8>, value: u32) {
@@ -324,6 +344,8 @@ impl GraphicsRecord {
             GraphicsRecord::DeletePlacement { .. } => GRAPHICS_KIND_DELETE_PLACEMENT,
             GraphicsRecord::Clear => GRAPHICS_KIND_CLEAR,
             GraphicsRecord::SixelChunk { .. } => GRAPHICS_KIND_SIXEL,
+            GraphicsRecord::TransferChunk { .. } => GRAPHICS_KIND_TRANSFER_CHUNK,
+            GraphicsRecord::TransferCancel { .. } => GRAPHICS_KIND_TRANSFER_CANCEL,
         }
     }
 
@@ -416,6 +438,20 @@ impl GraphicsRecord {
                 }
                 out.extend_from_slice(payload);
             },
+            GraphicsRecord::TransferChunk {
+                transfer_id,
+                total,
+                offset,
+                data,
+            } => {
+                put_u64(out, *transfer_id);
+                put_u32(out, *total);
+                put_u32(out, *offset);
+                put_u32(out, data.len() as u32);
+                put_u32(out, 0);
+                out.extend_from_slice(data);
+            },
+            GraphicsRecord::TransferCancel { transfer_id } => put_u64(out, *transfer_id),
         }
     }
 
@@ -465,6 +501,27 @@ impl GraphicsRecord {
                     pixel_width: take_u32(payload, 16)?,
                     pixel_height: take_u32(payload, 20)?,
                     payload: payload.get(32..32 + payload_len)?.to_vec(),
+                })
+            },
+            GRAPHICS_KIND_TRANSFER_CHUNK => {
+                let data_len = take_u32(payload, 16)? as usize;
+                // The payload is exactly its header and data: a chunk never carries slack.
+                if TRANSFER_CHUNK_HEADER_LEN.checked_add(data_len)? != payload.len() {
+                    return None;
+                }
+                Some(GraphicsRecord::TransferChunk {
+                    transfer_id: take_u64(payload, 0)?,
+                    total: take_u32(payload, 8)?,
+                    offset: take_u32(payload, 12)?,
+                    data: payload[TRANSFER_CHUNK_HEADER_LEN..].to_vec(),
+                })
+            },
+            GRAPHICS_KIND_TRANSFER_CANCEL => {
+                if payload.len() != 8 {
+                    return None;
+                }
+                Some(GraphicsRecord::TransferCancel {
+                    transfer_id: take_u64(payload, 0)?,
                 })
             },
             _ => None,

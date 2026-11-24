@@ -325,8 +325,8 @@ impl Screen {
                 match offer.select(response) {
                     Ok(agreement) => {
                         let root = root.filter(|_| agreement.media & caps::SHARED != 0);
-                        // Every negotiated viewer gets its own budget: shared staging draws on
-                        // it now, and portable transfer buffers and assembled images will.
+                        // Every negotiated viewer gets its own budget, drawn on by shared
+                        // staging and by chunked transfer buffers and assembled images.
                         self.core.native_render_clients.insert(
                             client,
                             NativeRenderState::negotiated(
@@ -344,7 +344,11 @@ impl Screen {
                 }
             },
             Request::Withdraw => {
-                if let Some(state) = self.core.native_render_clients.remove(&client) {
+                if let Some(mut state) = self.core.native_render_clients.remove(&client) {
+                    // Started transfers stay leased until ACK of the Withdrawn high mark or
+                    // removal; unstarted ones are released now.
+                    let high = state.seq;
+                    state.retain_prefix(high);
                     self.core.retired_native_clients.insert(client, state);
                 } else if let Some(seq) = self.core.paused_legacy_sequences.remove(&client) {
                     self.core
@@ -380,7 +384,8 @@ impl Screen {
     }
 
     /// Apply an accepted native ACK. When it releases media that deferred images were
-    /// waiting for, re-render those panes so the images can be staged.
+    /// waiting for, or opens the chunk window for pending transfers, re-render those panes
+    /// so the images can be staged or continued.
     pub(super) fn acknowledge_native_frame(&mut self, client: ClientId, seq: u64) -> Result<()> {
         let deferred = NativeRenderState::acknowledge_recipient(
             &mut self.core.native_render_clients,

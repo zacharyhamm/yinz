@@ -1661,6 +1661,109 @@ mod client_writer_flush {
         (dir, server, client)
     }
 
+    /// The largest frame a chunked viewer can be sent, in its generation-tagged envelope,
+    /// passes the production IPC bound. The queue's test cap is bypassed: only the
+    /// envelope limit is under test here.
+    #[test]
+    fn native_render_frame_envelope_with_max_portable_media_fits_ipc_limit() {
+        use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+        use yinz_types::render_negotiation::{AttachmentGeneration, Decision, Offer, Request};
+        use yinz_types::structured_render::{decode, FrameBuilder, GraphicsRecord, WireCell};
+        let owner = AttachmentGeneration([7; 16]);
+        let (_dir, server, peer) = socket_pair();
+        let mut incoming = IpcReceiverWithContext::<ClientToServerMsg>::new(server);
+        incoming.bind_server_attachment(owner).unwrap();
+        incoming
+            .set_recv_timeout(Some(super::AMPLE_TIMEOUT))
+            .unwrap();
+        let mut tx = incoming.get_sender::<ServerToClientMsg>().unwrap();
+        let mut rx = IpcReceiverWithContext::<ServerToClientMsg>::new(peer);
+        rx.set_recv_timeout(Some(super::AMPLE_TIMEOUT)).unwrap();
+        let mut reverse = rx.get_sender::<ClientToServerMsg>().unwrap();
+        tx.send_server_msg(ServerToClientMsg::Connected {
+            native_render_revision: Some(1),
+            warp_companions: false,
+            warp_held_terminals: false,
+            warp_agent_tracking: false,
+            warp_terminal_state: 0,
+            signal_quit: false,
+            update_protocol: 0,
+            server_version: String::new(),
+            server_host: String::new(),
+        })
+        .unwrap();
+        assert!(matches!(
+            rx.recv_native_server_msg(None),
+            IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _)
+        ));
+        let offer = Offer::reader(None);
+        reverse
+            .send_client_msg(ClientToServerMsg::NativeRenderRequest(Request::Offer(
+                offer.clone(),
+            )))
+            .unwrap();
+        assert!(matches!(
+            incoming.recv_attachment_request(None).unwrap(),
+            IpcRecv::Msg(ClientToServerMsg::NativeRenderRequest(Request::Offer(_)), _)
+        ));
+        let agreement = offer.select(None).unwrap();
+        tx.send_server_msg(ServerToClientMsg::NativeRenderResult(Decision::Selected(
+            agreement,
+        )))
+        .unwrap();
+        assert!(matches!(
+            rx.recv_native_server_msg(None),
+            IpcRecv::Msg(ServerToClientMsg::NativeRenderResult(_), _)
+        ));
+        // A full 120x40 repaint of wide-styled cells plus the whole media allowance.
+        let (cols, rows) = (120u16, 40u16);
+        let mut builder = FrameBuilder::new(cols, rows, 1);
+        builder.set_full_repaint(true);
+        let cell = WireCell {
+            ch: 'x' as u32,
+            ..WireCell::default()
+        };
+        for y in 0..rows {
+            builder.push_row(y, 0, &vec![cell; cols as usize]);
+        }
+        builder.extend_graphics(&[GraphicsRecord::TransferChunk {
+            transfer_id: u64::MAX,
+            total: u32::MAX,
+            offset: 0,
+            data: vec![0xa5; PORTABLE_FRAME_MEDIA_BYTES],
+        }]);
+        let frame = builder.finish();
+        let reader = std::thread::spawn(move || match rx.recv_native_server_msg(None) {
+            IpcRecv::Msg(ServerToClientMsg::RenderFrame { frame }, _) => frame,
+            IpcRecv::Msg(other, _) => panic!("expected the tagged frame, got {other:?}"),
+            _ => panic!("the tagged frame did not arrive"),
+        });
+        tx.send_server_msg_observing(
+            ServerToClientMsg::RenderFrame {
+                frame: frame.clone(),
+            },
+            yinz_ipc::MAX_IPC_FRAME_LEN,
+            || {},
+            || {},
+        )
+        .unwrap();
+        // The native receiver drops untagged frames once tags are required, so receiving
+        // it proves the envelope carried this attachment's generation.
+        let received = reader.join().unwrap();
+        assert_eq!(received, frame);
+        let view = decode(&received).unwrap();
+        assert!(matches!(
+            view.graphics().as_slice(),
+            [GraphicsRecord::TransferChunk { data, .. }] if data.len() == PORTABLE_FRAME_MEDIA_BYTES
+        ));
+        // The envelope adds a few dozen bytes; the frame itself leaves wide headroom.
+        assert!(
+            frame.len() + 1024 <= yinz_ipc::MAX_IPC_FRAME_LEN / 4,
+            "{} bytes",
+            frame.len()
+        );
+    }
+
     #[test]
     fn ordinary_envelope_refusal_preserves_the_socket() {
         use super::super::CoalescingSendQueue;
