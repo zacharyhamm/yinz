@@ -85,6 +85,19 @@ pub(crate) fn from_kdl(block: &KdlNode) -> Result<TerminalConfig, ConfigError> {
                 node
             ));
         }
+        if name == "blur"
+            && (!plain_positional
+                || node.ty().is_some()
+                || node.entries()[0].ty().is_some()
+                || node.entries()[0].value().as_bool().is_none())
+        {
+            // A valid value is stored by the generic path, which also reports
+            // a repeated node.
+            return Err(kdl_parsing_error!(
+                "terminal blur must be a plain boolean true or false".to_owned(),
+                node
+            ));
+        }
         if name == "minimum_contrast" {
             // Range as in the pinned source's minimum_contrast_from_kdl,
             // compared in f64; a valid value is stored by the generic path,

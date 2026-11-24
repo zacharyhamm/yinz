@@ -46,6 +46,9 @@ use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, SizeInPixels};
 use yinz_types::position::Position;
 
+mod blur;
+use blur::BlurState;
+
 #[derive(Default)]
 struct ScrollAccumulator {
     x: f64,
@@ -158,6 +161,9 @@ struct App {
     /// Set once the opaque fallback has been reported, see `warn_if_opaque`.
     /// Cleared when transparency becomes available again.
     warned_opaque: bool,
+    /// The window's blur support, applied value and last diagnostic, see
+    /// `sync_blur`.
+    blur: BlurState,
 }
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1479,6 +1485,7 @@ impl App {
             x11: false,
             compositing: None,
             warned_opaque: false,
+            blur: BlurState::default(),
         })
     }
 
@@ -1528,6 +1535,23 @@ impl App {
         };
         #[cfg(not(target_os = "linux"))]
         let backend = WindowBackend::Mac;
+        // winit binds the compositor's blur protocol only at startup, so its
+        // capability is checked once per window.
+        #[cfg(target_os = "linux")]
+        let wayland_interfaces = (backend == WindowBackend::Wayland).then(|| {
+            use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+            match event_loop
+                .display_handle()
+                .context("get the Wayland display handle")?
+                .as_raw()
+            {
+                RawDisplayHandle::Wayland(handle) => blur::probe_wayland_interfaces(handle.display),
+                other => Err(anyhow!("expected a Wayland display handle, got {other:?}")),
+            }
+        });
+        #[cfg(not(target_os = "linux"))]
+        let wayland_interfaces: Option<Result<Vec<String>>> = None;
+        self.blur.support = blur::blur_support(backend, wayland_interfaces);
         let physical_hint = backend == WindowBackend::X11 || target.has_pixel_axis();
         let hint_limit = if physical_hint {
             STARTUP_AXIS_LIMIT
@@ -1541,8 +1565,7 @@ impl App {
         );
         let mut attrs = WindowAttributes::default()
             .with_title("Yinz")
-            .with_transparent(true)
-            .with_blur(self.settings.blur.unwrap_or(false));
+            .with_transparent(true);
         let hint = if physical_hint {
             WindowSize::Physical(hint)
         } else {
@@ -1655,6 +1678,8 @@ impl App {
             surface,
             window,
         });
+        // Before the first present, which commits Wayland's blur object.
+        self.sync_blur();
         self.refresh_geometry()?;
         for message in crate::emulation::palette::seed_messages(&self.paints) {
             self.send(message)?;
@@ -1942,6 +1967,25 @@ impl App {
         log::warn!("{message}");
         Some(message)
     }
+    /// Applies the configured blur to the window, if one exists, and reports
+    /// a changed outcome, see [`BlurState::sync`]. Without a window nothing is
+    /// applied or recorded, so `open` applies the configured value.
+    fn sync_blur(&mut self) -> Option<(log::Level, String)> {
+        let Self {
+            blur,
+            settings,
+            transparency_available,
+            surfaces,
+            ..
+        } = self;
+        blur.sync(
+            settings,
+            *transparency_available,
+            surfaces
+                .as_ref()
+                .map(|surfaces| move |enabled| surfaces.window.set_blur(enabled)),
+        )
+    }
     /// Padding fill for one frame, from the drawn grid at `origin` inside a
     /// `target`-sized surface (pinned source `draw.rs`). The right and bottom
     /// margins include the partial-cell remainder and balancing offset.
@@ -2051,10 +2095,8 @@ impl App {
         }
         self.refresh_transparency_available(x11_compositing_manager);
         self.warn_if_opaque();
+        self.sync_blur();
         if let Some(surfaces) = &self.surfaces {
-            surfaces
-                .window
-                .set_blur(self.settings.blur.unwrap_or(false));
             set_see_through(&surfaces.window, self.see_through());
             #[cfg(target_os = "macos")]
             {

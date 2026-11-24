@@ -828,6 +828,77 @@ fn padding_sides_parse_resolve_and_roundtrip_independently() {
 }
 
 #[test]
+fn blur_validates_roundtrips_and_overlays() {
+    let omitted = Config::from_kdl("terminal {}", None).unwrap().terminal;
+    assert_eq!(omitted.blur, None);
+    assert!(!omitted.blur_enabled());
+    for enabled in [false, true] {
+        let config =
+            Config::from_kdl(&format!("terminal {{ blur {enabled}; padding 2; }}"), None).unwrap();
+        assert_eq!(config.terminal.blur, Some(enabled));
+        assert_eq!(config.terminal.blur_enabled(), enabled);
+        let text = config.to_string(false).unwrap();
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal);
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.blur, Some(enabled));
+        assert_eq!(inherited.terminal.opacity, Some(0.5));
+        let overridden = Config::from_kdl(
+            &format!("terminal {{ blur {}; }}", !enabled),
+            Some(inherited),
+        )
+        .unwrap();
+        assert_eq!(overridden.terminal.blur, Some(!enabled));
+        assert_eq!(overridden.terminal.blur_enabled(), !enabled);
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+        assert_eq!(overridden.terminal.opacity, Some(0.5));
+    }
+    for bad in [
+        "blur",
+        "blur true false",
+        "blur x=true",
+        "blur true {}",
+        "(t)blur true",
+        "blur (t)true",
+        "blur 1",
+        "blur \"true\"",
+        "blur null",
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert!(
+            error
+                .error_message
+                .contains("terminal blur must be a plain boolean true or false"),
+            "{input}: {error:?}"
+        );
+        assert!(
+            !error.error_message.contains("takes one plain value"),
+            "{input}: {error:?}"
+        );
+        let offset = error.offset.unwrap();
+        let source = &input[offset..offset + error.len.unwrap()];
+        assert!(
+            source.contains("blur") && !source.contains("padding") && !source.contains("opacity"),
+            "{input}: {source:?}"
+        );
+        assert!(Config::terminal_settings_from_kdl(&input).is_err());
+    }
+    let input = "terminal { blur true; blur false; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("{input}: expected KdlError");
+    };
+    assert!(
+        error
+            .error_message
+            .contains("duplicate terminal setting blur"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn padding_overlays_keep_sides_from_any_layer_over_shorthand() {
     use yinz_types::input::native_terminal::PaddingSides;
     // A later shorthand does not clear an earlier side.

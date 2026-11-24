@@ -137,8 +137,8 @@ Commands:
                                     underline_thickness, cursor_trail, cursor_unfocused_hollow,
                                     ligatures/font_ligatures, font_features, padding (padding,
                                     padding_top, padding_right, padding_bottom, padding_left),
-                                    padding_balance, padding_color, minimum_contrast, opacity or
-                                    opacity_mode requires --write or editing the saved
+                                    padding_balance, padding_color, minimum_contrast, opacity,
+                                    opacity_mode or blur requires --write or editing the saved
                                     configuration/drop-in for file reload. An unsupported unsaved
                                     change refuses the entire fragment, including sibling settings.
                                     Omissions and equivalent values remain valid runtime requests.

@@ -49,6 +49,10 @@ fn validate_unsaved_native_settings(
     if current.terminal.opacity_mode_or_default() != requested.terminal.opacity_mode_or_default() {
         changed.push("opacity_mode");
     }
+    // Effective values, so omission equals an explicit `blur false`.
+    if current.terminal.blur_enabled() != requested.terminal.blur_enabled() {
+        changed.push("blur");
+    }
     if !changed.is_empty() {
         return Err(anyhow!(
             "changing terminal {} requires a saved configuration: \

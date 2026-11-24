@@ -2392,7 +2392,7 @@ pub enum CliAction {
     /// line_height, baseline_offset, underline_offset, underline_thickness,
     /// cursor_trail, cursor_unfocused_hollow, ligatures/font_ligatures, font_features, padding
     /// (padding, padding_top, padding_right, padding_bottom, padding_left), padding_balance,
-    /// padding_color, minimum_contrast, opacity or opacity_mode requires --write or editing the saved
+    /// padding_color, minimum_contrast, opacity, opacity_mode or blur requires --write or editing the saved
     /// configuration/drop-in for file reload. An unsupported unsaved change refuses the entire
     /// fragment, including sibling settings. Omissions and equivalent values remain valid
     /// runtime requests. Underline values are compared with the session's effective saved files.
@@ -2410,7 +2410,7 @@ pub enum CliAction {
         /// baseline_offset, underline_offset, underline_thickness, cursor_trail,
         /// cursor_unfocused_hollow, ligatures/font_ligatures, font_features, padding (padding,
         /// padding_top, padding_right, padding_bottom, padding_left), padding_balance,
-        /// padding_color, minimum_contrast, opacity or opacity_mode changes. Writes the session's managed drop-in.
+        /// padding_color, minimum_contrast, opacity, opacity_mode or blur changes. Writes the session's managed drop-in.
         /// Native windows apply the live change when file reload succeeds and the edited layer
         /// wins. Startup dimensions apply to new windows.
         #[clap(long)]

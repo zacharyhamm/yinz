@@ -219,8 +219,8 @@ default background set for one pane. The built-in `default` theme has no
 Startup uses the configured values. Saved file and drop-in edits reload live:
 a change to `opacity` or `opacity_mode` rebuilds the drawn rows once on the next
 frame, without rebuilding fonts or geometry, and content and selection are kept.
-A `blur` change does not redraw. A later layer wins and omission inherits. An
-invalid edit keeps the working settings and logs the reload error.
+A `blur` change does not redraw (see below). A later layer wins and omission
+inherits. An invalid edit keeps the working settings and logs the reload error.
 
 See-through pixels need a compositor. Wayland compositors always composite. On
 X11 a compositing manager must be running and the window needs a 32-bit ARGB
@@ -272,6 +272,85 @@ monitors were not used.
   `_NET_WM_CM_S0`: `"everything"` at 0.5 logged no warning and kept the
   configured opacity.
 - macOS: not verified in this change.
+
+`blur` asks the compositor to blur what shows through the window. It takes one
+plain boolean; omission means `false`. Bare `blur`, extra arguments, properties,
+children, type annotations and other values such as `1`, `"true"` or `null`
+fail at the node with `terminal blur must be a plain boolean true or false`; a
+repeated key reports `duplicate terminal setting blur`. Blur affects only
+see-through pixels and never makes the window transparent itself, as in the
+pinned source, so it shows only while `opacity` is below 1 and transparency is
+available, in either `opacity_mode`. Whether it applies depends on the windowing
+system:
+
+| Platform | Blur |
+|---|---|
+| KDE Plasma (Wayland) | Applied to the whole window through `org_kde_kwin_blur_manager` |
+| Other Wayland compositors (sway, GNOME and others) | Unsupported; one warning, which notes when the compositor offers the staging `ext_background_effect_manager_v1` that Yinz does not use yet |
+| X11, including Xwayland | Unsupported; one warning |
+| macOS | Applied through winit's window background blur, visible only while the window is see-through |
+
+Yinz uses winit's blur, which binds only KDE's Wayland protocol, does nothing on
+X11 and reports no capability. When a Wayland window opens, Yinz therefore lists
+the compositor's globals once, on winit's own connection, to tell whether blur
+applies. winit binds the blur protocol only at startup, so a compositor that
+starts offering it later needs a new window. If the listing fails, Yinz logs that
+and requests blur anyway, reporting its support as unknown.
+
+Startup applies the configured value right after the window is created, before
+the first frame. Saved file and drop-in edits apply live without a redraw and
+without changing fonts, geometry, content or the selection; `blur false` (or
+removing the setting) clears an applied blur, and an invalid edit keeps the
+working value. A reload that arrives before the window exists is applied when
+it opens. On an unsupported backend Yinz does not call winit at all. Unsaved
+`action reconfigure` cannot change blur; see the reconfigure section.
+
+Each outcome is logged once to the client log
+(`$TMPDIR/yinz-<UID>/yinz-log/yinz.log`) and again only when it changes. Turning
+blur off logs nothing and re-arms the messages, so enabling it again reports
+again. Warnings:
+
+- X11: ``terminal blur was requested, but the window uses the X11 backend
+  (including Xwayland), where Yinz has no blur protocol, so nothing is blurred;
+  run the native terminal under a Wayland compositor that offers
+  org_kde_kwin_blur_manager (KDE Plasma), or set `blur false` ``
+- Wayland without the protocol: ``terminal blur was requested, but the Wayland
+  compositor does not offer org_kde_kwin_blur_manager, so nothing is blurred;
+  use a compositor that offers it (KDE Plasma), or set `blur false` ``, followed
+  by `(the compositor offers ext_background_effect_manager_v1, which Yinz does
+  not use yet)` when it does.
+- Opacity below 1 on a display without a transparent surface, after the opacity
+  warning above: ``terminal blur was requested, but the window stays opaque
+  because the display offers no transparent surface (see the terminal opacity
+  warning), so blur has no visible effect; it applies once transparency is
+  available, or set `blur false` ``. An unsupported backend reports its own
+  warning instead.
+
+On a capable backend Yinz logs at info level `terminal blur is requested through
+<protocol>`, or `..., but has no visible effect while terminal opacity is 1;
+lower opacity to see it` at opacity 1. When support is unknown the text reads
+`although the compositor's blur support is unknown` instead of naming the
+protocol.
+
+Observed blur outcomes for this change, from the ignored
+`native_graphical_blur_reports_platform_outcome` test run on Linux under sway
+1.12 (wlroots), whose Wayland registry offers neither
+`org_kde_kwin_blur_manager` nor `ext_background_effect_manager_v1`, with this
+build. Each run started with `blur true`, then saved an unchanged `blur true`, a
+`blur false` and a `blur true` again:
+
+- Wayland under sway, at `opacity 1` and `opacity 0.6`: the Wayland unsupported
+  warning, once; the unchanged reload and disabling logged nothing, and
+  re-enabling logged the same warning again.
+- Xwayland under sway (`WAYLAND_DISPLAY` unset), at `opacity 1` and
+  `opacity 0.6`: the X11 unsupported warning, with the same reload behaviour.
+- KDE Plasma (Wayland) and KWin on X11: not verified; no such host was
+  available. From the source, KDE Plasma Wayland logs `terminal blur is
+  requested through org_kde_kwin_blur_manager` at opacity below 1 and the
+  no-visible-effect line at opacity 1; KWin on X11 reports the X11 warning.
+- macOS: not verified, and not compiled, in this change. From the source, it
+  logs `terminal blur is requested through macOS window background blur` at
+  opacity below 1 and the no-visible-effect line at opacity 1.
 
 `font_features` passes OpenType features to the shaper. It is one node with zero
 or more string arguments:
@@ -435,8 +514,8 @@ Changing `cell_width`, `line_height`, `baseline_offset`, `underline_offset`,
 `underline_thickness`, `ligatures`, `font_ligatures`, `font_features`, effective
 padding (`padding`, `padding_top`, `padding_right`, `padding_bottom`,
 `padding_left`), `padding_balance`, effective `padding_color`, effective
-`minimum_contrast`, effective `opacity` or effective `opacity_mode` with `action
-reconfigure` requires
+`minimum_contrast`, effective `opacity`, effective `opacity_mode` or effective
+`blur` with `action reconfigure` requires
 `--write`, or an edit to the session's saved configuration/drop-in. An unsaved
 change to any effective value refuses the entire fragment, including sibling
 settings, for all requested clients, with save guidance. Equivalent values and
@@ -445,8 +524,8 @@ when the effective value is already the default. For `font_features`, omission a
 a bare node are both no features and `"calt"` equals `"+calt"`; a reordered list
 counts as a change. Padding compares the resolved sides and balance, so
 `padding_left 4` with a current `padding 4` is equivalent; `padding_color
-"background"` equals omission, and so do `minimum_contrast 1`, `opacity 1` and
-`opacity_mode "background"`. The refusal names the
+"background"` equals omission, and so do `minimum_contrast 1`, `opacity 1`,
+`opacity_mode "background"` and `blur false`. The refusal names the
 key that caused each change: `padding` when the shorthand changed a side, or the
 side's own key. Before this change, unsaved padding was accepted but never
 reached native windows, which read padding only from files.
@@ -1098,6 +1177,11 @@ stays inline as a cropped visible slice. Peers without chunked media remain
 subject to them for large inline images.
 
 ## Diagnostics
+
+Native windows log configuration fallbacks to the client log
+(`$TMPDIR/yinz-<UID>/yinz-log/yinz.log`), including the opacity warning when the
+window must stay opaque and the `terminal blur` warnings when the backend cannot
+blur or the window is opaque; see the opacity and blur sections above.
 
 The hidden `--headless` option exercises the same session and structured frame
 path without opening a window. `--rows`, `--cols`, and `--duration-secs` bound a

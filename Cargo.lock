@@ -7297,6 +7297,8 @@ dependencies = [
  "swash",
  "tempfile",
  "unicode-width 0.2.2",
+ "wayland-backend",
+ "wayland-client",
  "winit",
  "x11rb",
  "yinz-cli",

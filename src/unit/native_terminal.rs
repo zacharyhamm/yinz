@@ -873,6 +873,112 @@ fn native_graphical_startup_fits_configured_grid() {
     assert!(outcomes.is_empty(), "{}", outcomes.join("\n"));
 }
 
+/// Native terminal blur diagnostics in the log, from the message on.
+fn blur_diagnostics(log: &str) -> Vec<String> {
+    log.lines()
+        .filter_map(|line| {
+            let start = line
+                .find("terminal blur was requested")
+                .or_else(|| line.find("terminal blur is requested"))?;
+            Some(line[start..].to_owned())
+        })
+        .collect()
+}
+
+/// Runs the real terminal on each available backend with `blur true` at
+/// opacity 1 and 0.6, toggles blur through saved reloads and prints the
+/// recorded outcome. Each reload also changes `padding`, so the window
+/// observation shows when it applied, including when blur logs nothing.
+#[test]
+#[ignore = "requires a graphical desktop"]
+fn native_graphical_blur_reports_platform_outcome() {
+    let mut backends = Vec::new();
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        backends.push("wayland");
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        backends.push("x11");
+    }
+    assert!(!backends.is_empty(), "set WAYLAND_DISPLAY or DISPLAY");
+    let mut records = Vec::new();
+    for backend in backends {
+        for opacity in ["1", "0.6"] {
+            let fixture = NativeFixture::new();
+            let config = |blur: bool, padding: u32| {
+                format!(
+                    "detachable_panes false\nload_plugins clear-defaults=true\nterminal {{ \
+                     initial_columns 100; initial_rows 30; system_fonts false; \
+                     opacity {opacity}; blur {blur}; padding {padding}; }}\n"
+                )
+            };
+            fs::write(&fixture.config, config(true, 0)).unwrap();
+            let session = format!("blur-{backend}-{}", opacity.replace('.', ""));
+            let path = fixture.fixture.path().join("blur.frames");
+            let mut command = fixture.terminal(&session, true, &path);
+            command.args(["--duration-secs", "60"]);
+            if backend == "x11" {
+                command.env_remove("WAYLAND_DISPLAY");
+            }
+            let stderr_path = fixture.fixture.path().join("blur.stderr");
+            command.stderr(fs::File::create(&stderr_path).unwrap());
+            let mut child = command.spawn().unwrap();
+            let timeout = yinz_test_support::default_timeout();
+            let observation = || {
+                fixture.log_text().lines().rev().find_map(|line| {
+                    let (_, json) = line.split_once("native window observation ")?;
+                    serde_json::from_str::<WindowObservation>(json.trim()).ok()
+                })
+            };
+            let label = format!("{backend} opacity {opacity}");
+            let started = while_running(&mut child, "a window observation", timeout, observation);
+            assert_eq!(started.backend, backend, "{label}");
+            let first = while_running(&mut child, "a blur diagnostic", timeout, || {
+                blur_diagnostics(&fixture.log_text()).first().cloned()
+            });
+            if backend == "x11" {
+                assert!(first.contains("X11 backend"), "{label}: {first}");
+            } else {
+                assert!(
+                    first.contains("does not offer org_kde_kwin_blur_manager")
+                        || first.contains("through org_kde_kwin_blur_manager")
+                        || first.contains("unknown"),
+                    "{label}: {first}"
+                );
+            }
+            // Unchanged blur, then disabled, then enabled again.
+            for (step, blur, padding, expected) in [
+                ("an unchanged reload", true, 2, 1),
+                ("disabling", false, 4, 1),
+                ("re-enabling", true, 6, 2),
+            ] {
+                fs::write(&fixture.config, config(blur, padding)).unwrap();
+                let physical = started.physical(f64::from(padding));
+                while_running(&mut child, &format!("{label}: {step}"), timeout, || {
+                    observation()
+                        .filter(|observed| observed.padding_left == physical)
+                        .filter(|_| blur_diagnostics(&fixture.log_text()).len() >= expected)
+                });
+                let diagnostics = blur_diagnostics(&fixture.log_text());
+                assert_eq!(
+                    diagnostics.len(),
+                    expected,
+                    "{label}: {step}: {diagnostics:?}"
+                );
+            }
+            let diagnostics = blur_diagnostics(&fixture.log_text());
+            assert_eq!(diagnostics[1], first, "{label}: the same outcome again");
+            fixture.action(&session, &["detach"]);
+            let mut result = child.wait_with_output().unwrap();
+            result.stderr = fs::read(stderr_path).unwrap();
+            assert_success(result);
+            records.push(format!("{label}: {first}"));
+        }
+    }
+    for record in records {
+        eprintln!("blur outcome: {record}");
+    }
+}
+
 #[test]
 fn native_graphical_observation_requires_settled_content_and_mode() {
     use yinz_types::structured_render::{FrameBuilder, WireCell};

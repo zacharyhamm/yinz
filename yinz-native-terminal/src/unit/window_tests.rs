@@ -6416,3 +6416,465 @@ fn unfocused_hollow_settings_toggle_does_not_rebuild_every_row() {
     refresh(&mut retained, &paints, &mut cache);
     assert!(retained.rebuilt_everything());
 }
+
+/// An App without a window whose terminal settings come from `terminal`.
+fn blur_app(terminal: &str) -> App {
+    let mut config = Config::from_kdl(
+        &format!("terminal {{ system_fonts false; {terminal} }}"),
+        None,
+    )
+    .unwrap();
+    config.terminal.system_fonts = Some(false);
+    App::new(
+        TerminalArgs {
+            rows: Some(2),
+            cols: Some(18),
+            ..Default::default()
+        },
+        CliArgs::default(),
+        (config, Options::default()),
+        Arc::new(|_| true),
+        Clipboard::in_memory,
+    )
+    .unwrap()
+}
+
+/// Syncs `app`'s blur as a window would, recording what reaches the window.
+fn sync_blur_recorded(app: &mut App) -> (Vec<bool>, Option<(log::Level, String)>) {
+    let mut applied = Vec::new();
+    let message = app.blur.sync(
+        &app.settings,
+        app.transparency_available,
+        Some(|enabled| applied.push(enabled)),
+    );
+    (applied, message)
+}
+
+#[test]
+fn wayland_blur_support_detects_kde_blur_and_reports_background_effect() {
+    use blur::{wayland_blur_support, BlurSupport, BlurUnsupported};
+    let unsupported = |background_effect_offered| {
+        BlurSupport::Unsupported(BlurUnsupported::Wayland {
+            background_effect_offered,
+        })
+    };
+    for (interfaces, expected) in [
+        (vec![], unsupported(false)),
+        (vec!["wl_compositor", "xdg_wm_base"], unsupported(false)),
+        (
+            vec!["wl_compositor", "ext_background_effect_manager_v1"],
+            unsupported(true),
+        ),
+        (
+            vec!["wl_compositor", "org_kde_kwin_blur_manager"],
+            BlurSupport::Available("org_kde_kwin_blur_manager"),
+        ),
+        (
+            vec![
+                "ext_background_effect_manager_v1",
+                "org_kde_kwin_blur_manager",
+            ],
+            BlurSupport::Available("org_kde_kwin_blur_manager"),
+        ),
+    ] {
+        assert_eq!(
+            wayland_blur_support(interfaces.iter().copied()),
+            expected,
+            "{interfaces:?}"
+        );
+    }
+}
+
+#[test]
+fn blur_support_maps_backends_and_probe_results() {
+    use blur::{blur_support, BlurSupport, BlurUnsupported};
+    let names = |names: &[&str]| Some(Ok(names.iter().map(|name| name.to_string()).collect()));
+    assert_eq!(
+        blur_support(WindowBackend::X11, None),
+        BlurSupport::Unsupported(BlurUnsupported::X11)
+    );
+    // X11 does not depend on a probe result.
+    assert_eq!(
+        blur_support(WindowBackend::X11, names(&["org_kde_kwin_blur_manager"])),
+        BlurSupport::Unsupported(BlurUnsupported::X11)
+    );
+    assert_eq!(
+        blur_support(WindowBackend::Mac, None),
+        BlurSupport::Available("macOS window background blur")
+    );
+    assert_eq!(
+        blur_support(
+            WindowBackend::Wayland,
+            names(&["wl_compositor", "org_kde_kwin_blur_manager"])
+        ),
+        BlurSupport::Available("org_kde_kwin_blur_manager")
+    );
+    assert_eq!(
+        blur_support(
+            WindowBackend::Wayland,
+            names(&["wl_compositor", "ext_background_effect_manager_v1"])
+        ),
+        BlurSupport::Unsupported(BlurUnsupported::Wayland {
+            background_effect_offered: true
+        })
+    );
+    assert_eq!(
+        blur_support(WindowBackend::Wayland, Some(Err(anyhow!("probe failed")))),
+        BlurSupport::Unknown
+    );
+    assert_eq!(
+        blur_support(WindowBackend::Wayland, None),
+        BlurSupport::Unknown
+    );
+}
+
+#[test]
+fn blur_outcome_matrix() {
+    use blur::{blur_outcome, BlurOutcome, BlurSupport, BlurUnsupported};
+    use yinz_types::input::native_terminal::OpacityMode;
+    let kde = BlurSupport::Available("org_kde_kwin_blur_manager");
+    let x11 = BlurUnsupported::X11;
+    let wayland = BlurUnsupported::Wayland {
+        background_effect_offered: false,
+    };
+    let supports = [
+        kde.clone(),
+        BlurSupport::Available("macOS window background blur"),
+        BlurSupport::Unknown,
+        BlurSupport::Unsupported(x11),
+        BlurSupport::Unsupported(wayland),
+    ];
+    for support in &supports {
+        for (opacity, available) in [(1.0, true), (0.5, true), (0.5, false), (1.0, false)] {
+            assert_eq!(
+                blur_outcome(false, support, opacity, available),
+                BlurOutcome::Off,
+                "{support:?} {opacity} {available}"
+            );
+        }
+    }
+    for reason in [x11, wayland] {
+        for (opacity, available) in [(1.0, true), (0.5, true), (0.5, false)] {
+            assert_eq!(
+                blur_outcome(true, &BlurSupport::Unsupported(reason), opacity, available),
+                BlurOutcome::Unsupported(reason)
+            );
+        }
+    }
+    for (support, protocol) in [
+        (kde.clone(), Some("org_kde_kwin_blur_manager")),
+        (BlurSupport::Unknown, None),
+    ] {
+        assert_eq!(
+            blur_outcome(true, &support, 1.0, true),
+            BlurOutcome::NoVisibleEffect { protocol }
+        );
+        assert_eq!(
+            blur_outcome(true, &support, 1.0, false),
+            BlurOutcome::NoVisibleEffect { protocol }
+        );
+        assert_eq!(
+            blur_outcome(true, &support, 0.5, false),
+            BlurOutcome::HiddenByOpaqueFallback
+        );
+        assert_eq!(
+            blur_outcome(true, &support, 0.5, true),
+            BlurOutcome::Requested { protocol }
+        );
+    }
+    // Through the App: unset opacity is opaque in both modes, and blur never
+    // makes the window see-through.
+    for mode in ["background", "everything"] {
+        for (opacity, see_through) in [("", false), ("opacity 1;", false), ("opacity 0.5;", true)] {
+            let mut app = blur_app(&format!("blur true; opacity_mode \"{mode}\"; {opacity}"));
+            app.blur.support = kde.clone();
+            assert_eq!(app.see_through(), see_through, "{mode} {opacity}");
+            if !see_through {
+                assert_eq!(app.effective_transparency().opacity, 1.0);
+            }
+            assert_eq!(
+                app.settings.opacity_mode_or_default(),
+                if mode == "background" {
+                    OpacityMode::Background
+                } else {
+                    OpacityMode::Everything
+                }
+            );
+            let (_, message) = sync_blur_recorded(&mut app);
+            let (level, text) = message.unwrap();
+            assert_eq!(level, log::Level::Info);
+            assert!(text.contains("org_kde_kwin_blur_manager"), "{text}");
+            assert_eq!(text.contains("no visible effect"), !see_through, "{text}");
+        }
+    }
+    // Every outcome but Off has a message; warnings name the cause and the fix.
+    assert_eq!(BlurOutcome::Off.message(), None);
+    for (outcome, level, words) in [
+        (
+            BlurOutcome::Unsupported(x11),
+            log::Level::Warn,
+            vec![
+                "X11",
+                "Xwayland",
+                "org_kde_kwin_blur_manager",
+                "`blur false`",
+            ],
+        ),
+        (
+            BlurOutcome::Unsupported(wayland),
+            log::Level::Warn,
+            vec!["Wayland", "org_kde_kwin_blur_manager", "`blur false`"],
+        ),
+        (
+            BlurOutcome::Unsupported(BlurUnsupported::Wayland {
+                background_effect_offered: true,
+            }),
+            log::Level::Warn,
+            vec![
+                "org_kde_kwin_blur_manager",
+                "ext_background_effect_manager_v1",
+                "`blur false`",
+            ],
+        ),
+        (
+            BlurOutcome::HiddenByOpaqueFallback,
+            log::Level::Warn,
+            vec!["opaque", "opacity warning", "`blur false`"],
+        ),
+        (
+            BlurOutcome::NoVisibleEffect {
+                protocol: Some("org_kde_kwin_blur_manager"),
+            },
+            log::Level::Info,
+            vec!["org_kde_kwin_blur_manager", "opacity is 1"],
+        ),
+        (
+            BlurOutcome::NoVisibleEffect { protocol: None },
+            log::Level::Info,
+            vec!["unknown", "opacity is 1"],
+        ),
+        (
+            BlurOutcome::Requested {
+                protocol: Some("macOS window background blur"),
+            },
+            log::Level::Info,
+            vec!["macOS window background blur"],
+        ),
+        (
+            BlurOutcome::Requested { protocol: None },
+            log::Level::Info,
+            vec!["unknown"],
+        ),
+    ] {
+        let (actual, text) = outcome.message().unwrap();
+        assert_eq!(actual, level, "{outcome:?}");
+        assert!(text.starts_with("terminal blur"), "{text}");
+        for word in words {
+            assert!(text.contains(word), "{outcome:?} lacks {word}: {text}");
+        }
+    }
+    assert!(!BlurOutcome::Unsupported(wayland)
+        .message()
+        .unwrap()
+        .1
+        .contains("ext_background_effect"));
+}
+
+#[test]
+fn blur_sync_applies_only_changes_and_disables_through_reload_toggles() {
+    use blur::{BlurSupport, BlurUnsupported};
+    let mut app = blur_app("blur true; opacity 0.5;");
+    app.blur.support = BlurSupport::Available("org_kde_kwin_blur_manager");
+    let (applied, message) = sync_blur_recorded(&mut app);
+    assert_eq!(applied, [true]);
+    assert_eq!(message.unwrap().0, log::Level::Info);
+    // An unchanged reload neither calls the window nor logs.
+    assert_eq!(sync_blur_recorded(&mut app), (vec![], None));
+    app.settings.blur = Some(false);
+    assert_eq!(sync_blur_recorded(&mut app), (vec![false], None));
+    assert_eq!(app.blur.applied, Some(false));
+    // Omission equals false.
+    app.settings.blur = None;
+    assert_eq!(sync_blur_recorded(&mut app), (vec![], None));
+    app.settings.blur = Some(true);
+    let (applied, message) = sync_blur_recorded(&mut app);
+    assert_eq!(applied, [true]);
+    assert!(message.is_some(), "re-enabling reports again");
+
+    // An unsupported backend is never asked.
+    for reason in [
+        BlurUnsupported::X11,
+        BlurUnsupported::Wayland {
+            background_effect_offered: false,
+        },
+    ] {
+        let mut app = blur_app("blur true; opacity 0.5;");
+        app.blur.support = BlurSupport::Unsupported(reason);
+        for blur in [Some(true), Some(false), Some(true)] {
+            app.settings.blur = blur;
+            assert!(sync_blur_recorded(&mut app).0.is_empty(), "{reason:?}");
+        }
+        assert_eq!(app.blur.applied, None);
+    }
+}
+
+#[test]
+fn blur_unsupported_warns_once_and_rearms_after_disable_or_change() {
+    use blur::{BlurOutcome, BlurSupport, BlurUnsupported};
+    let mut app = blur_app("blur true; opacity 0.5;");
+    let reason = BlurUnsupported::Wayland {
+        background_effect_offered: true,
+    };
+    app.blur.support = BlurSupport::Unsupported(reason);
+    let (level, text) = sync_blur_recorded(&mut app).1.expect("first warning");
+    assert_eq!(level, log::Level::Warn);
+    assert!(text.contains("ext_background_effect_manager_v1"), "{text}");
+    for opacity in [Some(0.5), Some(1.0), None, Some(0.3)] {
+        app.settings.opacity = opacity;
+        assert_eq!(sync_blur_recorded(&mut app).1, None, "{opacity:?}");
+    }
+    // Disabling is silent and re-arms the warning.
+    app.settings.blur = Some(false);
+    assert_eq!(sync_blur_recorded(&mut app).1, None);
+    assert_eq!(app.blur.reported, Some(BlurOutcome::Off));
+    app.settings.blur = Some(true);
+    assert_eq!(
+        sync_blur_recorded(&mut app).1.map(|(level, _)| level),
+        Some(log::Level::Warn)
+    );
+
+    // On a capable backend an opacity change moves the outcome once each way.
+    let mut app = blur_app("blur true;");
+    app.blur.support = BlurSupport::Available("org_kde_kwin_blur_manager");
+    let (_, text) = sync_blur_recorded(&mut app).1.unwrap();
+    assert!(text.contains("no visible effect"), "{text}");
+    app.settings.opacity = Some(0.5);
+    let (level, text) = sync_blur_recorded(&mut app).1.unwrap();
+    assert_eq!(level, log::Level::Info);
+    assert!(!text.contains("no visible effect"), "{text}");
+    assert_eq!(sync_blur_recorded(&mut app).1, None);
+    app.settings.opacity = Some(1.0);
+    let (_, text) = sync_blur_recorded(&mut app).1.unwrap();
+    assert!(text.contains("no visible effect"), "{text}");
+}
+
+#[test]
+fn blur_opaque_fallback_is_hidden_on_capable_backends_and_unsupported_wins_on_x11() {
+    use blur::{BlurOutcome, BlurSupport, BlurUnsupported};
+    let hidden = BlurOutcome::HiddenByOpaqueFallback.message().unwrap();
+    for support in [
+        BlurSupport::Available("org_kde_kwin_blur_manager"),
+        BlurSupport::Unknown,
+    ] {
+        let mut app = blur_app("blur true; opacity 0.5;");
+        app.blur.support = support.clone();
+        app.x11 = false;
+        app.config_transparency = Some(false);
+        app.refresh_transparency_available(|| panic!("no X11 check off X11"));
+        assert!(!app.transparency_available);
+        assert!(app.warn_if_opaque().is_some());
+        let (applied, message) = sync_blur_recorded(&mut app);
+        assert_eq!(applied, [true], "{support:?}");
+        assert_eq!(message.as_ref(), Some(&hidden), "{support:?}");
+        assert!(!hidden.1.contains("is requested"), "{}", hidden.1);
+        assert_eq!(sync_blur_recorded(&mut app), (vec![], None));
+
+        app.config_transparency = Some(true);
+        app.refresh_transparency_available(|| panic!("no X11 check off X11"));
+        assert!(app.transparency_available);
+        let (applied, message) = sync_blur_recorded(&mut app);
+        assert!(applied.is_empty());
+        let (level, text) = message.unwrap();
+        assert_eq!(level, log::Level::Info);
+        assert!(text.contains("is requested"), "{text}");
+        assert!(matches!(
+            app.blur.reported,
+            Some(BlurOutcome::Requested { .. })
+        ));
+    }
+
+    // X11 without a compositing manager: the X11 warning wins.
+    let mut app = blur_app("blur true; opacity 0.5;");
+    app.blur.support = BlurSupport::Unsupported(BlurUnsupported::X11);
+    app.x11 = true;
+    app.config_transparency = Some(true);
+    app.refresh_transparency_available(|| Some(false));
+    assert!(!app.transparency_available);
+    let (applied, message) = sync_blur_recorded(&mut app);
+    assert!(applied.is_empty());
+    assert_eq!(
+        message,
+        BlurOutcome::Unsupported(BlurUnsupported::X11).message()
+    );
+}
+
+#[test]
+fn blur_sync_without_window_defers_application_to_open() {
+    use blur::BlurSupport;
+    let mut app = blur_app("blur true; opacity 0.5;");
+    app.blur.support = BlurSupport::Available("org_kde_kwin_blur_manager");
+    assert_eq!(
+        app.blur
+            .sync(&app.settings, app.transparency_available, None::<fn(bool)>),
+        None
+    );
+    assert_eq!((app.blur.applied, app.blur.reported.clone()), (None, None));
+    assert_eq!(app.sync_blur(), None, "no window exists");
+    assert_eq!((app.blur.applied, app.blur.reported.clone()), (None, None));
+    let (applied, message) = sync_blur_recorded(&mut app);
+    assert_eq!(applied, [true]);
+    assert!(message.is_some());
+    assert_eq!(sync_blur_recorded(&mut app), (vec![], None));
+}
+
+#[cfg(unix)]
+#[test]
+fn blur_reload_without_window_records_nothing_and_invalid_edit_keeps_working_blur() {
+    use blur::{BlurOutcome, BlurState, BlurSupport};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.kdl");
+    std::fs::create_dir(directory.path().join("config.d")).unwrap();
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; opacity 0.5; blur true; }",
+    )
+    .unwrap();
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(directory.path().to_owned()),
+        ..Default::default()
+    };
+    let mut app = switch_app(opts);
+    app.reload().unwrap();
+    assert!(app.settings.blur_enabled());
+    assert_eq!((app.blur.applied, app.blur.reported.clone()), (None, None));
+    assert_eq!(app.sync_blur(), None);
+
+    // As a window would have left it.
+    app.blur = BlurState {
+        support: BlurSupport::Available("org_kde_kwin_blur_manager"),
+        applied: Some(true),
+        reported: Some(BlurOutcome::Requested {
+            protocol: Some("org_kde_kwin_blur_manager"),
+        }),
+    };
+    let snapshot = app.blur.clone();
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; opacity 0.5; blur 1; }",
+    )
+    .unwrap();
+    app.reload().unwrap();
+    assert_eq!(app.settings.blur, Some(true));
+    assert_eq!(app.settings.opacity, Some(0.5));
+    assert_eq!(app.blur, snapshot);
+
+    std::fs::write(
+        &path,
+        "terminal { system_fonts false; opacity 0.5; blur false; }",
+    )
+    .unwrap();
+    app.reload().unwrap();
+    assert_eq!(app.settings.blur, Some(false));
+    assert_eq!(app.blur, snapshot);
+}

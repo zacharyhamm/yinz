@@ -2351,6 +2351,9 @@ mod padding_reconfigure {
                     "padding 2; opacity_mode \"everything\";",
                     vec!["padding", "opacity_mode"],
                 ),
+                ("", "blur true;", vec!["blur"]),
+                ("blur true;", "blur false;", vec!["blur"]),
+                ("", "opacity 0.5; blur true;", vec!["opacity", "blur"]),
             ] {
                 let fixture = with_current(&clients, current);
                 let before = fixture.snapshot();
@@ -2403,6 +2406,9 @@ mod padding_reconfigure {
                     "opacity_mode \"EVERYTHING\";",
                 ),
                 ("opacity_mode \"everything\";", "padding 0;"),
+                ("", "blur false;"),
+                ("blur true;", "blur true;"),
+                ("blur true;", "padding 0;"),
             ] {
                 for all in [true, false] {
                     let fixture = with_current(&clients, current);
@@ -2440,7 +2446,7 @@ mod padding_reconfigure {
             let fixture = with_current(&[CLIENT], "padding 4;");
             let fragment = "terminal { padding_left 6; padding_balance true; \
                             padding_color \"extend\"; minimum_contrast 4.5; \
-                            opacity 0.6; opacity_mode \"everything\"; }";
+                            opacity 0.6; opacity_mode \"everything\"; blur true; }";
             if all {
                 assert_eq!(fixture.all(fragment, true).exit_status, None);
             } else {
@@ -2461,6 +2467,7 @@ mod padding_reconfigure {
                 saved.terminal.opacity_mode,
                 Some(yinz_types::input::native_terminal::OpacityMode::Everything)
             );
+            assert_eq!(saved.terminal.blur, Some(true));
             assert_eq!(
                 std::fs::read_to_string(fixture.dir.path().join("config.kdl")).unwrap(),
                 "// unchanged main\n"

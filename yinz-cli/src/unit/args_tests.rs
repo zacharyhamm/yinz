@@ -616,7 +616,7 @@ fn reconfigure_help_explains_saved_native_settings_and_atomic_refusal() {
         "cursor_unfocused_hollow",
         "ligatures/font_ligatures",
         "font_features",
-        "padding_balance, padding_color, minimum_contrast, opacity or opacity_mode",
+        "padding_balance, padding_color, minimum_contrast, opacity, opacity_mode or blur",
         "requires --write",
         "saved configuration/drop-in",
         "entire fragment",

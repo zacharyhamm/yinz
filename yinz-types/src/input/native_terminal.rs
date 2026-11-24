@@ -92,6 +92,10 @@ pub struct TerminalConfig {
     /// Which layers `opacity` applies to; unset means
     /// [`OpacityMode::Background`], see [`TerminalConfig::opacity_mode_or_default`].
     pub opacity_mode: Option<OpacityMode>,
+    /// Asks the compositor to blur what shows through the window; unset means
+    /// `false`, see [`TerminalConfig::blur_enabled`]. Blur affects only
+    /// see-through pixels and never makes the window transparent itself.
+    /// Support depends on the platform; see docs/native-terminal.md.
     pub blur: Option<bool>,
     pub startup_mode: Option<StartupMode>,
     pub initial_columns: Option<u16>,
@@ -139,6 +143,11 @@ impl TerminalConfig {
 
     pub fn padding_balance_enabled(&self) -> bool {
         self.padding_balance.unwrap_or(false)
+    }
+
+    /// The effective blur request; unset means `false`.
+    pub fn blur_enabled(&self) -> bool {
+        self.blur.unwrap_or(false)
     }
 
     pub fn padding_color_mode(&self) -> PaddingColor {
