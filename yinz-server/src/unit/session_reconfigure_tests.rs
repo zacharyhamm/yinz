@@ -3737,9 +3737,28 @@ fn native_startup_dimensions_disk_publication() {
 mod cursor_trail_reconfigure {
     use super::ligature_reconfigure::Fixture;
     use super::*;
+    use yinz_types::input::native_terminal::TerminalConfig;
 
-    #[test]
-    fn failed_cursor_trail_save_leaves_runtime_intact_and_unsaved_retry_is_refused() {
+    /// A saved-only boolean terminal setting whose omitted value means true.
+    #[derive(Clone, Copy)]
+    pub(super) struct SavedBoolean {
+        pub(super) name: &'static str,
+        pub(super) field: fn(&mut TerminalConfig) -> &mut Option<bool>,
+    }
+
+    pub(super) const CURSOR_TRAIL: SavedBoolean = SavedBoolean {
+        name: "cursor_trail",
+        field: |terminal| &mut terminal.cursor_trail,
+    };
+
+    fn get(setting: SavedBoolean, terminal: &TerminalConfig) -> Option<bool> {
+        *(setting.field)(&mut terminal.clone())
+    }
+
+    pub(super) fn failed_save_leaves_runtime_intact_and_unsaved_retry_is_refused(
+        setting: SavedBoolean,
+    ) {
+        let name = setting.name;
         for all in [false, true] {
             for runtime_matches in [false, true] {
                 let fixture = Fixture::new(&[CLIENT], None);
@@ -3747,11 +3766,11 @@ mod cursor_trail_reconfigure {
                     fixture.with(|session| {
                         let configuration = &mut session.session_configuration;
                         let mut runtime = configuration.get_client_configuration(&CLIENT);
-                        runtime.terminal.cursor_trail = Some(false);
+                        *(setting.field)(&mut runtime.terminal) = Some(false);
                         configuration.set_client_runtime_configuration(CLIENT, runtime);
                     });
                 }
-                let fragment = "terminal { cursor_trail false; }\nmouse_mode false";
+                let fragment = format!("terminal {{ {name} false; }}\nmouse_mode false");
                 let request = |fragment: &str, write| {
                     if all {
                         let result = fixture.all(fragment, write);
@@ -3775,50 +3794,49 @@ mod cursor_trail_reconfigure {
                 let drop_ins = fixture.dir.path().join("config.d");
                 std::fs::write(&drop_ins, "blocked").unwrap();
                 let before = fixture.snapshot();
-                let failure = request(fragment, true).unwrap_err();
+                let failure = request(&fragment, true).unwrap_err();
                 fixture.assert_only_write_failure(&drop_ins.join("yinz-managed.kdl"), &failure);
                 assert_eq!(fixture.snapshot(), before);
 
                 std::fs::remove_file(drop_ins).unwrap();
-                let refusal = request(fragment, false).unwrap_err();
+                let refusal = request(&fragment, false).unwrap_err();
                 assert!(
-                    refusal.contains("cursor_trail") && refusal.contains("--write"),
+                    refusal.contains(name) && refusal.contains("--write"),
                     "{refusal}"
                 );
                 fixture.assert_no_propagation();
                 assert_eq!(fixture.snapshot(), before);
 
-                request(fragment, true).unwrap();
+                request(&fragment, true).unwrap();
                 let saved = Config::load_saved(None, Some(fixture.dir.path())).unwrap();
-                assert_eq!(saved.terminal.cursor_trail, Some(false));
+                assert_eq!(get(setting, &saved.terminal), Some(false));
                 assert_eq!(saved.options.mouse_mode, Some(false));
-                request("terminal { cursor_trail false; }\nmouse_mode true", false).unwrap();
+                request(
+                    &format!("terminal {{ {name} false; }}\nmouse_mode true"),
+                    false,
+                )
+                .unwrap();
                 fixture.with(|session| {
                     let runtime = session
                         .session_configuration
                         .get_client_configuration(&CLIENT);
-                    assert_eq!(runtime.terminal.cursor_trail, Some(false));
+                    assert_eq!(get(setting, &runtime.terminal), Some(false));
                     assert_eq!(runtime.options.mouse_mode, Some(true));
                 });
             }
         }
     }
 
-    #[test]
-    fn unsaved_cursor_trail_changes_refuse_whole_fragment_and_write_persists() {
+    pub(super) fn unsaved_changes_refuse_whole_fragment_and_write_persists(setting: SavedBoolean) {
+        let name = setting.name;
         for clients in [vec![CLIENT], vec![]] {
             let fixture = Fixture::new(&clients, None);
             let before = fixture.snapshot();
-            let fragment = "terminal { cursor_trail false; }\nmouse_mode false";
-            let result = fixture.all(fragment, false);
+            let fragment = format!("terminal {{ {name} false; }}\nmouse_mode false");
+            let result = fixture.all(&fragment, false);
             assert_eq!(result.exit_status, Some(1));
             let error = result.error_message.as_deref().unwrap();
-            for word in [
-                "cursor_trail",
-                "--write",
-                "configuration/drop-in",
-                "entire fragment",
-            ] {
+            for word in [name, "--write", "configuration/drop-in", "entire fragment"] {
                 assert!(error.contains(word), "{error}");
             }
             assert_eq!(fixture.snapshot(), before);
@@ -3826,37 +3844,72 @@ mod cursor_trail_reconfigure {
 
             let err = reconfigure_client(
                 CLIENT,
-                fragment.to_owned(),
+                fragment.clone(),
                 false,
                 &fixture.state,
                 &fixture.data,
             )
             .unwrap_err();
             let msg = format!("{err:#}");
-            assert!(msg.contains("cursor_trail"), "{msg}");
+            assert!(msg.contains(name), "{msg}");
             assert_eq!(fixture.snapshot(), before);
             fixture.assert_no_propagation();
 
             // Equivalent unsaved value (true matches default true) is accepted.
-            let equivalent =
-                fixture.all("terminal { cursor_trail true; }\nmouse_mode false", false);
+            let equivalent = fixture.all(
+                &format!("terminal {{ {name} true; }}\nmouse_mode false"),
+                false,
+            );
             assert_eq!(equivalent.exit_status, None);
 
-            // Persisting with --write succeeds and saves cursor_trail to the managed drop-in.
-            let saved = fixture.all("terminal { cursor_trail false; }", true);
+            // Persisting with --write succeeds and saves the setting to the managed drop-in.
+            let saved = fixture.all(&format!("terminal {{ {name} false; }}"), true);
             assert_eq!(saved.exit_status, None);
             let loaded = Config::load_saved(None, Some(fixture.dir.path())).unwrap();
-            assert_eq!(loaded.terminal.cursor_trail, Some(false));
+            assert_eq!(get(setting, &loaded.terminal), Some(false));
 
             // Now toggling back to true without --write is also refused.
-            let revert_refused =
-                fixture.all("terminal { cursor_trail true; }\nmouse_mode true", false);
+            let revert_refused = fixture.all(
+                &format!("terminal {{ {name} true; }}\nmouse_mode true"),
+                false,
+            );
             assert_eq!(revert_refused.exit_status, Some(1));
             assert!(revert_refused
                 .error_message
                 .as_deref()
                 .unwrap()
-                .contains("cursor_trail"));
+                .contains(name));
         }
+    }
+
+    #[test]
+    fn failed_cursor_trail_save_leaves_runtime_intact_and_unsaved_retry_is_refused() {
+        failed_save_leaves_runtime_intact_and_unsaved_retry_is_refused(CURSOR_TRAIL);
+    }
+
+    #[test]
+    fn unsaved_cursor_trail_changes_refuse_whole_fragment_and_write_persists() {
+        unsaved_changes_refuse_whole_fragment_and_write_persists(CURSOR_TRAIL);
+    }
+}
+
+mod cursor_unfocused_hollow_reconfigure {
+    use super::cursor_trail_reconfigure::{self as shared, SavedBoolean};
+
+    const CURSOR_UNFOCUSED_HOLLOW: SavedBoolean = SavedBoolean {
+        name: "cursor_unfocused_hollow",
+        field: |terminal| &mut terminal.cursor_unfocused_hollow,
+    };
+
+    #[test]
+    fn failed_save_leaves_runtime_intact_and_unsaved_retry_is_refused() {
+        shared::failed_save_leaves_runtime_intact_and_unsaved_retry_is_refused(
+            CURSOR_UNFOCUSED_HOLLOW,
+        );
+    }
+
+    #[test]
+    fn unsaved_changes_refuse_whole_fragment_and_write_persists() {
+        shared::unsaved_changes_refuse_whole_fragment_and_write_persists(CURSOR_UNFOCUSED_HOLLOW);
     }
 }

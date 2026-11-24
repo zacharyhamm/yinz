@@ -9229,6 +9229,7 @@ Config {
         macos_option_as_alt: None,
         cursor_blink: None,
         cursor_trail: None,
+        cursor_unfocused_hollow: None,
         open_links: None,
         middle_click_paste: None,
     },

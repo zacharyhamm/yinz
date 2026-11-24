@@ -330,6 +330,16 @@ impl Painter {
         self.set_cursor(row, col, shape, true);
     }
 
+    /// Places a hidden cursor (DECTCEM off) at `row`, `col`.
+    pub fn hidden_cursor(&mut self, row: usize, col: usize) {
+        self.builder.set_cursor(CursorState {
+            x: col as u16,
+            y: row as u16,
+            shape: yinz_types::structured_render::CURSOR_SHAPE_BLOCK,
+            visible: false,
+        });
+    }
+
     fn set_cursor(&mut self, row: usize, col: usize, shape: CursorShape, blinking: bool) {
         let shape = match shape {
             CursorShape::Block => yinz_types::structured_render::CURSOR_SHAPE_BLOCK,

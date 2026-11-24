@@ -781,6 +781,10 @@ background_opacity "85%"
 //     // compositor; this is not the multiplexer's background_opacity.
 //     opacity 1.0
 //     opacity_mode "background"
+//     // Whether the cursor is drawn as an outlined block that does not blink
+//     // while the window is not focused (the default). false keeps the
+//     // configured cursor_style and cursor_blink while unfocused.
+//     cursor_unfocused_hollow true
 // }
 
 // Enable or disable writing of session metadata to disk (if disabled, other sessions might not know

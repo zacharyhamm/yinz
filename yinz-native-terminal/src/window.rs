@@ -695,6 +695,9 @@ pub(crate) fn apply_settings(
     comparison.initial_columns = next_settings.initial_columns;
     comparison.initial_rows = next_settings.initial_rows;
     comparison.cursor_trail = next_settings.cursor_trail;
+    // The App re-derives CursorOptions after a reload and marks only the
+    // cursor row when they change (App::cursor_options_changed).
+    comparison.cursor_unfocused_hollow = next_settings.cursor_unfocused_hollow;
     // Padding is recomputed every frame; a mode change only needs the redraw
     // that every reload schedules.
     comparison.padding_color = next_settings.padding_color;
@@ -2028,6 +2031,7 @@ impl App {
             };
         let previous_metrics = self.cache.metrics();
         let had_trail = self.cursor_trail.is_active();
+        let previous_cursor = self.cursor_options();
         reload.apply(
             &mut self.active_fonts,
             &mut self.cache,
@@ -2035,6 +2039,7 @@ impl App {
             &mut self.settings,
             &mut self.paints,
         );
+        self.cursor_options_changed(previous_cursor);
         if self.cache.metrics() != previous_metrics || !self.cursor_trail_enabled() {
             self.cursor_trail.reset();
             if had_trail {
@@ -2152,8 +2157,36 @@ impl App {
         CursorOptions {
             shape: self.configured_cursor_shape(),
             blink: self.settings.cursor_blink,
-            hollow: !self.focused,
+            hollow: self.settings.cursor_unfocused_hollow_enabled() && !self.focused,
         }
+    }
+
+    /// Rebuilds only the cursor row when the effective cursor options moved
+    /// away from `previous`. The scene draws the cursor, including its preedit
+    /// position and hollow-under-selection colour, only on the cursor row, and
+    /// nothing at all while the cursor is hidden.
+    fn cursor_options_changed(&mut self, previous: CursorOptions) {
+        if self.cursor_options() != previous && self.state.cursor_is_visible() {
+            self.retained.mark_row(self.state.cursor_position().0);
+            self.pacer.schedule();
+        }
+    }
+
+    /// Applies a window focus change (pinned source pointer.rs set_focused):
+    /// a repeated value does nothing, otherwise focus is reported and only the
+    /// cursor row is repainted when its options change.
+    fn set_focused(&mut self, focused: bool) -> Result<()> {
+        if self.focused == focused {
+            return Ok(());
+        }
+        let previous = self.cursor_options();
+        self.focused = focused;
+        if self.connection_geometry.received_frame {
+            self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
+        }
+        self.send(ClientToServerMsg::HostTerminalFocusChanged { focused })?;
+        self.cursor_options_changed(previous);
+        Ok(())
     }
 
     fn observe_cursor_trail(&mut self, now: Instant, preedit: Option<&Preedit>) -> bool {
@@ -2505,15 +2538,7 @@ impl App {
                 }
             },
             WindowEvent::RedrawRequested => self.draw()?,
-            WindowEvent::Focused(focused) => {
-                self.focused = focused;
-                if self.connection_geometry.received_frame {
-                    self.observe_cursor_trail(Instant::now(), self.composition.shown().as_ref());
-                }
-                self.send(ClientToServerMsg::HostTerminalFocusChanged { focused })?;
-                self.retained.mark_everything();
-                self.pacer.schedule();
-            },
+            WindowEvent::Focused(focused) => self.set_focused(focused)?,
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
                 self.alt_keys = keyboard::AltKeys::of(&modifiers);

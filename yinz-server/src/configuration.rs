@@ -122,6 +122,10 @@ fn changed_saved_terminal_settings(
         .cursor_trail
         .filter(|value| *value != current.cursor_trail.unwrap_or(true))
         .map(|_| "cursor_trail");
+    let cursor_unfocused_hollow = requested
+        .cursor_unfocused_hollow
+        .filter(|value| *value != current.cursor_unfocused_hollow_enabled())
+        .map(|_| "cursor_unfocused_hollow");
     [
         (
             "underline_offset",
@@ -141,6 +145,7 @@ fn changed_saved_terminal_settings(
             .map(|_| name)
     })
     .chain(cursor_trail)
+    .chain(cursor_unfocused_hollow)
 }
 
 struct SavedTerminalReconfigure {
@@ -157,6 +162,9 @@ impl SavedTerminalReconfigure {
             requested.underline_offset.map(|_| "underline_offset"),
             requested.underline_thickness.map(|_| "underline_thickness"),
             requested.cursor_trail.map(|_| "cursor_trail"),
+            requested
+                .cursor_unfocused_hollow
+                .map(|_| "cursor_unfocused_hollow"),
         ];
         let saved_changes = if names.iter().any(Option::is_some) {
             let (file, dir) = with_session(session_data, |session| {

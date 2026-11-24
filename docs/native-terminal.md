@@ -59,6 +59,7 @@ terminal {
     cursor_style "block"
     cursor_blink true
     cursor_trail true
+    cursor_unfocused_hollow true
     startup_mode "remember"
     macos_option_as_alt "none"
     open_links true
@@ -448,7 +449,10 @@ counts as a change. Padding compares the resolved sides and balance, so
 `opacity_mode "background"`. The refusal names the
 key that caused each change: `padding` when the shorthand changed a side, or the
 side's own key. Before this change, unsaved padding was accepted but never
-reached native windows, which read padding only from files. An invalid fragment, with or without `--write`, is refused with
+reached native windows, which read padding only from files.
+`cursor_unfocused_hollow` also requires `--write` or a saved edit. It is compared
+with the session's effective saved files, where omission means `true`, so an
+explicit `true` against an unset saved value is equivalent. An invalid fragment, with or without `--write`, is refused with
 the same per-entry message as file validation, such as the `"ss1"` error above; it
 names the entry rather than drawing the source pointer that `yinz setup --check`
 shows. For example, disable and then restore ligatures:
@@ -743,6 +747,46 @@ and macOS were not exercised.
 
 `cursor_style` accepts `block`, `bar`, and `underline`. `cursor_trail` enables (`true`, the default) or disables (`false`) the swept comet trail drawn behind the cursor when it jumps at least two cells in the native terminal window. `macos_option_as_alt` accepts `none`, `left`, `right`,
 and `both`.
+
+`cursor_unfocused_hollow` takes a plain boolean, `true` by default (the pinned
+source's default and the earlier always-hollow behaviour). While the window is
+unfocused, `true` draws an outlined block that does not blink, whatever
+`cursor_style`, `cursor_blink` or the program requests. The outline leaves the
+cell's colours alone and its stroke follows the physical cell metrics, so it
+scales with HiDPI. `false` keeps the configured `cursor_style` and `cursor_blink`
+while unfocused, or the program's requested shape and blink when those are unset.
+Regaining focus restores them. A hidden cursor stays hidden in every combination,
+and the composed session state still decides which pane or overlay owns the
+cursor, including IME preedit. Other values, typed values, extra arguments,
+children and duplicates are rejected at the node, as for `cursor_trail`.
+Startup reads the setting with the rest of the terminal block, and a later
+drop-in wins. A file reload applies it to the cursor only: when the effective
+cursor changes, only the cursor row is rebuilt, without font, cache or geometry
+work. A focus change does the same, and a repeated focus event does nothing.
+Content and selection are preserved.
+
+Issue #115 observations (2026-11-24): this worktree's debug binary ran in
+bounded foreground headless Sway 1.12 sessions (GLES2 renderer) on a
+1200×600 output at scale 2. A second empty output received focus, and a
+scratch `zwp_virtual_keyboard_v1` client gave the headless seat a keyboard, so
+the window got real keyboard enter/leave events. Without that keyboard Sway
+reported the window unfocused, but the client got no focus event and kept its
+configured cursor. Captures with embedded Iosevka Term at 12 points showed:
+
+| Case | Wayland (scale 2) | X11 (Xwayland) |
+|---|---|---|
+| Default, unfocused, bar/underline/block | Outline, 2-pixel stroke on a 16-pixel cell | Outline |
+| Focus regained | Configured bar/underline/block | Same |
+| `false`, unfocused | Configured bar/underline/block | Same |
+| `false` with `cursor_blink true`, unfocused | Bar blinks | Same |
+| Default with `cursor_blink true`, unfocused | Outline, no blinking over 3 captures | Same |
+| Drop-in reload to `false` while focused, then unfocus | Bar | Same |
+| Drop-in reload to `true` while unfocused | Outline immediately | Same |
+| Invalid drop-in (`cursor_unfocused_hollow 1`) | Drop-in skipped, main file applies | Same |
+
+The session's own desktop output, an active selection under the cursor (no
+pointer device in the headless seat; selection is covered by the window tests),
+mixed-DPI moves and macOS were not exercised.
 
 Use Ctrl+Shift+C/V (Command+C/V on macOS) for copy/paste. Hold Shift while
 dragging to select locally when the session handles mouse events. Ctrl-click

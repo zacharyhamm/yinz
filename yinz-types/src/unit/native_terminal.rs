@@ -288,6 +288,40 @@ fn cursor_trail_optional_boolean_roundtrips() {
 }
 
 #[test]
+fn cursor_unfocused_hollow_optional_boolean_roundtrips() {
+    let default = TerminalConfig::default();
+    assert_eq!(default.cursor_unfocused_hollow, None);
+    assert!(default.cursor_unfocused_hollow_enabled());
+    for text in ["{}", r#"{"cursor_unfocused_hollow":null}"#] {
+        let config = serde_json::from_str::<TerminalConfig>(text).unwrap();
+        assert_eq!(config.cursor_unfocused_hollow, None);
+        assert!(config.cursor_unfocused_hollow_enabled());
+    }
+    for enabled in [false, true] {
+        let config: TerminalConfig =
+            serde_json::from_value(serde_json::json!({"cursor_unfocused_hollow": enabled}))
+                .unwrap();
+        assert_eq!(config.cursor_unfocused_hollow, Some(enabled));
+        assert_eq!(config.cursor_unfocused_hollow_enabled(), enabled);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["cursor_unfocused_hollow"], enabled);
+        assert_eq!(
+            serde_json::from_value::<TerminalConfig>(value).unwrap(),
+            config
+        );
+    }
+    for bad in ["1", "0", "\"true\"", "[]", "{}"] {
+        assert!(
+            serde_json::from_str::<TerminalConfig>(&format!(
+                "{{\"cursor_unfocused_hollow\":{bad}}}"
+            ))
+            .is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn padding_sides_prefer_side_then_shorthand_then_zero() {
     let config = TerminalConfig::default();
     assert_eq!(config.padding_sides(), PaddingSides::default());

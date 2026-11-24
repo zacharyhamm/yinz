@@ -5989,3 +5989,430 @@ fn x11_without_a_compositing_manager_draws_opaque_and_warns_until_one_runs() {
         assert!(app.warn_if_opaque().is_none());
     }
 }
+
+/// Rebuilds `app.retained` from the App's own state and cursor options, as
+/// draw() does, since draw() returns early without surfaces.
+#[cfg(unix)]
+fn refresh_unfocused_hollow_scene(app: &mut App) {
+    let cursor = app.cursor_options();
+    let preedit = app.composition.shown();
+    app.retained.set_selection(app.selection.range());
+    app.retained.refresh(
+        SceneInputs {
+            state: &app.state,
+            phase: app.blink,
+            paints: &app.paints,
+            cursor,
+            hovered_link: None,
+            preedit: preedit.as_ref(),
+        },
+        &mut app.cache,
+    );
+}
+
+/// A fresh full rebuild of the App's scene with its current cursor options,
+/// so incremental refreshes can be compared against it.
+#[cfg(unix)]
+fn fresh_unfocused_hollow_scene(app: &mut App) -> crate::render::scene::test_helpers::Scene {
+    let cursor = app.cursor_options();
+    let mut retained = RetainedScene::new();
+    retained.set_selection(app.selection.range());
+    retained.refresh(
+        SceneInputs {
+            state: &app.state,
+            phase: app.blink,
+            paints: &app.paints,
+            cursor,
+            hovered_link: None,
+            preedit: None,
+        },
+        &mut app.cache,
+    );
+    retained.flatten()
+}
+
+/// The four stroke rectangles of a hollow cursor at `row`, `col`.
+#[cfg(unix)]
+fn unfocused_hollow_outline(
+    metrics: crate::text::font::CellMetrics,
+    row: usize,
+    col: usize,
+) -> Vec<(i32, i32, u32, u32)> {
+    let stroke = metrics.stroke.max(1).min(metrics.width).min(metrics.height);
+    let (x, y) = (
+        (col as u32 * metrics.width) as i32,
+        (row as u32 * metrics.height) as i32,
+    );
+    let (width, height) = (metrics.width, metrics.height);
+    vec![
+        (x, y, width, stroke),
+        (x, y + (height - stroke) as i32, width, stroke),
+        (x, y, stroke, height),
+        (x + (width - stroke) as i32, y, stroke, height),
+    ]
+}
+
+#[cfg(unix)]
+fn has_unfocused_hollow_outline(
+    scene: &crate::render::scene::test_helpers::Scene,
+    metrics: crate::text::font::CellMetrics,
+    row: usize,
+    col: usize,
+) -> bool {
+    unfocused_hollow_outline(metrics, row, col)
+        .into_iter()
+        .all(|outline| {
+            scene
+                .rects
+                .iter()
+                .any(|rect| (rect.x, rect.y, rect.width, rect.height) == outline)
+        })
+}
+
+#[test]
+#[cfg(unix)]
+fn cursor_unfocused_hollow_options_matrix() {
+    use crate::render::scene::test_helpers::build_at;
+    use crate::testing::painter::Painter;
+    use yinz_types::input::native_terminal::CursorStyle;
+
+    let mut app = switch_app(CliArgs::default());
+    let metrics = app.cache.metrics();
+    let styles = [
+        (None, None),
+        (Some(CursorStyle::Block), Some(CursorShape::Block)),
+        (Some(CursorStyle::Bar), Some(CursorShape::Beam)),
+        (Some(CursorStyle::Underline), Some(CursorShape::Underline)),
+    ];
+    // What the program asked for: shape and whether it blinks.
+    let programs: [(CursorShape, bool); 4] = [
+        (CursorShape::Default, false),
+        (CursorShape::Beam, true),
+        (CursorShape::Underline, false),
+        (CursorShape::Block, true),
+    ];
+    for setting in [None, Some(true), Some(false)] {
+        for (style, shape) in styles {
+            for blink in [None, Some(true), Some(false)] {
+                app.settings.cursor_unfocused_hollow = setting;
+                app.settings.cursor_style = style;
+                app.settings.cursor_blink = blink;
+                app.focused = true;
+                let focused = app.cursor_options();
+                assert_eq!(
+                    focused,
+                    CursorOptions {
+                        shape,
+                        blink,
+                        hollow: false
+                    },
+                    "{setting:?} {style:?} {blink:?}"
+                );
+                app.focused = false;
+                let unfocused = app.cursor_options();
+                let hollow = setting.unwrap_or(true);
+                assert_eq!(
+                    unfocused,
+                    CursorOptions {
+                        shape,
+                        blink,
+                        hollow
+                    },
+                    "{setting:?} {style:?} {blink:?}"
+                );
+
+                let scene = |state: &TerminalState,
+                             cache: &mut GlyphCache,
+                             cursor: CursorOptions,
+                             phase: BlinkPhase| {
+                    build_at(state, cache, phase, &app.paints, cursor, None, None)
+                };
+                for (program, blinking) in programs {
+                    let state = Painter::state(2, 18, |p| {
+                        p.text(1, 0, "abcdef");
+                        if blinking {
+                            p.blinking_cursor(1, 3, program);
+                        } else {
+                            p.cursor(1, 3, program);
+                        }
+                    });
+                    let cursorless = Painter::state(2, 18, |p| {
+                        p.text(1, 0, "abcdef");
+                        p.hidden_cursor(1, 3);
+                    });
+                    let context = format!("{setting:?} {style:?} {blink:?} {program:?} {blinking}");
+                    let bare = scene(&cursorless, &mut app.cache, focused, BlinkPhase::On);
+                    for phase in [BlinkPhase::On, BlinkPhase::Off] {
+                        let focused_scene = scene(&state, &mut app.cache, focused, phase);
+                        let unfocused_scene = scene(&state, &mut app.cache, unfocused, phase);
+                        if hollow {
+                            assert!(
+                                has_unfocused_hollow_outline(&unfocused_scene, metrics, 1, 3),
+                                "{context}: {:?}",
+                                unfocused_scene.rects
+                            );
+                            // The cursor splits shaping runs, so compare
+                            // glyphs in position order.
+                            let by_position =
+                                |scene: &crate::render::scene::test_helpers::Scene| {
+                                    let mut glyphs = scene.glyphs.clone();
+                                    glyphs.sort_by_key(|glyph| (glyph.y, glyph.x));
+                                    glyphs
+                                };
+                            assert_eq!(
+                                by_position(&unfocused_scene),
+                                by_position(&bare),
+                                "{context}: the hollow cursor recoloured the cell"
+                            );
+                            assert_eq!(
+                                unfocused_scene,
+                                scene(&state, &mut app.cache, unfocused, BlinkPhase::On),
+                                "{context}: a hollow cursor does not blink"
+                            );
+                        } else {
+                            assert_eq!(
+                                unfocused_scene, focused_scene,
+                                "{context} {phase:?}: setting off keeps the focused cursor"
+                            );
+                        }
+                    }
+                    // A hidden cursor draws nothing in any combination.
+                    for cursor in [focused, unfocused] {
+                        for phase in [BlinkPhase::On, BlinkPhase::Off] {
+                            assert_eq!(
+                                scene(&cursorless, &mut app.cache, cursor, phase),
+                                bare,
+                                "{context}: hidden cursor"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn focus_change_with_unfocused_hollow_marks_only_the_cursor_row() {
+    use crate::testing::painter::Painter;
+
+    for setting in [None, Some(true), Some(false)] {
+        for hidden in [false, true] {
+            let context = format!("{setting:?} hidden={hidden}");
+            let mut app = switch_app(CliArgs::default());
+            let (sender, mut peer) = switch_peer();
+            app.sender = Some(sender);
+            app.settings.cursor_unfocused_hollow = setting;
+            app.settings.cursor_style = None;
+            app.settings.cursor_blink = None;
+            Painter::apply(&mut app.state, |p| {
+                p.text(1, 0, "second row");
+                if hidden {
+                    p.hidden_cursor(1, 3);
+                } else {
+                    p.blinking_cursor(1, 3, CursorShape::Beam);
+                }
+            });
+            // An active selection that covers the cursor cell.
+            app.selection.start(0, 2);
+            app.selection.extend(1, 6);
+            let selection = app.selection.range();
+            let copied = app.selection.text(app.state.screen());
+            assert!(selection.is_some() && copied.is_some());
+            refresh_unfocused_hollow_scene(&mut app);
+            refresh_unfocused_hollow_scene(&mut app);
+            assert!(app.retained.rebuilt_rows().is_empty(), "{context}: clean");
+            let focused_scene = app.retained.flatten();
+            let generation = app.cache.generation();
+            let metrics = app.cache.metrics();
+            let hollow = setting.unwrap_or(true) && !hidden;
+
+            app.event(WindowEvent::Focused(false), || panic!()).unwrap();
+            assert!(!app.focused);
+            assert!(
+                matches!(
+                    peer.recv_client_msg().msg(),
+                    Some((
+                        ClientToServerMsg::HostTerminalFocusChanged { focused: false },
+                        _
+                    ))
+                ),
+                "{context}"
+            );
+            refresh_unfocused_hollow_scene(&mut app);
+            assert!(!app.retained.rebuilt_everything(), "{context}");
+            let expected_rows: &[usize] = if hollow { &[1] } else { &[] };
+            assert_eq!(app.retained.rebuilt_rows(), expected_rows, "{context}");
+            let unfocused_scene = app.retained.flatten();
+            assert_eq!(
+                unfocused_scene,
+                fresh_unfocused_hollow_scene(&mut app),
+                "{context}: the row-limited rebuild matches a full rebuild"
+            );
+            assert_eq!(
+                has_unfocused_hollow_outline(&unfocused_scene, metrics, 1, 3),
+                hollow,
+                "{context}"
+            );
+            if !hollow {
+                assert_eq!(unfocused_scene, focused_scene, "{context}");
+            }
+            assert_eq!(app.selection.range(), selection, "{context}");
+            assert_eq!(app.selection.text(app.state.screen()), copied, "{context}");
+            assert_eq!(app.cache.generation(), generation, "{context}");
+            assert_eq!(app.cache.metrics(), metrics, "{context}");
+
+            // A repeated focus value does no work and sends nothing: the next
+            // message is the following real focus change.
+            app.event(WindowEvent::Focused(false), || panic!()).unwrap();
+            refresh_unfocused_hollow_scene(&mut app);
+            assert!(app.retained.rebuilt_rows().is_empty(), "{context}");
+            assert!(!app.retained.rebuilt_everything(), "{context}");
+
+            app.event(WindowEvent::Focused(true), || panic!()).unwrap();
+            assert!(
+                matches!(
+                    peer.recv_client_msg().msg(),
+                    Some((
+                        ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+                        _
+                    ))
+                ),
+                "{context}"
+            );
+            refresh_unfocused_hollow_scene(&mut app);
+            assert!(!app.retained.rebuilt_everything(), "{context}");
+            assert_eq!(app.retained.rebuilt_rows(), expected_rows, "{context}");
+            assert_eq!(
+                app.retained.flatten(),
+                focused_scene,
+                "{context}: focus regain restores the program's shape and blink"
+            );
+            assert_eq!(app.selection.range(), selection, "{context}");
+            assert_eq!(app.cache.generation(), generation, "{context}");
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn unfocused_hollow_reload_marks_only_the_cursor_row() {
+    use crate::testing::painter::Painter;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.kdl");
+    std::fs::create_dir(directory.path().join("config.d")).unwrap();
+    let write = |setting: Option<bool>| {
+        let line = setting
+            .map(|value| format!("cursor_unfocused_hollow {value}; "))
+            .unwrap_or_default();
+        std::fs::write(
+            &path,
+            format!("terminal {{ system_fonts false; cursor_style \"underline\"; {line}}}"),
+        )
+        .unwrap();
+    };
+    write(None);
+    let opts = CliArgs {
+        config: Some(path.clone()),
+        config_dir: Some(directory.path().to_owned()),
+        ..Default::default()
+    };
+    let mut app = switch_app(opts);
+    app.reload().unwrap();
+    Painter::apply(&mut app.state, |p| {
+        p.text(1, 0, "second row");
+        p.cursor(1, 4, CursorShape::Block);
+    });
+    app.selection.start(0, 2);
+    app.selection.extend(1, 6);
+    let selection = app.selection.range();
+    let copied = app.selection.text(app.state.screen());
+    refresh_unfocused_hollow_scene(&mut app);
+    refresh_unfocused_hollow_scene(&mut app);
+    let generation = app.cache.generation();
+    let metrics = app.cache.metrics();
+    let cells = |app: &App| {
+        (0..2)
+            .flat_map(|row| (0..18).map(move |col| (row, col)))
+            .map(|(row, col)| app.state.screen().cell(row, col).character())
+            .collect::<String>()
+    };
+    let content = cells(&app);
+
+    for focused in [false, true] {
+        app.set_focused(focused).unwrap();
+        refresh_unfocused_hollow_scene(&mut app);
+        for setting in [Some(false), Some(true), None, Some(false), None] {
+            let previous = app.settings.cursor_unfocused_hollow_enabled();
+            write(setting);
+            app.reload().unwrap();
+            let context = format!("focused={focused} {setting:?}");
+            assert_eq!(app.settings.cursor_unfocused_hollow, setting, "{context}");
+            refresh_unfocused_hollow_scene(&mut app);
+            assert!(!app.retained.rebuilt_everything(), "{context}");
+            let toggled = previous != setting.unwrap_or(true);
+            let expected_rows: &[usize] = if !focused && toggled { &[1] } else { &[] };
+            assert_eq!(app.retained.rebuilt_rows(), expected_rows, "{context}");
+            let scene = app.retained.flatten();
+            assert_eq!(scene, fresh_unfocused_hollow_scene(&mut app), "{context}");
+            assert_eq!(
+                has_unfocused_hollow_outline(&scene, metrics, 1, 4),
+                !focused && setting.unwrap_or(true),
+                "{context}"
+            );
+            assert_eq!(app.cache.generation(), generation, "{context}");
+            assert_eq!(app.cache.metrics(), metrics, "{context}");
+            assert_eq!(cells(&app), content, "{context}");
+            assert_eq!(app.selection.range(), selection, "{context}");
+            assert_eq!(app.selection.text(app.state.screen()), copied, "{context}");
+        }
+    }
+}
+
+#[test]
+fn unfocused_hollow_settings_toggle_does_not_rebuild_every_row() {
+    let mut settings = embedded_settings();
+    let mut paints = Paints::default();
+    let mut retained = RetainedScene::new();
+    let state = TerminalState::new(4, 20);
+    let mut cache = GlyphCache::new(
+        effective_font_options(&settings, 1.0, 1.0)
+            .stack(1.0)
+            .unwrap(),
+    );
+    let refresh = |retained: &mut RetainedScene, paints: &Paints, cache: &mut GlyphCache| {
+        retained.refresh(
+            SceneInputs {
+                state: &state,
+                phase: BlinkPhase::On,
+                paints,
+                cursor: CursorOptions::default(),
+                hovered_link: None,
+                preedit: None,
+            },
+            cache,
+        );
+    };
+    refresh(&mut retained, &paints, &mut cache);
+    assert!(retained.rebuilt_everything());
+    for setting in [Some(false), Some(true), None] {
+        let mut next = settings.clone();
+        next.cursor_unfocused_hollow = setting;
+        let next_paints = paints;
+        apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+        assert_eq!(settings.cursor_unfocused_hollow, setting);
+        refresh(&mut retained, &paints, &mut cache);
+        assert!(!retained.rebuilt_everything(), "{setting:?}");
+        assert!(retained.rebuilt_rows().is_empty(), "{setting:?}");
+    }
+    // Any other change in the same reload still rebuilds every row.
+    let mut next = settings.clone();
+    next.cursor_unfocused_hollow = Some(false);
+    next.cursor_blink = Some(false);
+    let next_paints = paints;
+    apply_settings(&mut settings, &mut paints, &mut retained, next, next_paints);
+    refresh(&mut retained, &paints, &mut cache);
+    assert!(retained.rebuilt_everything());
+}

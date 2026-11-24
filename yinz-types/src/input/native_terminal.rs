@@ -100,6 +100,10 @@ pub struct TerminalConfig {
     pub macos_option_as_alt: Option<OptionAsAlt>,
     pub cursor_blink: Option<bool>,
     pub cursor_trail: Option<bool>,
+    /// Whether an unfocused window draws an outlined block cursor that does
+    /// not blink. Unset means true, see
+    /// [`TerminalConfig::cursor_unfocused_hollow_enabled`].
+    pub cursor_unfocused_hollow: Option<bool>,
     pub open_links: Option<bool>,
     pub middle_click_paste: Option<bool>,
 }
@@ -144,6 +148,11 @@ impl TerminalConfig {
     /// The effective minimum contrast ratio; unset means [`MIN_CONTRAST`] (off).
     pub fn minimum_contrast_ratio(&self) -> f32 {
         self.minimum_contrast.unwrap_or(MIN_CONTRAST)
+    }
+
+    /// Whether an unfocused window draws a hollow cursor; unset means true.
+    pub fn cursor_unfocused_hollow_enabled(&self) -> bool {
+        self.cursor_unfocused_hollow.unwrap_or(true)
     }
 
     /// The effective window opacity; unset means 1.0 (opaque).

@@ -141,6 +141,7 @@ fn documented_native_terminal_example_loads() {
     let config = Config::from_kdl(example, None).unwrap();
     assert_eq!(config.terminal.font_ligatures, Some(true));
     assert_eq!(config.terminal.cursor_trail, Some(true));
+    assert_eq!(config.terminal.cursor_unfocused_hollow, Some(true));
     assert_eq!(config.terminal.cell_width, Some(1.0));
     assert_eq!(config.terminal.line_height, Some(1.0));
     assert_eq!(config.terminal.baseline_offset, Some(2));
@@ -687,6 +688,76 @@ fn cursor_trail_validates_roundtrips_and_overlays() {
             "{input}: {error:?}"
         );
     }
+}
+
+#[test]
+fn cursor_unfocused_hollow_validates_roundtrips_and_overlays() {
+    let unset = Config::from_kdl("terminal { padding 2; }", None).unwrap();
+    assert_eq!(unset.terminal.cursor_unfocused_hollow, None);
+    assert!(unset.terminal.cursor_unfocused_hollow_enabled());
+    assert!(!unset
+        .to_string(false)
+        .unwrap()
+        .contains("cursor_unfocused_hollow"));
+    for enabled in [false, true] {
+        let config = Config::from_kdl(
+            &format!("terminal {{ cursor_unfocused_hollow {enabled}; padding 2; }}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.terminal.cursor_unfocused_hollow, Some(enabled));
+        let text = config.to_string(false).unwrap();
+        assert!(
+            text.contains(&format!("cursor_unfocused_hollow {enabled}")),
+            "{text}"
+        );
+        let roundtrip = Config::from_kdl(&text, None).unwrap();
+        assert_eq!(roundtrip.terminal, config.terminal);
+        let inherited = Config::from_kdl("terminal { opacity 0.5; }", Some(config)).unwrap();
+        assert_eq!(inherited.terminal.cursor_unfocused_hollow, Some(enabled));
+        let overridden = Config::from_kdl(
+            &format!("terminal {{ cursor_unfocused_hollow {}; }}", !enabled),
+            Some(inherited),
+        )
+        .unwrap();
+        assert_eq!(overridden.terminal.cursor_unfocused_hollow, Some(!enabled));
+        assert_eq!(overridden.terminal.padding, Some(2.0));
+    }
+    const BOOLEAN: &str = "terminal cursor_unfocused_hollow must be a plain boolean true or false";
+    const ONE_VALUE: &str = "terminal cursor_unfocused_hollow takes one plain value";
+    for (bad, expected) in [
+        ("cursor_unfocused_hollow", ONE_VALUE),
+        ("cursor_unfocused_hollow 1", BOOLEAN),
+        ("cursor_unfocused_hollow \"true\"", BOOLEAN),
+        ("cursor_unfocused_hollow null", BOOLEAN),
+        ("cursor_unfocused_hollow (bool)true", BOOLEAN),
+        ("(bool)cursor_unfocused_hollow true", BOOLEAN),
+        ("cursor_unfocused_hollow true false", ONE_VALUE),
+        ("cursor_unfocused_hollow value=true", ONE_VALUE),
+        ("cursor_unfocused_hollow true {}", ONE_VALUE),
+    ] {
+        let input = format!("terminal {{ padding 4; {bad}; opacity 0.5; }}");
+        let ConfigError::KdlError(error) = Config::from_kdl(&input, None).unwrap_err() else {
+            panic!("{input}: expected KdlError");
+        };
+        assert_eq!(error.error_message, expected, "{input}");
+        let offset = error.offset.unwrap();
+        let span = &input[offset..offset + error.len.unwrap()];
+        assert!(
+            span.contains("cursor_unfocused_hollow") && !span.starts_with("terminal"),
+            "{input}: span {span:?}"
+        );
+    }
+    // The duplicate is reported at the second node.
+    let input = "terminal { cursor_unfocused_hollow true; cursor_unfocused_hollow false; }";
+    let ConfigError::KdlError(error) = Config::from_kdl(input, None).unwrap_err() else {
+        panic!("expected KdlError");
+    };
+    assert_eq!(
+        error.error_message,
+        "duplicate terminal setting cursor_unfocused_hollow"
+    );
+    assert!(input[error.offset.unwrap()..].starts_with("cursor_unfocused_hollow false"));
 }
 
 const PADDING_KEYS: [&str; 5] = [
