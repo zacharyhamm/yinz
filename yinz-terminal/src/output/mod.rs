@@ -13,9 +13,11 @@ use crate::{
     panes::kitty_graphics::store::{InternalImageId, KittyImageStore, ScaledImageKey},
     panes::sixel::SixelImageStore,
     panes::terminal_character::{AnsiCode, CharacterStyles, RcCharacterStyles},
+    panes::{grapheme_join, RESET_STYLES},
     panes::{LinkHandler, PaneId, TerminalCharacter, DEFAULT_STYLES, EMPTY_TERMINAL_CHARACTER},
     ClientId,
 };
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -49,6 +51,107 @@ fn vte_goto_instruction(x_coords: usize, y_coords: usize, vte_output: &mut Strin
 
 fn vte_hide_cursor_instruction(vte_output: &mut String) -> Result<()> {
     write!(vte_output, "\u{1b}[?25l").context("failed to execute VTE instruction to hide cursor")
+}
+
+/// How a chunk's cells are laid out before serializing: the cells, with any width-0 entries
+/// folded into the glyph before them, and whether they might form units other than one cell
+/// each.
+///
+/// UI text (pane tabs, notifications, modals) and the translucency compositor build chunks with
+/// one cell per `char`, so a combining mark or joiner arrives as its own width-0 cell, while the
+/// grid attaches such code points to their cell. Both serializers lay out units over the folded
+/// form, so both sources group and cluster the same way. A width-0 entry with no glyph before it
+/// in the chunk is kept as it is. One pass decides both things for plain text, which is
+/// borrowed unchanged.
+pub(crate) fn chunk_units(cells: &[TerminalCharacter]) -> (Cow<'_, [TerminalCharacter]>, bool) {
+    let mut zero_width = false;
+    let mut may_group = false;
+    for cell in cells {
+        zero_width |= cell.width() == 0;
+        may_group |=
+            cell.has_attached() || grapheme_join::new_cell_may_join_a_neighbour(cell.character);
+    }
+    if !zero_width {
+        return (Cow::Borrowed(cells), may_group);
+    }
+    let mut folded: Vec<TerminalCharacter> = Vec::with_capacity(cells.len());
+    for cell in cells {
+        if cell.width() == 0
+            && let Some(glyph) = folded.last_mut().filter(|glyph| glyph.width() > 0)
+        {
+            let mut text = String::new();
+            cell.push_text_to(&mut text);
+            for c in text.chars() {
+                if !glyph.attach(c) {
+                    break;
+                }
+            }
+            continue;
+        }
+        folded.push(cell.clone());
+    }
+    (Cow::Owned(folded), true)
+}
+
+fn push_decimal(out: &mut String, value: usize) {
+    let _ = write!(out, "{value}");
+}
+
+/// Writes one unit (a cell, or a group of cells forming one cluster) to a host terminal.
+///
+/// We know how many columns the unit occupies in our grid (`unit_columns`), but not how many
+/// the host terminal will use to draw its text: hosts disagree on emoji sequences, flags,
+/// skin tones, VS16 and combining marks, and a host without mode 2027 may draw a family emoji
+/// six columns wide where our grid has two. If the host's idea of the width differs from ours,
+/// its cursor ends up somewhere else and everything after the unit on that row is shifted.
+///
+/// So for units where that can happen (`prepared.complex`, decided in `prepare_unit`), and for
+/// every piece of a cluster that a style, selection or group cap split (`split`), which a host
+/// joining graphemes draws as one narrower glyph:
+///
+/// - `ESC[nX` erases our n columns first, so nothing old is left showing in them even if the
+///   host draws the text narrower than we think;
+/// - the text draws the cluster, at whatever width the host chooses;
+/// - `ESC[<row>;<col>H` moves the cursor to the column right after the unit by absolute
+///   position, so the rest of the row lands where our grid says regardless of how far the
+///   host's cursor actually moved. Zellij uses CHA here; a CUP is what
+///   [`Presentation::present`] translates for centered clients. It carries no SGR reset, so the
+///   style state the serializer tracks stays valid.
+///
+/// Plain text, where every width agrees, is written as is so ordinary output costs nothing
+/// extra.
+fn write_unit_text(
+    vte_output: &mut String,
+    text: &mut String,
+    unit: &[TerminalCharacter],
+    unit_columns: usize,
+    column: usize,
+    row: usize,
+    split: bool,
+) {
+    let (_, complex) = grapheme_join::prepare_unit_into(unit, unit_columns, text);
+    if complex || split {
+        vte_output.push_str("\u{1b}[");
+        push_decimal(vte_output, unit_columns);
+        vte_output.push('X');
+        vte_output.push_str(text);
+        vte_output.push_str("\u{1b}[");
+        push_decimal(vte_output, row + 1);
+        vte_output.push(';');
+        push_decimal(vte_output, column + unit_columns + 1);
+        vte_output.push('H');
+    } else {
+        vte_output.push_str(text);
+    }
+}
+
+/// The style of the blanks written where a unit does not fit before a client's right edge: the
+/// clipped unit's background and nothing else. Built from [`RESET_STYLES`] so that the diff
+/// against the previous cell resets its attributes and closes its hyperlink.
+fn edge_fill_styles(clipped: &CharacterStyles, styled_underlines: bool) -> CharacterStyles {
+    RESET_STYLES
+        .background(clipped.background.or(Some(AnsiCode::Reset)))
+        .enable_styled_underlines(styled_underlines)
 }
 
 /// A selection region with associated styling for highlights and text selection.
@@ -259,7 +362,8 @@ fn serialize_chunks_with_newlines(
             )
             .with_context(err_context)?;
             chunk_width += t_character.width();
-            vte_output.push(t_character.character);
+            // The destination grid re-attaches the marks, so no erase or cursor move.
+            t_character.push_text_to(&mut vte_output);
             if t_character.is_implicit_blank() {
                 // Printing handles wrapping at the replay width; the marker only restores
                 // provenance, leaving the cursor and styles untouched.
@@ -294,6 +398,7 @@ fn serialize_chunks(
     // client sees. Blank them instead; the placeholder is width 1, so the row still lines up.
     let suppress_kitty_placeholders = kitty_input.is_none();
     let link_handler = link_handler.map(|handler| handler.borrow());
+    let mut unit_text = String::new();
     for character_chunk in character_chunks {
         // Skip chunks that are completely outside the size bounds
         if let Some(size) = max_size {
@@ -311,35 +416,148 @@ fn serialize_chunks(
         let mut character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
         vte_goto_instruction(character_chunk.x, character_chunk.y, vte_output)
             .with_context(err_context)?;
+        let (folded, grouped) = chunk_units(&character_chunk.terminal_characters);
+        let cells: &[TerminalCharacter] = &folded;
+        let styles_at = |cell: &TerminalCharacter, column: usize| {
+            adjust_styles_for_custom_bg_fg(
+                adjust_styles_for_possible_selection(
+                    character_chunk.selection_and_colors(),
+                    character_chunk.application_styles(*cell.styles),
+                    character_chunk.y,
+                    column,
+                ),
+                pane_default_fg,
+                pane_default_bg,
+            )
+        };
+        // Blank the visible columns a unit that does not fit would have started in, so the
+        // client's edge does not keep stale text.
+        let fill_edge = |vte_output: &mut String,
+                         character_styles: &mut CharacterStyles,
+                         clipped: &TerminalCharacter,
+                         column: usize,
+                         cols: usize|
+         -> Result<()> {
+            if column >= cols {
+                return Ok(());
+            }
+            write_changed_styles(
+                character_styles,
+                edge_fill_styles(&styles_at(clipped, column), styled_underlines),
+                chunk_changed_colors,
+                link_handler.as_ref(),
+                osc8_hyperlinks,
+                vte_output,
+            )?;
+            vte_output.extend(std::iter::repeat_n(' ', cols - column));
+            Ok(())
+        };
         let mut chunk_width = character_chunk.x;
-        // Selections vary by column; everything else that adjusts a cell's style is fixed
-        // for the chunk. Without them, a cell sharing the previous cell's styles needs no SGR.
+        if !grouped {
+            // Selections vary by column; everything else that adjusts a cell's style is fixed
+            // for the chunk. Without them, a cell sharing the previous cell's styles needs no
+            // SGR.
+            let has_selections = !character_chunk.selection_and_colors().is_empty();
+            let mut previous_styles: Option<&RcCharacterStyles> = None;
+            for t_character in cells.iter() {
+                // Stop rendering if the next character would exceed max_size.cols
+                if let Some(size) = max_size
+                    && chunk_width + t_character.width() > size.cols
+                {
+                    fill_edge(
+                        vte_output,
+                        &mut character_styles,
+                        t_character,
+                        chunk_width,
+                        size.cols,
+                    )
+                    .with_context(err_context)?;
+                    break; // Stop rendering this chunk
+                }
+
+                let styles_unchanged = !has_selections
+                    && previous_styles.is_some_and(|previous| previous.ptr_eq(&t_character.styles));
+                if !styles_unchanged {
+                    write_changed_styles(
+                        &mut character_styles,
+                        styles_at(t_character, chunk_width),
+                        chunk_changed_colors,
+                        link_handler.as_ref(),
+                        osc8_hyperlinks,
+                        vte_output,
+                    )
+                    .with_context(err_context)?;
+                }
+                previous_styles = Some(&t_character.styles);
+                chunk_width += t_character.width();
+                if suppress_kitty_placeholders && t_character.character == PLACEHOLDER {
+                    vte_output.push(' ');
+                } else {
+                    vte_output.push(t_character.character);
+                }
+            }
+            continue;
+        }
+        let column_starts: Vec<usize> = cells
+            .iter()
+            .scan(character_chunk.x, |column, cell| {
+                let start = *column;
+                *column += cell.width();
+                Some(start)
+            })
+            .collect();
+        // As in the plain loop: without selections, a unit whose first cell shares the
+        // previous unit's styles allocation needs no SGR. Members of one unit have equal
+        // adjusted styles, so the last member stands for the unit.
         let has_selections = !character_chunk.selection_and_colors().is_empty();
         let mut previous_styles: Option<&RcCharacterStyles> = None;
-        for t_character in character_chunk.terminal_characters.iter() {
-            // Stop rendering if the next character would exceed max_size.cols
-            if let Some(size) = max_size
-                && chunk_width + t_character.width() > size.cols
-            {
-                break; // Stop rendering this chunk
+        let mut index = 0;
+        let mut previous_cut = false;
+        while index < cells.len() {
+            let t_character = &cells[index];
+            if t_character.width() == 0 {
+                previous_styles = None;
+                // A width-0 entry with no glyph before it in the chunk, written as before.
+                write_changed_styles(
+                    &mut character_styles,
+                    styles_at(t_character, chunk_width),
+                    chunk_changed_colors,
+                    link_handler.as_ref(),
+                    osc8_hyperlinks,
+                    vte_output,
+                )
+                .with_context(err_context)?;
+                t_character.push_text_to(vte_output);
+                index += 1;
+                continue;
             }
-
+            let group = grapheme_join::group_end(cells, index, |previous, next| {
+                (!has_selections && cells[previous].styles.ptr_eq(&cells[next].styles))
+                    || styles_at(&cells[previous], column_starts[previous])
+                        == styles_at(&cells[next], column_starts[next])
+            });
+            let unit = &cells[index..group.end];
+            let unit_columns: usize = unit.iter().map(|c| c.width()).sum();
+            // Clipping breaks per whole unit: a cluster is never cut at the edge.
+            if let Some(size) = max_size
+                && chunk_width + unit_columns > size.cols
+            {
+                fill_edge(
+                    vte_output,
+                    &mut character_styles,
+                    t_character,
+                    chunk_width,
+                    size.cols,
+                )
+                .with_context(err_context)?;
+                break;
+            }
             let styles_unchanged = !has_selections
                 && previous_styles.is_some_and(|previous| previous.ptr_eq(&t_character.styles));
             if !styles_unchanged {
-                let current_character_styles = adjust_styles_for_custom_bg_fg(
-                    adjust_styles_for_possible_selection(
-                        character_chunk.selection_and_colors(),
-                        character_chunk.application_styles(*t_character.styles),
-                        character_chunk.y,
-                        chunk_width,
-                    ),
-                    pane_default_fg,
-                    pane_default_bg,
-                );
                 write_changed_styles(
                     &mut character_styles,
-                    current_character_styles,
+                    styles_at(t_character, chunk_width),
                     chunk_changed_colors,
                     link_handler.as_ref(),
                     osc8_hyperlinks,
@@ -347,13 +565,28 @@ fn serialize_chunks(
                 )
                 .with_context(err_context)?;
             }
-            previous_styles = Some(&t_character.styles);
-            chunk_width += t_character.width();
+            previous_styles = unit.last().map(|member| &member.styles);
+            // A piece next to a cut inside a cluster is written as a complex unit, so a host
+            // that joins the pieces into one glyph still puts later cells on their columns.
+            let split = group.cut_inside_cluster || previous_cut;
             if suppress_kitty_placeholders && t_character.character == PLACEHOLDER {
                 vte_output.push(' ');
-            } else {
+            } else if unit.len() == 1 && !t_character.has_attached() && !split {
                 vte_output.push(t_character.character);
+            } else {
+                write_unit_text(
+                    vte_output,
+                    &mut unit_text,
+                    unit,
+                    unit_columns,
+                    chunk_width,
+                    character_chunk.y,
+                    split,
+                );
             }
+            previous_cut = group.cut_inside_cluster;
+            chunk_width += unit_columns;
+            index = group.end;
         }
     }
     if let Some(sixel_image_store) = sixel_image_store

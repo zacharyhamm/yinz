@@ -55,6 +55,11 @@ impl Presentation {
     /// Translate the renderer's absolute cursor commands, leaving string control payloads
     /// (OSC, DCS and APC, including graphics and hyperlinks) opaque. Relative movements
     /// and saved cursors already operate in the translated coordinate system.
+    ///
+    /// Only CUP/HVP are translated. The serializer's only absolute cursor moves are CUPs: at
+    /// each chunk start and after each complex cluster unit (ECH, which precedes such a unit,
+    /// is relative). An absolute column move such as CHA or HPA added to the serializer would
+    /// bypass this translation, so it must be handled here too.
     pub fn present(self, source: String) -> String {
         if self.terminal.cols <= self.content.cols && self.terminal.rows <= self.content.rows {
             return source;

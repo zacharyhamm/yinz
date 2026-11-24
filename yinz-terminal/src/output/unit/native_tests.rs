@@ -1,5 +1,7 @@
 use super::super::*;
-use yinz_types::structured_render::{decode, WireColor, ATTR_BOLD, ATTR_THEME_BACKGROUND};
+use yinz_types::structured_render::{
+    decode, WireCell, WireColor, ATTR_BOLD, ATTR_THEME_BACKGROUND,
+};
 
 #[test]
 fn native_palette_overrides_apply_to_all_cell_colors() {
@@ -488,13 +490,66 @@ fn native_cursor_requests_preserve_default_and_explicit_styles() {
     }
 }
 
+/// A receiver's view of hyperlinks, as the native consumer keeps it: the table merged from each
+/// frame's entries and cleared only by a full repaint, and the ID each cell shows. Tests resolve
+/// URIs through it rather than reading a frame's entries, so a missed fresh entry fails them.
+struct LinkConsumer {
+    cols: usize,
+    links: HashMap<u8, String>,
+    cells: Vec<u8>,
+}
+
+impl LinkConsumer {
+    fn new(cols: usize, rows: usize) -> Self {
+        Self {
+            cols,
+            links: HashMap::new(),
+            cells: vec![0; cols * rows],
+        }
+    }
+
+    /// Apply a frame; returns how many link entries it carried.
+    fn apply(&mut self, bytes: &[u8]) -> usize {
+        let frame = decode(bytes).unwrap();
+        if frame.header().full_repaint() {
+            self.links.clear();
+        }
+        if frame.header().full_repaint() || frame.header().clear() {
+            self.cells.fill(0);
+        }
+        let entries = frame.links().entries;
+        let carried = entries.len();
+        for entry in entries {
+            self.links.insert(entry.id, entry.uri);
+        }
+        for (record, cells) in frame.rows() {
+            let start = record.y as usize * self.cols + record.x0 as usize;
+            for (offset, cell) in cells.iter().enumerate() {
+                self.cells[start + offset] = cell.link;
+            }
+        }
+        carried
+    }
+
+    fn uri_at(&self, x: usize, y: usize) -> Option<&str> {
+        let id = self.cells[y * self.cols + x];
+        (id != 0).then(|| {
+            self.links
+                .get(&id)
+                .unwrap_or_else(|| panic!("cell ({x}, {y}) shows ID {id} with no entry"))
+                .as_str()
+        })
+    }
+}
+
 #[test]
-fn native_hyperlink_ids_are_reclaimed_on_full_repaint_and_stable_in_deltas() {
+fn native_hyperlink_ids_are_reclaimed_on_full_repaint_and_deltas_carry_only_fresh_entries() {
     let client = ClientId::new(1);
     let handler = Rc::new(RefCell::new(LinkHandler::new()));
     let mut output = Output::default();
     output.add_clients(&HashSet::from([client]), handler.clone(), None);
     let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let mut consumer = LinkConsumer::new(120, 40);
     let mut last_anchor = None;
     // Each repaint starts a new table, even after more than 255 lifetime URIs.
     for index in 0..300 {
@@ -517,13 +572,14 @@ fn native_hyperlink_ids_are_reclaimed_on_full_repaint_and_stable_in_deltas() {
         let frame = decode(&frames[&client]).unwrap();
         assert!(frame.header().full_repaint());
         assert_eq!(frame.rows().next().unwrap().1[0].link, 1);
-        assert_eq!(frame.links().entries.len(), 1);
-        assert_eq!(frame.links().entries[0].uri, uri);
+        assert_eq!(consumer.apply(&frames[&client]), 1);
+        assert_eq!(consumer.uri_at(0, 0), Some(uri.as_str()));
     }
     let new_anchor = handler
         .borrow_mut()
         .new_link_from_url("https://example.com/new".into());
-    for (anchor, expected_id) in [(new_anchor, 2), (last_anchor.unwrap(), 1)] {
+    // A new identity sends its entry once; a known one sends nothing.
+    for (anchor, expected_id, carried) in [(new_anchor, 2, 1), (last_anchor.unwrap(), 1, 0)] {
         let character = TerminalCharacter::new_styled(
             'y',
             CharacterStyles {
@@ -539,9 +595,17 @@ fn native_hyperlink_ids_are_reclaimed_on_full_repaint_and_stable_in_deltas() {
         let frame = decode(&frames[&client]).unwrap();
         assert!(!frame.header().full_repaint());
         assert_eq!(frame.rows().next().unwrap().1[0].link, expected_id);
-        assert_eq!(frame.links().entries.len(), 2);
-        assert_eq!(frame.links().entries[0].uri, "https://example.com/299");
+        assert_eq!(consumer.apply(&frames[&client]), carried);
+        assert_eq!(consumer.uri_at(0, 0), Some("https://example.com/299"));
     }
+    assert_eq!(consumer.uri_at(1, 0), Some("https://example.com/299"));
+    // A delta with no links carries no link record at all.
+    output.client_character_chunks.insert(
+        client,
+        vec![CharacterChunk::new(vec![TerminalCharacter::new('z')], 5, 0)],
+    );
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    assert_eq!(consumer.apply(&frames[&client]), 0);
 }
 
 #[test]
@@ -614,12 +678,13 @@ fn native_hyperlinks_reuse_ids_after_delta_replacements() {
     let mut output = Output::default();
     output.add_clients(&HashSet::from([client]), handler.clone(), None);
     let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let mut consumer = LinkConsumer::new(120, 40);
     let retained = linked_character(&mut handler.borrow_mut(), "retained", 'r');
     output
         .client_character_chunks
         .insert(client, vec![CharacterChunk::new(vec![retained], 1, 0)]);
     let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
-    let retained_id = decode(&frames[&client]).unwrap().rows().next().unwrap().1[0].link;
+    consumer.apply(&frames[&client]);
     for index in 0..520 {
         let uri = format!("https://example.com/{index}");
         let character = linked_character(&mut handler.borrow_mut(), &uri, 'x');
@@ -629,27 +694,11 @@ fn native_hyperlinks_reuse_ids_after_delta_replacements() {
         let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
         let frame = decode(&frames[&client]).unwrap();
         assert!(!frame.header().clear());
-        let id = frame.rows().next().unwrap().1[0].link;
-        assert_ne!(id, 0);
-        let links = frame.links();
-        assert_eq!(
-            links
-                .entries
-                .iter()
-                .find(|entry| entry.id == id)
-                .unwrap()
-                .uri,
-            uri
-        );
-        assert_eq!(
-            links
-                .entries
-                .iter()
-                .find(|entry| entry.id == retained_id)
-                .unwrap()
-                .uri,
-            "retained"
-        );
+        assert_ne!(frame.rows().next().unwrap().1[0].link, 0);
+        // Only the new or retargeted ID travels, never the whole table.
+        assert_eq!(consumer.apply(&frames[&client]), 1);
+        assert_eq!(consumer.uri_at(0, 0), Some(uri.as_str()));
+        assert_eq!(consumer.uri_at(1, 0), Some("retained"));
     }
 }
 
@@ -661,6 +710,7 @@ fn native_hyperlink_capacity_tracks_wide_cells_and_plain_overwrites() {
     output.add_clients(&HashSet::from([client]), handler.clone(), None);
     let mut states = HashMap::from([(client, NativeRenderState::default())]);
     let sizes = HashMap::from([(client, Size { cols: 258, rows: 1 })]);
+    let mut consumer = LinkConsumer::new(258, 1);
     let mut characters = vec![linked_character(&mut handler.borrow_mut(), "wide", '界')];
     for index in 1..255 {
         characters.push(linked_character(
@@ -672,9 +722,10 @@ fn native_hyperlink_capacity_tracks_wide_cells_and_plain_overwrites() {
     output
         .client_character_chunks
         .insert(client, vec![CharacterChunk::new(characters, 0, 0)]);
-    output.serialize_native(&mut states, &sizes, &HashMap::new());
+    let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
+    consumer.apply(&frames[&client]);
     // Replacing only the leading cell must leave the continuation's ID reserved.
-    for (col, expected) in [(0, 0), (1, 1)] {
+    for (col, expected) in [(0, None), (1, Some("new"))] {
         let new = linked_character(&mut handler.borrow_mut(), "new", 'n');
         output.client_character_chunks.insert(
             client,
@@ -684,29 +735,15 @@ fn native_hyperlink_capacity_tracks_wide_cells_and_plain_overwrites() {
             ],
         );
         let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
-        let frame = decode(&frames[&client]).unwrap();
-        assert_eq!(frame.rows().next().unwrap().1[0].link, expected);
-        let links = frame.links();
-        assert_eq!(
-            links
-                .entries
-                .iter()
-                .find(|entry| entry.id == 1)
-                .unwrap()
-                .uri,
-            if expected == 0 { "wide" } else { "new" }
-        );
-        assert_eq!(
-            links
-                .entries
-                .iter()
-                .find(|entry| entry.id == 255)
-                .unwrap()
-                .uri,
-            "link/254"
-        );
+        consumer.apply(&frames[&client]);
+        assert_eq!(consumer.uri_at(256, 0), expected);
+        if expected.is_none() {
+            assert_eq!(consumer.uri_at(1, 0), Some("wide"));
+        }
+        assert_eq!(consumer.uri_at(255, 0), Some("link/254"));
     }
-    // A clipped wide character cannot allocate another ID in the full table.
+    // A clipped wide character cannot allocate another ID in the full table. Its visible
+    // column is blanked without a link.
     let clipped = linked_character(&mut handler.borrow_mut(), "clipped", '界');
     let new = linked_character(&mut handler.borrow_mut(), "overflow", 'o');
     output.client_character_chunks.insert(
@@ -718,7 +755,12 @@ fn native_hyperlink_capacity_tracks_wide_cells_and_plain_overwrites() {
     );
     let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
     let frame = decode(&frames[&client]).unwrap();
+    let (_, fill) = frame.rows().next().unwrap();
+    assert_eq!((fill.len(), fill[0].ch, fill[0].link), (1, ' ' as u32, 0));
     assert_eq!(frame.rows().last().unwrap().1[0].link, 0);
+    consumer.apply(&frames[&client]);
+    assert_eq!(consumer.uri_at(257, 0), None);
+    assert_eq!(consumer.uri_at(256, 0), Some("new"));
 }
 
 #[test]
@@ -744,17 +786,16 @@ fn native_hyperlink_reuse_pins_all_rows_emitted_in_the_frame() {
     output.client_character_chunks.insert(client, chunks);
     let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
     let frame = decode(&frames[&client]).unwrap();
-    let links = frame.links();
+    let mut consumer = LinkConsumer::new(120, 40);
+    consumer.apply(&frames[&client]);
     for (index, (_, cells)) in frame.rows().enumerate() {
         if index == 255 {
             assert_eq!(cells[0].link, 0);
         } else {
-            let entry = links
-                .entries
-                .iter()
-                .find(|entry| entry.id == cells[0].link)
-                .unwrap();
-            assert_eq!(entry.uri, format!("link/{index}"));
+            // Every row's ID still names its own URI after the frame: reuse never retargets
+            // an ID a row earlier in the same frame emitted.
+            let uri = format!("link/{index}");
+            assert_eq!(consumer.links.get(&cells[0].link), Some(&uri));
         }
     }
     let new = linked_character(&mut handler.borrow_mut(), "next", 'n');
@@ -923,4 +964,248 @@ fn render_negotiation_simultaneous_shared_portable_text_and_ansi_output() {
             assert!(view.geometry().is_none());
         }
     }
+}
+
+/// Cells as the grid stores them: zero-width code points attached to the cell before them.
+fn grid_cells(text: &str) -> Vec<TerminalCharacter> {
+    let mut cells: Vec<TerminalCharacter> = Vec::new();
+    for c in text.chars() {
+        let cell = TerminalCharacter::new(c);
+        match cells.last_mut() {
+            Some(last) if cell.width() == 0 => assert!(last.attach(c)),
+            _ => cells.push(cell),
+        }
+    }
+    cells
+}
+
+/// Cells as UI chrome builds them (pane_tabs::bar_cells): one per `char`, width-0 included.
+fn ui_cells(text: &str) -> Vec<TerminalCharacter> {
+    text.chars().map(TerminalCharacter::new).collect()
+}
+
+fn native_row(cells: Vec<TerminalCharacter>, size: Size) -> (Vec<WireCell>, Vec<String>) {
+    let client = ClientId::new(1);
+    let mut output = Output::default();
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(cells, 0, 0)]);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let sizes = HashMap::from([(client, size)]);
+    let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let clusters = frame.clusters();
+    let (_, row) = frame.rows().next().unwrap();
+    let texts = row
+        .iter()
+        .map(|cell| match cell.cluster_id() {
+            Some(id) => clusters.get(id).unwrap().to_owned(),
+            None => cell.character().to_string(),
+        })
+        .collect();
+    (row, texts)
+}
+
+const FAMILY: &str = "\u{1F469}\u{200D}\u{1F467}";
+const WIDE: Size = Size { cols: 40, rows: 2 };
+
+#[test]
+fn native_frames_carry_cluster_texts_and_group_continuations() {
+    let (row, texts) = native_row(grid_cells(&format!("ae\u{301}{FAMILY}b")), WIDE);
+    assert_eq!(
+        texts,
+        [
+            "a",
+            "e\u{301}",
+            "\u{1F469}\u{200D}",
+            " ",
+            "\u{1F467}",
+            " ",
+            "b"
+        ]
+    );
+    let continues: Vec<bool> = row
+        .iter()
+        .map(|cell| cell.is_group_continuation())
+        .collect();
+    assert_eq!(continues, [false, false, false, false, true, false, false]);
+    assert!(row[1].cluster_id().is_some());
+    assert_eq!(row[2].width, 2);
+    assert_eq!(row[3].width, 1);
+}
+
+#[test]
+fn ui_chunks_with_width_zero_entries_fold_like_grid_cells() {
+    let label = "界e\u{301}\u{1F469}\u{200D}\u{1F4BB}";
+    assert_eq!(
+        native_row(ui_cells(label), WIDE),
+        native_row(grid_cells(label), WIDE)
+    );
+    // A leading width-0 entry has nothing to join and is dropped, as before.
+    let (_, texts) = native_row(ui_cells("\u{301}x"), WIDE);
+    assert_eq!(texts, ["x"]);
+}
+
+#[test]
+fn narrow_vs16_cells_drop_the_selector_and_flags_group() {
+    let (row, texts) = native_row(grid_cells("\u{26A0}\u{FE0F}\u{1F1E9}\u{1F1EA}"), WIDE);
+    assert_eq!(texts, ["\u{26A0}", "\u{1F1E9}", "\u{1F1EA}"]);
+    assert!(row[0].cluster_id().is_none());
+    assert!(row[2].is_group_continuation());
+}
+
+#[test]
+fn styles_split_groups_and_selections_style_every_member() {
+    let mut cells = grid_cells(FAMILY);
+    cells[1].styles = CharacterStyles {
+        bold: Some(AnsiCode::On),
+        ..DEFAULT_STYLES
+    }
+    .into();
+    let (row, _) = native_row(cells, WIDE);
+    assert!(
+        !row[2].is_group_continuation(),
+        "a style change ends the group"
+    );
+    assert_eq!(row[2].attrs & ATTR_BOLD, ATTR_BOLD);
+}
+
+#[test]
+fn a_full_cluster_record_falls_back_to_the_first_code_point() {
+    // Distinct 61-byte clusters in every wide cell exceed the 1 MiB per-frame record.
+    let size = Size {
+        cols: 300,
+        rows: 120,
+    };
+    let client = ClientId::new(1);
+    let mut output = Output::default();
+    let mut base = 0x4E00;
+    let chunks = (0..size.rows)
+        .map(|y| {
+            let cells = (0..size.cols / 2)
+                .map(|_| {
+                    let mut cell = TerminalCharacter::new(char::from_u32(base).unwrap());
+                    base += 1;
+                    for mark in 0..29 {
+                        assert!(cell.attach(char::from_u32(0x300 + mark).unwrap()));
+                    }
+                    cell
+                })
+                .collect();
+            CharacterChunk::new(cells, 0, y)
+        })
+        .collect();
+    output.client_character_chunks.insert(client, chunks);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let sizes = HashMap::from([(client, size)]);
+    let frames = output.serialize_native(&mut states, &sizes, &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let rows: Vec<_> = frame.rows().collect();
+    let first = &rows[0].1[0];
+    assert!(first.cluster_id().is_some());
+    let last = &rows.last().unwrap().1[0];
+    assert!(
+        last.cluster_id().is_none(),
+        "the record is full by the last row"
+    );
+    assert_eq!(
+        last.character(),
+        char::from_u32(base - (size.cols / 2) as u32).unwrap()
+    );
+}
+
+#[test]
+fn a_unit_that_does_not_fit_blanks_the_visible_edge() {
+    let (row, texts) = native_row(grid_cells(&format!("a{FAMILY}")), Size { cols: 4, rows: 1 });
+    assert_eq!(texts, ["a", " ", " ", " "]);
+    assert!(row[1..]
+        .iter()
+        .all(|cell| cell.link == 0 && cell.width == 1));
+    assert!(row.iter().all(|cell| !cell.is_group_continuation()));
+}
+
+#[test]
+fn explicit_osc8_ids_distinguish_links_to_one_uri() {
+    let client = ClientId::new(1);
+    let handler = Rc::new(RefCell::new(LinkHandler::new()));
+    let mut output = Output::default();
+    output.add_clients(&HashSet::from([client]), handler.clone(), None);
+    let anchors = {
+        let mut links = handler.borrow_mut();
+        [
+            links.dispatch_osc8(&[b"8", b"id=a", b"https://same"]),
+            links.dispatch_osc8(&[b"8", b"id=b", b"https://same"]),
+            links.dispatch_osc8(&[b"8", b"", b"https://same"]),
+            Some(links.new_link_from_url("https://same".into())),
+            links.dispatch_osc8(&[b"8", b"id=a", b"https://same"]),
+        ]
+    };
+    let cells = anchors
+        .iter()
+        .map(|anchor| {
+            TerminalCharacter::new_styled(
+                'x',
+                CharacterStyles {
+                    link_anchor: *anchor,
+                    ..DEFAULT_STYLES
+                }
+                .into(),
+            )
+        })
+        .collect();
+    output
+        .client_character_chunks
+        .insert(client, vec![CharacterChunk::new(cells, 0, 0)]);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    let frame = decode(&frames[&client]).unwrap();
+    let ids: Vec<u8> = frame
+        .rows()
+        .next()
+        .unwrap()
+        .1
+        .iter()
+        .map(|c| c.link)
+        .collect();
+    assert_eq!(ids, [1, 2, 3, 3, 1]);
+    let mut consumer = LinkConsumer::new(120, 40);
+    consumer.apply(&frames[&client]);
+    assert!((0..5).all(|x| consumer.uri_at(x, 0) == Some("https://same")));
+}
+
+// Ported from Zellij's a_watcher_frame_carries_cluster_texts_and_group_continuations
+// (output_tests.rs:3110, c8585459). Yinz's native producer serves watchers and viewers
+// alike, so the frame comes from `serialize_native`.
+#[test]
+fn a_watcher_frame_carries_cluster_texts_and_group_continuations() {
+    let cells_of = |parts: &[(&str, usize)]| -> Vec<TerminalCharacter> {
+        parts
+            .iter()
+            .map(|(text, width)| TerminalCharacter::from_cluster(text, *width, Default::default()))
+            .collect()
+    };
+    let mut cells = cells_of(&[
+        ("\u{1F468}\u{200D}", 2),
+        ("\u{1F469}\u{200D}", 2),
+        ("\u{1F467}", 2),
+    ]);
+    cells.extend(cells_of(&[
+        ("\u{26A0}\u{FE0F}", 1),
+        ("e\u{0301}", 1),
+        ("\u{17D8}", 3),
+        ("z", 1),
+    ]));
+    let (row, texts) = native_row(cells, Size { cols: 20, rows: 3 });
+    let continuation: Vec<bool> = row.iter().map(|c| c.is_group_continuation()).collect();
+    assert_eq!(
+        continuation[..12].to_vec(),
+        vec![false, false, true, false, true, false, false, false, false, false, false, false]
+    );
+    assert_eq!(texts[0], "\u{1F468}\u{200D}");
+    assert_eq!(texts[2], "\u{1F469}\u{200D}");
+    assert_eq!(texts[4], "\u{1F467}");
+    assert_eq!(texts[6], "\u{26A0}");
+    assert_eq!(texts[7], "e\u{0301}");
+    assert_eq!(row[8].width, 3);
+    assert_eq!(texts[11], "z");
 }

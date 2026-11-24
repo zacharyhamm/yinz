@@ -13,6 +13,18 @@ pub struct LinkHandler {
 pub struct Link {
     pub id: Option<String>,
     pub uri: String,
+    /// The program supplied `id` through OSC 8's `id=` parameter, rather than it being a
+    /// synthetic id given to a detected URL. Older migrated tables read as synthetic.
+    #[serde(default)]
+    pub explicit_id: bool,
+}
+
+/// What makes two hyperlinks the same link for native viewers: the program's explicit OSC 8
+/// `id=` together with the URI, or the URI alone when the program gave no id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LinkIdentity<'a> {
+    pub id: Option<&'a str>,
+    pub uri: &'a str,
 }
 
 impl LinkHandler {
@@ -66,7 +78,12 @@ impl LinkHandler {
                     .split(|&b| b == b':')
                     .find(|kv| kv.starts_with(b"id="))
                     .and_then(|kv| String::from_utf8(kv[3..].to_vec()).ok());
-                self.insert_link(Link { id, uri })
+                let explicit_id = id.is_some();
+                self.insert_link(Link {
+                    id,
+                    uri,
+                    explicit_id,
+                })
             })
         } else {
             // there is no link, so consider it a link end
@@ -78,6 +95,7 @@ impl LinkHandler {
         self.insert_link(Link {
             id: Some(self.links.len().to_string()),
             uri: url,
+            explicit_id: false,
         })
     }
 
@@ -99,6 +117,17 @@ impl LinkHandler {
             LinkAnchor::Start(index) => {
                 self.links.get(index as usize).map(|link| link.uri.as_str())
             },
+            LinkAnchor::End => None,
+        }
+    }
+
+    /// The identity native viewers key their hyperlink IDs by. See [`LinkIdentity`].
+    pub fn identity(&self, anchor: Option<LinkAnchor>) -> Option<LinkIdentity<'_>> {
+        match anchor? {
+            LinkAnchor::Start(index) => self.links.get(index as usize).map(|link| LinkIdentity {
+                id: link.id.as_deref().filter(|_| link.explicit_id),
+                uri: link.uri.as_str(),
+            }),
             LinkAnchor::End => None,
         }
     }

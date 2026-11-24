@@ -3360,3 +3360,466 @@ fn overlay_kitty_notifications_clip_and_reconcile_each_clients_retained_fragment
         }
     }
 }
+
+/// Cluster units on ANSI hosts. The fixtures are ported from Zellij's output_tests.rs
+/// (c8585459) and adapted to the lazy group scan (Yinz has no `may_have_groups` flag) and to
+/// the absolute CUP Yinz writes after a complex unit instead of Zellij's CHA, which
+/// `Presentation::present` translates for centered clients.
+mod clusters {
+    use super::super::super::{serialize_chunks, HighlightSelection, Presentation};
+    use super::*;
+    use crate::panes::terminal_character::{CharacterStyles, RcCharacterStyles, DEFAULT_STYLES};
+    use crate::panes::{Grid, Selection};
+    use yinz_types::data::{HighlightLayer, PaletteColor};
+    use yinz_types::position::Position;
+    use yinz_types::style::{Palette, Style};
+
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+    fn cells_of(parts: &[(&str, usize)]) -> Vec<TerminalCharacter> {
+        parts
+            .iter()
+            .map(|(text, width)| TerminalCharacter::from_cluster(text, *width, Default::default()))
+            .collect()
+    }
+
+    fn family_cells() -> Vec<TerminalCharacter> {
+        cells_of(&[
+            ("\u{1F468}\u{200D}", 2),
+            ("\u{1F469}\u{200D}", 2),
+            ("\u{1F467}", 2),
+        ])
+    }
+
+    fn bold() -> RcCharacterStyles {
+        CharacterStyles {
+            bold: Some(AnsiCode::On),
+            ..DEFAULT_STYLES
+        }
+        .into()
+    }
+
+    fn ansi_with(
+        chunk: CharacterChunk,
+        max_size: Option<Size>,
+        handler: Option<&Rc<RefCell<LinkHandler>>>,
+    ) -> String {
+        let mut bytes = String::new();
+        serialize_chunks(
+            &mut bytes,
+            vec![chunk],
+            None,
+            handler,
+            None,
+            true,
+            true,
+            max_size,
+            None,
+        )
+        .unwrap();
+        bytes
+    }
+
+    fn ansi_for(chunk: CharacterChunk, max_size: Option<Size>) -> String {
+        ansi_with(chunk, max_size, None)
+    }
+
+    fn select(chunk: &mut CharacterChunk, start: usize, end: usize) {
+        let mut selection = Selection::default();
+        selection.start(Position::new(0, start as u16));
+        selection.end(Position::new(0, end as u16));
+        chunk.add_selection_and_colors(
+            HighlightSelection {
+                selection,
+                bg: Some(AnsiCode::ColorIndex(4)),
+                fg: Some(AnsiCode::ColorIndex(7)),
+                bold: false,
+                italic: false,
+                underline: false,
+                layer: HighlightLayer::ActionFeedback,
+            },
+            0,
+            0,
+        );
+    }
+
+    fn new_grid(rows: usize, cols: usize) -> Grid {
+        Grid::new(
+            rows,
+            cols,
+            Rc::new(RefCell::new(Palette::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Style::default(),
+            false,
+            true,
+            true,
+            true,
+            false,
+        )
+    }
+
+    /// Each row's cells as (column, text, width), blanks left out.
+    fn layout(grid: &Grid) -> Vec<Vec<(usize, String, usize)>> {
+        grid.viewport
+            .iter()
+            .map(|row| {
+                let mut column = 0;
+                row.columns
+                    .iter()
+                    .filter_map(|cell| {
+                        let entry = (column, cell.text(), cell.width());
+                        column += cell.width();
+                        (entry.1 != " ").then_some(entry)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn no_absolute_column_moves(bytes: &str) {
+        let csi = regex::Regex::new(r"\x1b\[[0-9;]*([G`])").unwrap();
+        assert!(
+            !csi.is_match(bytes),
+            "CHA/HPA bypass presentation: {bytes:?}"
+        );
+    }
+
+    #[test]
+    fn a_plain_ascii_chunk_serializes_exactly_as_before() {
+        let output = ansi_for(create_character_chunk_from_str("abc", 2, 1), None);
+        assert_eq!(output, "\u{1b}[2;3H\u{1b}[mabc");
+    }
+
+    #[test]
+    fn a_cell_with_combining_marks_is_written_without_erase_or_column_moves() {
+        let output = ansi_for(
+            CharacterChunk::new(cells_of(&[("e\u{0301}\u{0302}", 1), ("x", 1)]), 0, 0),
+            None,
+        );
+        assert_eq!(output, "\u{1b}[1;1H\u{1b}[me\u{0301}\u{0302}x");
+    }
+
+    #[test]
+    fn a_warning_sign_with_vs16_depends_on_its_stored_width() {
+        let narrow = ansi_for(
+            CharacterChunk::new(cells_of(&[("\u{26A0}\u{FE0F}", 1)]), 0, 0),
+            None,
+        );
+        assert_eq!(narrow, "\u{1b}[1;1H\u{1b}[m\u{26A0}");
+        let wide = ansi_for(
+            CharacterChunk::new(cells_of(&[("\u{26A0}\u{FE0F}", 2)]), 0, 0),
+            None,
+        );
+        assert_eq!(
+            wide,
+            "\u{1b}[1;1H\u{1b}[m\u{1b}[2X\u{26A0}\u{FE0F}\u{1b}[1;3H"
+        );
+    }
+
+    #[test]
+    fn a_family_group_is_erased_written_and_followed_by_a_cursor_position() {
+        let mut cells = cells_of(&[("a", 1)]);
+        cells.extend(family_cells());
+        cells.extend(cells_of(&[("b", 1)]));
+        let output = ansi_for(CharacterChunk::new(cells, 4, 0), None);
+        assert_eq!(
+            output,
+            format!("\u{1b}[1;5H\u{1b}[ma\u{1b}[6X{}\u{1b}[1;12Hb", FAMILY)
+        );
+        no_absolute_column_moves(&output);
+    }
+
+    #[test]
+    fn skin_tone_flag_and_conjunct_groups_are_complex_units() {
+        for (parts, text, columns) in [
+            (
+                vec![("\u{1F44D}", 2), ("\u{1F3FD}", 2)],
+                "\u{1F44D}\u{1F3FD}",
+                4,
+            ),
+            (
+                vec![("\u{1F1E9}", 1), ("\u{1F1EA}", 1)],
+                "\u{1F1E9}\u{1F1EA}",
+                2,
+            ),
+            (
+                vec![("\u{0915}\u{094D}", 1), ("\u{0937}", 1)],
+                "\u{0915}\u{094D}\u{0937}",
+                2,
+            ),
+        ] {
+            let output = ansi_for(CharacterChunk::new(cells_of(&parts), 0, 0), None);
+            assert_eq!(
+                output,
+                format!(
+                    "\u{1b}[1;1H\u{1b}[m\u{1b}[{}X{}\u{1b}[1;{}H",
+                    columns,
+                    text,
+                    columns + 1
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn plain_rows_never_group() {
+        let output = ansi_for(create_character_chunk_from_str("ab\u{4F60}c", 0, 0), None);
+        assert_eq!(output, "\u{1b}[1;1H\u{1b}[mab\u{4F60}c");
+    }
+
+    // Zellij writes these pieces plainly and only asserts the absence of `ESC[6X`. A host
+    // that joins graphemes ignores the SGR change and draws the pieces as one narrower glyph,
+    // so Yinz writes every piece next to the cut as a complex unit (RP6).
+    #[test]
+    fn cells_with_different_styles_are_not_grouped() {
+        let mut cells = family_cells();
+        cells[1].styles = bold();
+        cells.extend(cells_of(&[("z", 1)]));
+        let output = ansi_for(CharacterChunk::new(cells, 0, 0), None);
+        assert!(!output.contains("\u{1b}[6X"), "output={:?}", output);
+        let first = output
+            .find("\u{1b}[2X\u{1F468}\u{200D}\u{1b}[1;3H")
+            .unwrap();
+        let second = output
+            .find("\u{1b}[2X\u{1F469}\u{200D}\u{1b}[1;5H")
+            .unwrap();
+        let third = output.find("\u{1b}[2X\u{1F467}\u{1b}[1;7H").unwrap();
+        assert!(first < second && second < third, "output={:?}", output);
+        // The cell after the sequence is written after the last piece's cursor position.
+        assert!(output.ends_with("\u{1b}[1;7H\u{1b}[mz") || output.ends_with("\u{1b}[1;7Hz"));
+    }
+
+    #[test]
+    fn a_selection_edge_inside_a_cluster_writes_every_piece_with_a_cursor_position() {
+        let mut cells = family_cells();
+        cells.extend(cells_of(&[("z", 1)]));
+        let mut chunk = CharacterChunk::new(cells, 0, 0);
+        select(&mut chunk, 0, 4);
+        let output = ansi_for(chunk, None);
+        let selected = output
+            .find("\u{1b}[4X\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1b}[1;5H")
+            .unwrap_or_else(|| panic!("output={output:?}"));
+        let rest = output.find("\u{1b}[2X\u{1F467}\u{1b}[1;7H").unwrap();
+        assert!(selected < rest && output.rfind('z').unwrap() > rest);
+    }
+
+    #[test]
+    fn a_skin_tone_pair_split_by_style_or_selection_keeps_its_columns() {
+        let pair = || cells_of(&[("\u{1F44D}", 2), ("\u{1F3FD}", 2), ("z", 1)]);
+        let mut styled = pair();
+        styled[0].styles = bold();
+        let mut selected = CharacterChunk::new(pair(), 0, 0);
+        select(&mut selected, 0, 2);
+        for output in [
+            ansi_for(CharacterChunk::new(styled, 0, 0), None),
+            ansi_for(selected, None),
+        ] {
+            let first = output.find("\u{1b}[2X\u{1F44D}\u{1b}[1;3H").unwrap();
+            let second = output
+                .find("\u{1b}[2X\u{1F3FD}\u{1b}[1;5H")
+                .unwrap_or_else(|| panic!("output={output:?}"));
+            assert!(first < second && output.rfind('z').unwrap() > second);
+            no_absolute_column_moves(&output);
+        }
+    }
+
+    #[test]
+    fn a_group_with_its_middle_overwritten_is_drawn_as_separate_units() {
+        let cells = cells_of(&[("\u{1F468}\u{200D}", 2), ("x", 1), ("\u{1F467}", 2)]);
+        let output = ansi_for(CharacterChunk::new(cells, 0, 0), None);
+        assert!(!output.contains('X'), "output={:?}", output);
+        assert!(output.ends_with("\u{1F468}\u{200D}x\u{1F467}"));
+    }
+
+    #[test]
+    fn a_selection_covering_a_group_keeps_it_grouped() {
+        let mut chunk = CharacterChunk::new(family_cells(), 0, 0);
+        select(&mut chunk, 0, 6);
+        let output = ansi_for(chunk, None);
+        assert!(
+            output.contains(&format!("\u{1b}[6X{}\u{1b}[1;7H", FAMILY)),
+            "output={:?}",
+            output
+        );
+    }
+
+    // Zellij expects bare `a` and leaves columns 1-3 showing whatever was there before. Yinz
+    // blanks them with the clipped unit's background (RP7); the fill style is built from the
+    // reset styles, hence the `ESC[m` before the spaces (RP8).
+    #[test]
+    fn the_size_cut_off_never_cuts_a_unit() {
+        let mut cells = cells_of(&[("a", 1)]);
+        cells.extend(family_cells());
+        let output = ansi_for(
+            CharacterChunk::new(cells, 0, 0),
+            Some(Size { rows: 5, cols: 4 }),
+        );
+        assert_eq!(output, "\u{1b}[1;1H\u{1b}[ma\u{1b}[m   ");
+    }
+
+    #[test]
+    fn a_straddling_wide_cell_is_blanked_at_the_edge() {
+        let output = ansi_for(
+            create_character_chunk_from_str("ab\u{754C}", 0, 0),
+            Some(Size { rows: 1, cols: 3 }),
+        );
+        assert_eq!(output, "\u{1b}[1;1H\u{1b}[mab\u{1b}[m ");
+    }
+
+    #[test]
+    fn the_edge_fill_resets_attributes_and_closes_the_hyperlink() {
+        let handler = Rc::new(RefCell::new(LinkHandler::new()));
+        let anchor = handler
+            .borrow_mut()
+            .new_link_from_url("https://linked.example".into());
+        let styles: RcCharacterStyles = CharacterStyles {
+            underline: Some(AnsiCode::Underline(None)),
+            reverse: Some(AnsiCode::On),
+            background: Some(AnsiCode::ColorIndex(2)),
+            link_anchor: Some(anchor),
+            ..DEFAULT_STYLES
+        }
+        .into();
+        let mut cells = vec![TerminalCharacter::from_cluster("a", 1, styles.clone())];
+        let mut family = family_cells();
+        for cell in &mut family {
+            cell.styles = styles.clone();
+        }
+        cells.extend(family);
+        let output = ansi_with(
+            CharacterChunk::new(cells, 0, 0),
+            Some(Size { rows: 1, cols: 4 }),
+            Some(&handler),
+        );
+        let link = output
+            .find("https://linked.example")
+            .unwrap_or_else(|| panic!("{output:?}"));
+        let fill = output.rfind("   ").unwrap_or_else(|| panic!("{output:?}"));
+        let between = &output[link..fill];
+        assert!(between.contains("\u{1b}]8;;\u{1b}\\"), "{output:?}");
+        // Underline and reverse are switched off; the background is unchanged, so no SGR
+        // for it is needed.
+        assert!(
+            between.contains("24m") && between.contains("27m"),
+            "{output:?}"
+        );
+        assert!(!between[between.find('a').unwrap()..].contains("48;5"));
+        assert!(output.ends_with("   "));
+    }
+
+    #[test]
+    fn ui_chunks_with_width_zero_entries_write_the_same_units_as_grid_cells() {
+        let label = "\u{754C}e\u{301}\u{1F469}\u{200D}\u{1F4BB}";
+        let ui: Vec<TerminalCharacter> = label.chars().map(TerminalCharacter::new).collect();
+        let mut grid_form: Vec<TerminalCharacter> = Vec::new();
+        for c in label.chars() {
+            let cell = TerminalCharacter::new(c);
+            match grid_form.last_mut() {
+                Some(last) if cell.width() == 0 => assert!(last.attach(c)),
+                _ => grid_form.push(cell),
+            }
+        }
+        let ui = ansi_for(CharacterChunk::new(ui, 0, 0), None);
+        assert_eq!(ui, ansi_for(CharacterChunk::new(grid_form, 0, 0), None));
+        assert!(ui.contains("e\u{301}"));
+        assert!(ui.contains("\u{1b}[4X\u{1F469}\u{200D}\u{1F4BB}\u{1b}[1;8H"));
+        // A leading width-0 entry is written raw at the chunk start, as before.
+        let leading = ansi_for(create_character_chunk_from_str("\u{301}x", 0, 0), None);
+        assert_eq!(leading, "\u{1b}[1;1H\u{1b}[m\u{301}x");
+    }
+
+    const MIXED: &str = "ae\u{301}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{1F1E9}\u{1F1EA}\u{26A0}\u{FE0F}\u{1F44D}\u{1F3FD}\u{754C}z";
+
+    #[test]
+    fn ansi_output_replays_into_a_grid_with_the_same_cells_and_columns() {
+        let mut source = new_grid(3, 30);
+        vte::Parser::new().advance(
+            &mut source,
+            format!("{MIXED}\r\n\u{1b}[1mx\u{1F468}\u{200D}\u{1b}[22m\u{1F469}y").as_bytes(),
+        );
+        let chunks = source.render(0, 0, &Style::default()).unwrap().unwrap().0;
+        let mut bytes = String::new();
+        serialize_chunks(&mut bytes, chunks, None, None, None, true, true, None, None).unwrap();
+        no_absolute_column_moves(&bytes);
+        let mut replay = new_grid(3, 30);
+        vte::Parser::new().advance(&mut replay, bytes.as_bytes());
+        // A narrow cell's VS16 is not sent, so the host draws the text presentation in the
+        // one column the grid gave it; every other cell text and column survives.
+        let mut expected = layout(&source);
+        for (_, text, width) in expected.iter_mut().flatten() {
+            if *width == 1 {
+                text.retain(|c| c != '\u{FE0F}');
+            }
+        }
+        let mut replayed = layout(&replay);
+        replayed.retain(|row| !row.is_empty());
+        assert_eq!(replayed, expected);
+        assert!(bytes.contains("\u{1b}[6X\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{1b}[1;9H"));
+    }
+
+    #[test]
+    fn a_centered_client_gets_every_cell_at_its_logical_column_plus_the_offset() {
+        let mut cells = cells_of(&[("a", 1)]);
+        cells.extend(family_cells());
+        cells.extend(cells_of(&[
+            ("\u{1F1E9}", 1),
+            ("\u{1F1EA}", 1),
+            ("b", 1),
+            ("c", 1),
+        ]));
+        let chunk = CharacterChunk::new(cells, 3, 1);
+        let presentation = Presentation {
+            terminal: Size { cols: 30, rows: 6 },
+            content: Size { cols: 20, rows: 2 },
+            background: PaletteColor::EightBit(0),
+        };
+        let (dx, dy) = presentation.offset();
+        assert!(dx > 0 && dy > 0);
+        let bytes = presentation.present(ansi_for(chunk, None));
+        let mut client = new_grid(6, 30);
+        vte::Parser::new().advance(&mut client, bytes.as_bytes());
+        let row = &layout(&client)[1 + dy];
+        let expected: Vec<(usize, String, usize)> = [
+            (3, "a", 1),
+            (4, "\u{1F468}\u{200D}", 2),
+            (6, "\u{1F469}\u{200D}", 2),
+            (8, "\u{1F467}", 2),
+            (10, "\u{1F1E9}", 1),
+            (11, "\u{1F1EA}", 1),
+            (12, "b", 1),
+            (13, "c", 1),
+        ]
+        .into_iter()
+        .map(|(column, text, width)| (column + dx, text.to_owned(), width))
+        .collect();
+        assert_eq!(row, &expected);
+        // The margins stay blank: nothing lands left of the offset.
+        assert!(layout(&client)
+            .iter()
+            .flatten()
+            .all(|(column, _, _)| *column >= dx));
+    }
+
+    #[test]
+    fn styles_on_links_do_not_leak_into_unit_detection() {
+        let handler = Rc::new(RefCell::new(LinkHandler::new()));
+        let anchor = handler.borrow_mut().new_link_from_url("https://x".into());
+        let mut cells = family_cells();
+        for cell in &mut cells {
+            cell.styles = CharacterStyles {
+                link_anchor: Some(anchor),
+                ..DEFAULT_STYLES
+            }
+            .into();
+        }
+        let output = ansi_with(CharacterChunk::new(cells, 0, 0), None, Some(&handler));
+        assert!(
+            output.contains(&format!("\u{1b}[6X{FAMILY}\u{1b}[1;7H")),
+            "{output:?}"
+        );
+    }
+}

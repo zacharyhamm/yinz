@@ -1331,6 +1331,7 @@ fn xtgettcap_dcs_payload_is_bounded_and_recovers() {
 
 mod app_replay;
 mod application_baseline;
+mod clusters;
 mod command_respawn;
 mod highlights;
 mod host_capabilities;

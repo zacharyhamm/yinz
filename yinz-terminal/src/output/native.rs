@@ -42,10 +42,138 @@ pub struct NativeRenderState {
     /// What remains of the current frame's media allowance.
     frame_media_left: usize,
     cursor: CursorState,
-    links: Vec<String>,
+    /// Wire hyperlink ID `index + 1` stands for this link identity on the client.
+    links: Vec<LinkKey>,
+    /// IDs allocated or retargeted this frame: the only entries a delta frame carries.
+    fresh_links: Vec<u8>,
+    /// The ID each client cell shows, row-major over the client's terminal.
     viewport_links: Vec<u8>,
     size: Option<Size>,
     presentation: Option<Presentation>,
+}
+
+/// A hyperlink as native viewers distinguish it: the program's explicit OSC 8 `id=`, if any,
+/// and the URI.
+#[derive(Debug, PartialEq, Eq)]
+struct LinkKey {
+    id: Option<String>,
+    uri: String,
+}
+
+impl LinkKey {
+    fn matches(&self, identity: &crate::panes::LinkIdentity<'_>) -> bool {
+        self.id.as_deref() == identity.id && self.uri == identity.uri
+    }
+}
+
+/// One unit of a chunk in a native frame: a cell, or a group of cells forming one cluster.
+struct NativeUnit {
+    start: usize,
+    end: usize,
+    column: usize,
+}
+
+/// The blanks written where a unit does not fit before the viewport's right edge.
+struct EdgeFill {
+    column: usize,
+    count: usize,
+    /// The first member of the unit that did not fit, whose background the blanks take.
+    clipped: usize,
+}
+
+/// How one chunk lands in a native frame. The hyperlink release pre-pass and emission share it,
+/// so the shadow releases exactly the cells the frame writes.
+struct NativeLayout<'a> {
+    /// The chunk's cells with width-0 entries folded into the glyph before them.
+    cells: Cow<'a, [TerminalCharacter]>,
+    /// The units that fit, in order; clipping is per whole unit.
+    units: Vec<NativeUnit>,
+    fill: Option<EdgeFill>,
+}
+
+impl NativeLayout<'_> {
+    /// Every client cell the frame writes for this chunk, as (start column, width) spans in
+    /// the chunk's logical columns.
+    fn spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.units
+            .iter()
+            .flat_map(|unit| {
+                let mut column = unit.column;
+                self.cells[unit.start..unit.end].iter().map(move |cell| {
+                    let span = (column, cell.width());
+                    column += cell.width();
+                    span
+                })
+            })
+            .chain(self.fill.iter().map(|fill| (fill.column, fill.count)))
+    }
+}
+
+fn native_layout(chunk: &CharacterChunk, cols: usize, dx: usize) -> NativeLayout<'_> {
+    let (cells, grouped) = chunk_units(&chunk.terminal_characters);
+    let styles_at = |cell: &TerminalCharacter, column: usize| {
+        adjust_styles_for_custom_bg_fg(
+            adjust_styles_for_possible_selection(
+                chunk.selection_and_colors(),
+                chunk.application_styles(*cell.styles),
+                chunk.y,
+                column,
+            ),
+            chunk.pane_default_fg,
+            chunk.pane_default_bg,
+        )
+    };
+    let column_starts: Vec<usize> = if grouped {
+        cells
+            .iter()
+            .scan(chunk.x, |column, cell| {
+                let start = *column;
+                *column += cell.width();
+                Some(start)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut units = Vec::new();
+    let mut fill = None;
+    let mut column = chunk.x;
+    let mut index = 0;
+    while index < cells.len() {
+        // A width-0 entry with no glyph before it in the chunk has nothing to join.
+        if cells[index].width() == 0 {
+            index += 1;
+            continue;
+        }
+        let end = if grouped {
+            grapheme_join::group_end(&cells, index, |previous, next| {
+                styles_at(&cells[previous], column_starts[previous])
+                    == styles_at(&cells[next], column_starts[next])
+            })
+            .end
+        } else {
+            index + 1
+        };
+        let columns: usize = cells[index..end].iter().map(|cell| cell.width()).sum();
+        if column + columns + dx > cols {
+            if column + dx < cols {
+                fill = Some(EdgeFill {
+                    column,
+                    count: cols - dx - column,
+                    clipped: index,
+                });
+            }
+            break;
+        }
+        units.push(NativeUnit {
+            start: index,
+            end,
+            column,
+        });
+        column += columns;
+        index = end;
+    }
+    NativeLayout { cells, units, fill }
 }
 
 /// Media retained for the client until the ACK of the frame that last referenced it.
@@ -132,6 +260,39 @@ impl NativeRenderState {
 
     pub fn force_repaint(&mut self) {
         self.size = None;
+    }
+
+    /// The wire ID for a hyperlink identity, allocating one when the identity has none. When
+    /// all IDs are taken, an ID no client cell shows and no row of this frame has emitted
+    /// (`used`) is retargeted; with none free the cell is sent without a link. New and
+    /// retargeted IDs are fresh: the frame carries their entries.
+    fn link_id(
+        &mut self,
+        identity: &crate::panes::LinkIdentity<'_>,
+        used: &[bool; MAX_LINK_ID as usize + 1],
+    ) -> u8 {
+        if let Some(index) = self.links.iter().position(|key| key.matches(identity)) {
+            return (index + 1) as u8;
+        }
+        let key = LinkKey {
+            id: identity.id.map(str::to_owned),
+            uri: identity.uri.to_owned(),
+        };
+        let index = if self.links.len() < MAX_LINK_ID as usize {
+            self.links.push(key);
+            self.links.len() - 1
+        } else {
+            let Some(index) = (0..self.links.len()).find(|index| !used[index + 1]) else {
+                return LINK_NONE;
+            };
+            self.links[index] = key;
+            index
+        };
+        let id = (index + 1) as u8;
+        if !self.fresh_links.contains(&id) {
+            self.fresh_links.push(id);
+        }
+        id
     }
 
     fn chunked(&self) -> bool {
@@ -504,9 +665,12 @@ impl Output {
                 || state.size != Some(size)
                 || state.presentation != presentation;
             if cleared {
-                // Full repaints reset the receiver's cells and hyperlink table together.
+                // Full repaints reset the receiver's cells and hyperlink table together, so
+                // every ID this frame references is fresh and the frame carries the complete
+                // mapping.
                 state.links.clear();
             }
+            state.fresh_links.clear();
             builder.set_full_repaint(cleared);
             builder.set_clear(cleared);
             state.size = Some(size);
@@ -534,24 +698,20 @@ impl Output {
             if cleared {
                 state.viewport_links = vec![LINK_NONE; size.cols * size.rows];
             }
+            let layouts: Vec<Option<NativeLayout<'_>>> = chunks
+                .iter()
+                .map(|chunk| {
+                    (chunk.x + dx < size.cols && chunk.y + dy < size.rows)
+                        .then(|| native_layout(chunk, size.cols, dx))
+                })
+                .collect();
             // Release every overwritten cell before assigning IDs, including cells later
-            // in this frame. Clipping and continuation widths match the row serializer.
-            for chunk in &chunks {
-                if chunk.x + dx >= size.cols || chunk.y + dy >= size.rows {
-                    continue;
-                }
-                let mut col = chunk.x;
-                for character in &chunk.terminal_characters {
-                    let width = character.width();
-                    if width == 0 {
-                        continue;
-                    }
-                    if col + width + dx > size.cols {
-                        break;
-                    }
-                    let start = (chunk.y + dy) * size.cols + col + dx;
+            // in this frame. The spans are exactly the cells emission writes below.
+            for (chunk, layout) in chunks.iter().zip(&layouts) {
+                let Some(layout) = layout else { continue };
+                for (column, width) in layout.spans() {
+                    let start = (chunk.y + dy) * size.cols + column + dx;
                     state.viewport_links[start..start + width].fill(LINK_NONE);
-                    col += width;
                 }
             }
             let mut used_links = [false; MAX_LINK_ID as usize + 1];
@@ -566,84 +726,126 @@ impl Output {
                 .get(client)
                 .filter(|_| state.agreement.features & caps::LINKS != 0)
                 .map(|handler| handler.borrow());
-            for chunk in chunks {
-                if chunk.x + dx >= size.cols || chunk.y + dy >= size.rows {
-                    continue;
-                }
+            let mut member_text = String::new();
+            let mut unit_text = String::new();
+            for (chunk, layout) in chunks.iter().zip(&layouts) {
+                let Some(layout) = layout else { continue };
                 let mut cells = Vec::new();
-                let mut col = chunk.x;
-                for character in &chunk.terminal_characters {
-                    let width = character.width();
-                    if width == 0 {
-                        continue;
+                for unit in &layout.units {
+                    let members = &layout.cells[unit.start..unit.end];
+                    let columns: usize = members.iter().map(|cell| cell.width()).sum();
+                    let strip_vs16 = (members.len() > 1 || members[0].has_attached())
+                        && grapheme_join::prepare_unit_into(members, columns, &mut unit_text).0;
+                    let mut col = unit.column;
+                    for (offset, character) in members.iter().enumerate() {
+                        let width = character.width();
+                        let selected = adjust_styles_for_possible_selection(
+                            chunk.selection_and_colors(),
+                            chunk.application_styles(*character.styles),
+                            chunk.y,
+                            col,
+                        );
+                        let default_background =
+                            uses_default_background(chunk, character, &selected, col);
+                        let styles = adjust_styles_for_custom_bg_fg(
+                            selected,
+                            chunk.pane_default_fg,
+                            chunk.pane_default_bg,
+                        );
+                        let mut cell =
+                            wire_cell(character, styles, chunk.changed_colors.as_ref(), true);
+                        // A theme's default background arrives as a concrete color; mark it
+                        // so a see-through native background still treats it as default.
+                        if default_background && WireColor::unpack(cell.bg) != WireColor::Default {
+                            cell.attrs |= ATTR_THEME_BACKGROUND;
+                        }
+                        if character.has_attached() {
+                            member_text.clear();
+                            character.push_text_to(&mut member_text);
+                            // A narrow cell keeps its text presentation, as on ANSI hosts.
+                            if strip_vs16 {
+                                member_text.retain(|c| c != '\u{FE0F}');
+                            }
+                            let mut chars = member_text.chars();
+                            cell.ch = match (chars.next(), chars.next()) {
+                                (Some(only), None) => only as u32,
+                                // The frame's cluster record is bounded; past its limits the
+                                // cell falls back to its first code point.
+                                (Some(first), Some(_)) => {
+                                    builder.cluster(&member_text).unwrap_or(first as u32)
+                                },
+                                (None, _) => ' ' as u32,
+                            };
+                        }
+                        if !kitty && character.character == PLACEHOLDER {
+                            cell.ch = ' ' as u32;
+                        }
+                        if offset > 0 {
+                            cell.attrs |= ATTR_GROUP_CONTINUE;
+                        }
+                        if let Some(identity) = handler
+                            .as_ref()
+                            .and_then(|handler| handler.identity(character.styles.link_anchor))
+                            .filter(|identity| identity.uri.len() <= MAX_LINK_URI_LEN)
+                        {
+                            cell.link = state.link_id(&identity, &used_links);
+                        }
+                        // Pin IDs used by any emitted row until the next frame, even if a
+                        // later overlapping chunk replaces that row's cells.
+                        used_links[cell.link as usize] = true;
+                        let start = (chunk.y + dy) * size.cols + col + dx;
+                        state.viewport_links[start..start + width].fill(cell.link);
+                        cells.push(cell);
+                        // Wide continuation cells never continue the group themselves.
+                        cells.extend((1..width).map(|_| WireCell {
+                            ch: ' ' as u32,
+                            width: 1,
+                            attrs: cell.attrs & !ATTR_GROUP_CONTINUE,
+                            ..cell
+                        }));
+                        col += width;
                     }
-                    if col + width + dx > size.cols {
-                        break;
-                    }
+                }
+                if let Some(fill) = &layout.fill {
+                    // Blank the visible columns the unit that did not fit would have started
+                    // in, with only its background: the receiver rewrites only the cells in
+                    // row records, so these would otherwise keep an earlier frame's text,
+                    // clusters and links. Their shadow cells were released above.
+                    let character = &layout.cells[fill.clipped];
                     let selected = adjust_styles_for_possible_selection(
                         chunk.selection_and_colors(),
                         chunk.application_styles(*character.styles),
                         chunk.y,
-                        col,
+                        fill.column,
                     );
                     let default_background =
-                        uses_default_background(&chunk, character, &selected, col);
+                        uses_default_background(chunk, character, &selected, fill.column);
                     let styles = adjust_styles_for_custom_bg_fg(
                         selected,
                         chunk.pane_default_fg,
                         chunk.pane_default_bg,
                     );
-                    let mut cell =
-                        wire_cell(character, styles, chunk.changed_colors.as_ref(), true);
-                    // A theme's default background arrives as a concrete color; mark it
-                    // so a see-through native background still treats it as default.
-                    if default_background && WireColor::unpack(cell.bg) != WireColor::Default {
-                        cell.attrs |= ATTR_THEME_BACKGROUND;
+                    let mut blank = WireCell {
+                        bg: wire_color(substitute_changed_color(
+                            styles.background,
+                            chunk.changed_colors.as_ref(),
+                        )),
+                        ..WireCell::BLANK
+                    };
+                    if default_background && WireColor::unpack(blank.bg) != WireColor::Default {
+                        blank.attrs |= ATTR_THEME_BACKGROUND;
                     }
-                    if !kitty && character.character == PLACEHOLDER {
-                        cell.ch = ' ' as u32;
-                    }
-                    if let Some(uri) = handler
-                        .as_ref()
-                        .and_then(|handler| handler.uri(character.styles.link_anchor))
-                        .filter(|uri| uri.len() <= MAX_LINK_URI_LEN)
-                    {
-                        let index = state.links.iter().position(|link| link == uri).or_else(|| {
-                            if state.links.len() < MAX_LINK_ID as usize {
-                                state.links.push(uri.to_owned());
-                                Some(state.links.len() - 1)
-                            } else {
-                                let index =
-                                    (0..state.links.len()).find(|index| !used_links[index + 1])?;
-                                state.links[index] = uri.to_owned();
-                                Some(index)
-                            }
-                        });
-                        cell.link = index.map_or(0, |index| (index + 1) as u8);
-                    }
-                    // Pin IDs used by any emitted row until the next frame, even if a
-                    // later overlapping chunk replaces that row's cells.
-                    used_links[cell.link as usize] = true;
-                    let start = (chunk.y + dy) * size.cols + col + dx;
-                    state.viewport_links[start..start + width].fill(cell.link);
-                    cells.push(cell);
-                    cells.extend((1..width).map(|_| WireCell {
-                        ch: ' ' as u32,
-                        width: 1,
-                        ..cell
-                    }));
-                    col += width;
+                    cells.extend(std::iter::repeat_n(blank, fill.count));
                 }
                 builder.push_row((chunk.y + dy) as u16, (chunk.x + dx) as u16, &cells);
             }
             builder.push_links(&LinkRecord {
                 entries: state
-                    .links
+                    .fresh_links
                     .iter()
-                    .enumerate()
-                    .map(|(index, uri)| LinkEntry {
-                        id: (index + 1) as u8,
-                        uri: uri.clone(),
+                    .map(|id| LinkEntry {
+                        id: *id,
+                        uri: state.links[*id as usize - 1].uri.clone(),
                     })
                     .collect(),
             });

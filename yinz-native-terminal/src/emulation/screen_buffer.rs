@@ -385,41 +385,44 @@ impl ScreenBuffer {
     fn resolve_clusters(&mut self, frame: &FrameView<'_>) {
         let header = frame.header();
         let record = frame.clusters();
+        let spans: Vec<std::ops::Range<usize>> = (0..header.row_record_count as usize)
+            .filter_map(|index| frame.record(index))
+            .map(|row| {
+                let start = row.y as usize * self.cols + row.x0 as usize;
+                start..start + row.len as usize
+            })
+            .filter(|span| span.end <= self.cells.len())
+            .collect();
+        // Records may overlap, and the last writer of a cell wins. Drop every written cell's
+        // old text before resolving, so a later record over a resolved cell cannot drop the
+        // text just resolved for it.
+        if !self.clusters.is_empty() {
+            for at in spans.iter().cloned().flatten() {
+                self.clusters.remove(&at);
+            }
+        }
         let mut resolved: HashMap<u16, Option<Arc<str>>> = HashMap::new();
-        for index in 0..header.row_record_count as usize {
-            let Some(row) = frame.record(index) else {
-                continue;
-            };
-            let start = row.y as usize * self.cols + row.x0 as usize;
-            let end = start + row.len as usize;
-            if end > self.cells.len() {
+        for at in spans.into_iter().flatten() {
+            let cell = &mut self.cells[at];
+            if char::from_u32(cell.ch).is_some() {
                 continue;
             }
-            for at in start..end {
-                if !self.clusters.is_empty() {
-                    self.clusters.remove(&at);
-                }
-                let cell = &mut self.cells[at];
-                if char::from_u32(cell.ch).is_some() {
-                    continue;
-                }
-                let text = match cell.cluster_id() {
-                    Some(id) => resolved
-                        .entry(id)
-                        .or_insert_with(|| record.get(id).map(Arc::from))
-                        .clone(),
-                    None => None,
-                };
-                match text {
-                    Some(text) => {
-                        let mut characters = text.chars();
-                        cell.ch = characters.next().unwrap_or(' ') as u32;
-                        if characters.next().is_some() {
-                            self.clusters.insert(at, text);
-                        }
-                    },
-                    None => cell.ch = ' ' as u32,
-                }
+            let text = match cell.cluster_id() {
+                Some(id) => resolved
+                    .entry(id)
+                    .or_insert_with(|| record.get(id).map(Arc::from))
+                    .clone(),
+                None => None,
+            };
+            match text {
+                Some(text) => {
+                    let mut characters = text.chars();
+                    cell.ch = characters.next().unwrap_or(' ') as u32;
+                    if characters.next().is_some() {
+                        self.clusters.insert(at, text);
+                    }
+                },
+                None => cell.ch = ' ' as u32,
             }
         }
     }

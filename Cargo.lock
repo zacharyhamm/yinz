@@ -7297,6 +7297,7 @@ dependencies = [
  "swash",
  "tempfile",
  "unicode-width 0.2.2",
+ "vte 0.15.0",
  "wayland-backend",
  "wayland-client",
  "winit",
@@ -7308,6 +7309,7 @@ dependencies = [
  "yinz-key-codec",
  "yinz-runtime",
  "yinz-session",
+ "yinz-terminal",
  "yinz-types",
 ]
 
@@ -7794,6 +7796,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
  "unicode-width 0.2.2",
  "vte 0.15.0",
  "yinz-host-protocol",

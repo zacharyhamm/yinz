@@ -31,6 +31,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-client",
             "yinz-session",
             "yinz-key-codec",
+            "yinz-terminal",
         ],
     ),
     ("yinz-types", &[]),
@@ -289,7 +290,10 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// Builtin disk lookup uses the runtime name list; only its evaluator and config tests
 /// need the interpreter and configuration crates.
 /// Config watcher tests wait on effective configuration content with test-support.
+/// The native terminal's production round trips feed PTY bytes through the server's real grid
+/// and native producer into its consumer; the client itself never links the server emulator.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("yinz-native-terminal", &["yinz-terminal"]),
     ("yinz-project-config", &["yinz-test-support"]),
     ("yinz-config", &["yinz-test-support"]),
     ("yinz-plugin-authoring", &["yinz-test-support"]),

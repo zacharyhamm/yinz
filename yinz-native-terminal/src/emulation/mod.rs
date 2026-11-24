@@ -6,3 +6,7 @@ pub mod screen_buffer;
 pub mod selection;
 pub mod sixel;
 pub mod terminal;
+
+#[cfg(test)]
+#[path = "unit/production_round_trip_tests.rs"]
+mod production_round_trip_tests;

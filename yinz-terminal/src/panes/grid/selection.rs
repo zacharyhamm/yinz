@@ -242,7 +242,7 @@ impl Grid {
             let mut terminal_col = 0;
             for terminal_character in &row.columns {
                 if (start_column..end_column).contains(&terminal_col) {
-                    line.push(terminal_character.character);
+                    terminal_character.push_text_to(line);
                     if !terminal_character.is_implicit_blank() {
                         *explicit_end = line.len();
                     }

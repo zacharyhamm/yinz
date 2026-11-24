@@ -48,6 +48,10 @@ fontdb = { version = "0.23", default-features = false, features = ["std", "fs", 
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Production round trips only: Grid -> serialize_native -> ScreenBuffer. Kept out of normal
+# dependencies by xtask's DEV_ONLY_DEPENDENCIES.
+vte = { workspace = true }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.2-alpha.27" }
 
 [features]
 attachment-test-support = []

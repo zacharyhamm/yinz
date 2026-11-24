@@ -199,3 +199,44 @@ mod props {
         let _ = link_handler.output_osc8(anchor);
     }
 }
+
+#[test]
+fn identity_includes_only_program_supplied_ids() {
+    let mut link_handler = LinkHandler::default();
+    let first = link_handler.dispatch_osc8(&[b"8", b"id=a", b"https://same.example"]);
+    let second = link_handler.dispatch_osc8(&[b"8", b"id=b", b"https://same.example"]);
+    let plain = link_handler.dispatch_osc8(&[b"8", b"", b"https://same.example"]);
+    let detected = Some(link_handler.new_link_from_url("https://same.example".into()));
+    let identity = |anchor| link_handler.identity(anchor).unwrap();
+    assert_eq!(
+        identity(first),
+        LinkIdentity {
+            id: Some("a"),
+            uri: "https://same.example"
+        }
+    );
+    assert_ne!(identity(first), identity(second));
+    assert_eq!(
+        identity(plain),
+        identity(detected),
+        "synthetic ids are ignored"
+    );
+    assert_eq!(identity(plain).id, None);
+    assert_eq!(link_handler.identity(Some(LinkAnchor::End)), None);
+}
+
+#[test]
+fn older_migrated_links_read_as_uri_keyed() {
+    let table: LinkHandler = serde_json::from_value(serde_json::json!({
+        "links": [{"id": "7", "uri": "https://old.example"}],
+        "link_bytes": 0,
+    }))
+    .unwrap();
+    assert_eq!(
+        table.identity(Some(LinkAnchor::Start(0))),
+        Some(LinkIdentity {
+            id: None,
+            uri: "https://old.example"
+        })
+    );
+}

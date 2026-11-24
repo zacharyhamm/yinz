@@ -513,6 +513,15 @@ pub fn parse_osc7_path(raw: &[u8]) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(decoded))
 }
 
+/// A row's full text, including every cell's attached code points.
+fn row_text<'a>(columns: impl IntoIterator<Item = &'a TerminalCharacter>) -> String {
+    let mut text = String::new();
+    for character in columns {
+        character.push_text_to(&mut text);
+    }
+    text
+}
+
 macro_rules! dump_screen {
     ($lines:expr_2021) => {{
         let mut is_first = true;
@@ -523,7 +532,7 @@ macro_rules! dump_screen {
             if line.is_canonical && !is_first {
                 buf.push_str("\n");
             }
-            let s: String = (&line.columns).into_iter().map(|x| x.character).collect();
+            let s: String = row_text(&line.columns);
             // Replace the spaces at the end of the line. Sometimes, the lines are
             // collected with spaces until the end of the panel.
             buf.push_str(&s.trim_end_matches(' '));
@@ -563,7 +572,7 @@ macro_rules! dump_screen_with_ansi {
                     write!(buf, "{}", tc.styles).unwrap();
                     last_styles = Some(tc.styles.clone());
                 }
-                buf.push(tc.character);
+                tc.push_text_to(&mut buf);
             }
             is_first = false;
         }
@@ -2834,17 +2843,8 @@ impl Grid {
     }
     pub fn add_character(&mut self, terminal_character: TerminalCharacter) {
         let character_width = terminal_character.width();
-        // Drop zero-width Unicode/UTF-8 codepoints, like for example Variation Selectors.
-        // This breaks unicode grapheme segmentation, and is the reason why some characters
-        // aren't displayed correctly. Refer to this issue for more information:
-        //     https://github.com/zellij-org/zellij/issues/1538
         if character_width == 0 {
-            // ...except for the row/column diacritics of a kitty unicode placeholder, which are
-            // zero width by construction and carry the position of the cell before them inside its
-            // image. Spec, "Unicode placeholders": "the row and column of the image can be
-            // specified using diacritics". Anything else zero width, or one arriving after a cell
-            // that is not a placeholder, falls through and is dropped as before.
-            self.record_placeholder_diacritic(terminal_character.character);
+            self.add_zero_width_character(terminal_character.character);
             return;
         }
         if self.cursor.x + character_width > self.width {
@@ -2856,27 +2856,73 @@ impl Grid {
         self.add_character_at_cursor_position(terminal_character, false);
         self.move_cursor_forward_until_edge(character_width);
     }
+    /// A zero-width code point belongs to the cell before it rather than to a cell of its own.
+    ///
+    /// The row/column diacritics of a kitty unicode placeholder come first: they are zero width
+    /// by construction and carry the position of the cell before them inside its image. Spec,
+    /// "Unicode placeholders": "the row and column of the image can be specified using
+    /// diacritics". Otherwise combining marks, joiners and variation selectors (everything
+    /// zero width from U+0300 on, and the soft hyphen) are attached to the preceding cell's
+    /// text, as Zellij does with grapheme mode off; cells keep their widths, so wrapping,
+    /// erasing and reflow are unchanged. A mark with no cell before it is dropped.
+    fn add_zero_width_character(&mut self, character: char) {
+        if self.record_placeholder_diacritic(character) {
+            return;
+        }
+        if (character as u32) >= 0x300 || character == '\u{AD}' {
+            self.attach_code_point(character);
+        }
+    }
+    /// The column of the cell a zero-width code point attaches to: the one the cursor has just
+    /// moved past, or the last one while a wrap is pending.
+    fn attach_target_column(&self) -> Option<usize> {
+        if self.cursor.x >= self.width {
+            self.width.checked_sub(1)
+        } else {
+            self.cursor.x.checked_sub(1)
+        }
+    }
+    fn attach_code_point(&mut self, character: char) {
+        let Some(column) = self.attach_target_column() else {
+            return;
+        };
+        let Some(row) = self.viewport.get_mut(self.cursor.y) else {
+            return;
+        };
+        let Some(index) = row.cell_index_at_column(column) else {
+            return;
+        };
+        let target = &mut row.columns[index];
+        // A placeholder's marks are its image coordinates; anything else is not part of it.
+        if target.character == PLACEHOLDER || !target.attach(character) {
+            return;
+        }
+        let cell = target.clone();
+        // REP repeats the whole cluster.
+        self.set_preceding_character(cell);
+        self.output_buffer.update_line(self.cursor.y);
+    }
     /// Attach a row/column diacritic to the placeholder cell the cursor has just moved past.
+    /// Returns whether the diacritic was consumed.
     ///
     /// The cell to the left is the one being annotated: printing a placeholder advances the cursor
     /// like any other single-width character, so by the time its marks arrive the cursor sits one
     /// column further on.
-    fn record_placeholder_diacritic(&mut self, character: char) {
-        let value = match diacritic_value(character) {
-            Some(value) => value,
-            None => return,
+    fn record_placeholder_diacritic(&mut self, character: char) -> bool {
+        let Some(value) = diacritic_value(character) else {
+            return false;
         };
-        let column = match self.cursor.x.checked_sub(1) {
-            Some(column) => column,
-            None => return,
+        let Some(column) = self.cursor.x.checked_sub(1) else {
+            return false;
         };
-        let row = match self.viewport.get_mut(self.cursor.y) {
-            Some(row) => row,
-            None => return,
+        let Some(row) = self.viewport.get_mut(self.cursor.y) else {
+            return false;
         };
         if row.push_placeholder_mark_value(column, value) {
             self.output_buffer.update_line(self.cursor.y);
+            return true;
         }
+        false
     }
     pub fn get_character_under_cursor(&self) -> Option<TerminalCharacter> {
         self.get_character_at(self.cursor.x, self.cursor.y)
@@ -4009,13 +4055,13 @@ impl Grid {
     ) -> PaneContents {
         let mut viewport: Vec<String> = Vec::with_capacity(self.viewport.len());
         for row in &self.viewport {
-            let s: String = row.columns.iter().map(|x| x.character).collect();
+            let s: String = row_text(&row.columns);
             viewport.push(s);
         }
         let mut contents = if get_full_scrollback {
             let mut lines_above_viewport: Vec<String> = Vec::with_capacity(self.lines_above.len());
             for row in &self.lines_above {
-                let s: String = row.columns.iter().map(|x| x.character).collect();
+                let s: String = row_text(&row.columns);
                 lines_above_viewport.push(s);
             }
             // Truncate to last N lines if max specified (Some(0) means "all" — no truncation)
@@ -4028,7 +4074,7 @@ impl Grid {
             }
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
-                let s: String = row.columns.iter().map(|x| x.character).collect();
+                let s: String = row_text(&row.columns);
                 lines_below_viewport.push(s);
             }
             PaneContents::new_with_scrollback(
@@ -4074,7 +4120,7 @@ impl Grid {
                     write!(buf, "{}", tc.styles).unwrap();
                     last_styles = Some(tc.styles.clone());
                 }
-                buf.push(tc.character);
+                tc.push_text_to(&mut buf);
             }
             if last_styles.is_some() {
                 buf.push_str("\u{1b}[m");

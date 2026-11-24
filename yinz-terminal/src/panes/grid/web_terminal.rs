@@ -133,7 +133,7 @@ impl Grid {
                         "\x1b[{y};{}H\x1b[0m{}{}",
                         self.width - offset,
                         glyph.styles,
-                        glyph.character
+                        glyph
                     )
                     .ok()?;
                 } else {

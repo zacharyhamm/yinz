@@ -19,7 +19,13 @@ impl Cell {
     fn has_color_emoji(&self) -> bool {
         // Text presentation must still receive the ordinary foreground tint. Keycaps and
         // text-default emoji need an emoji selector (or the enclosing keycap) to be hidden.
-        let suffix = self.combining.first().map(|c| c.character);
+        // The selector arrives attached to the cell from the grid, or as a separate width-0
+        // chunk entry from UI text.
+        let suffix = self
+            .combining
+            .first()
+            .map(|c| c.character)
+            .or_else(|| self.character.first_attached());
         if suffix == Some('\u{fe0e}')
             || (self.character.character.is_ascii()
                 && !matches!(suffix, Some('\u{fe0f}' | '\u{20e3}')))
@@ -352,8 +358,10 @@ impl Composition {
                             (default_background, resolved_styles)
                         },
                     };
-                    let transparent =
-                        character.character == ' ' && combining.is_empty() && default_background;
+                    let transparent = character.character == ' '
+                        && !character.has_attached()
+                        && combining.is_empty()
+                        && default_background;
                     let mut resolved = character.clone();
                     resolved.styles = resolved_styles;
                     for column in covered {

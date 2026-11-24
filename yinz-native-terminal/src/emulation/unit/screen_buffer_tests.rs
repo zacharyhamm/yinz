@@ -433,6 +433,23 @@ fn occupancy_covers_widths_one_to_three_and_continuation_cells() {
 }
 
 #[test]
+fn a_cluster_written_over_an_earlier_record_of_the_same_frame_keeps_its_text() {
+    let mut buffer = ScreenBuffer::new(1, 6);
+    painted(&mut buffer, |p| {
+        p.text(0, 0, "    ");
+        p.cluster(0, 1, "e\u{301}", 1);
+    });
+    assert_eq!(buffer.text_at(0, 1), "e\u{301}");
+    assert_eq!(buffer.cluster_count(), 1);
+    painted(&mut buffer, |p| {
+        p.cluster(0, 1, "o\u{308}", 1);
+        p.text(0, 0, "  ");
+    });
+    assert_eq!(buffer.text_at(0, 1), " ", "the last writer wins");
+    assert_eq!(buffer.cluster_count(), 0);
+}
+
+#[test]
 fn a_cluster_overwritten_by_a_later_frame_leaves_no_text_behind() {
     let mut buffer = ScreenBuffer::new(1, 6);
     painted(&mut buffer, |p| p.cluster(0, 0, "a\u{301}\u{302}", 1));

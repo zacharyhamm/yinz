@@ -240,6 +240,26 @@ impl Row {
         }
         absolute_index
     }
+    /// The index of the cell covering screen column `column`, or `None` past the row's end.
+    pub fn cell_index_at_column(&mut self, column: usize) -> Option<usize> {
+        if self.all_single_width() {
+            return (column < self.columns.len()).then_some(column);
+        }
+        // Marks almost always follow the cell just printed: the last one.
+        let width = self.width_cached();
+        let last = self.columns.back().map_or(0, |cell| cell.width());
+        if column < width && column + last >= width {
+            return Some(self.columns.len() - 1);
+        }
+        let mut start = 0;
+        for (index, character) in self.columns.iter().enumerate() {
+            start += character.width();
+            if start > column {
+                return Some(index);
+            }
+        }
+        None
+    }
     pub fn absolute_character_index_and_position_in_char(&self, x: usize) -> (usize, usize) {
         // returns x's width aware index as well as its position inside the wide char (eg. 1 if
         // it's in the middle of a 2-char wide character)

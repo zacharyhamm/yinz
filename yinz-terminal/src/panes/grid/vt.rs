@@ -24,6 +24,11 @@ impl Perform for Grid {
         } else {
             TerminalCharacter::new_styled(c, self.cursor.pending_styles.clone())
         };
+        if terminal_character.width() == 0 {
+            // Attached to the previous cell, which then becomes the character REP repeats.
+            self.add_character(terminal_character);
+            return;
+        }
         self.set_preceding_character(terminal_character.clone());
         self.add_character(terminal_character);
         if c == PLACEHOLDER {

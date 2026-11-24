@@ -31,6 +31,55 @@ fn compose(opacity: u8, under: CharacterChunk, over: CharacterChunk) -> Vec<Char
     composition.finish()
 }
 
+/// A chunk as the grid renders it: zero-width code points attached to the cell before them.
+fn grid_chunk(text: &str, x: usize) -> CharacterChunk {
+    let mut cells: Vec<TerminalCharacter> = Vec::new();
+    for c in text.chars() {
+        let cell = TerminalCharacter::new(c);
+        match cells.last_mut() {
+            Some(last) if cell.width() == 0 => assert!(last.attach(c)),
+            _ => cells.push(cell),
+        }
+    }
+    CharacterChunk::new(cells, x, 0)
+}
+
+#[test]
+fn covered_emoji_with_attached_selectors_are_hidden_like_separate_entries() {
+    for (glyph, hidden) in [
+        ("❤\u{fe0f}", true),
+        ("1\u{fe0f}\u{20e3}", true),
+        ("#\u{20e3}", true),
+        ("👇\u{fe0e}", false),
+        ("e\u{301}", false),
+        (" \u{301}", false),
+    ] {
+        let original = format!("a{glyph}b");
+        let under = grid_chunk(&original, 0);
+        let width = under.width();
+        let mut composition = translucency::Composition::new(
+            vec![(1, rect(0, width), 50)],
+            FG,
+            BG,
+            TINT,
+            [None; 256],
+        );
+        composition.add(&[under], 0);
+        composition.add(&[chunk(&" ".repeat(width), 0)], 1);
+        let result = composition.finish();
+        let shown: String = result
+            .iter()
+            .flat_map(|c| c.terminal_characters.iter().map(|c| c.text()))
+            .collect();
+        let expected = if hidden {
+            format!("a{}b", " ".repeat(width - 2))
+        } else {
+            original
+        };
+        assert_eq!(shown, expected, "{glyph:?}");
+    }
+}
+
 #[test]
 fn covered_color_emoji_become_blended_spaces_without_shifting_following_text() {
     use yinz_types::animation::blend;
@@ -1261,7 +1310,8 @@ fn upper_opaque_wide_glyphs_survive_lower_translucent_edges() {
         let mut parser = vte::Parser::new();
         parser.advance(&mut grid, bytes[&client].as_bytes());
         let screen = grid.serialize(None).unwrap();
-        assert!(screen.contains("界ab"), "{screen:?}");
+        // The replaying grid keeps the combining mark attached to the wide cell.
+        assert!(screen.contains("界\u{301}ab"), "{screen:?}");
         assert!(bytes[&client].contains("界\u{301}ab"));
     }
 }

@@ -387,6 +387,49 @@ fn character_runs_preserve_widths_and_explicit_blanks() {
 }
 
 #[test]
+fn clustered_cells_round_trip_as_text_not_table_ids() {
+    let family = "\u{1F469}\u{200D}\u{1F467}";
+    let mut original =
+        grid(format!("e\u{301}\u{302}x{family}\x1b[31ma\u{301}\r\n\u{1F44D}\u{1F3FD}").as_bytes());
+    let snapshot = original.migration_state().unwrap();
+    let encoded = snapshot.to_string();
+    assert!(
+        encoded.contains("\u{301}\u{302}"),
+        "attached text is stored as text"
+    );
+    let mut replacement = grid(b"");
+    replacement.restore_migration_state(snapshot).unwrap();
+    assert!(replacement.viewport[0].columns == original.viewport[0].columns);
+    assert!(replacement.viewport[1].columns == original.viewport[1].columns);
+    assert_eq!(replacement.dump_screen(true), original.dump_screen(true));
+    // REP after the restore repeats the whole cluster, as it would have before.
+    let suffix = "\x1b[2b".as_bytes();
+    vte::Parser::new().advance(&mut original, suffix);
+    vte::Parser::new().advance(&mut replacement, suffix);
+    assert_eq!(replacement.dump_screen(true), original.dump_screen(true));
+}
+
+#[test]
+fn snapshots_without_attached_text_still_restore() {
+    let original = grid("e\u{301}".as_bytes());
+    let mut snapshot = original.migration_state().unwrap();
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("attached");
+                map.values_mut().for_each(strip);
+            },
+            serde_json::Value::Array(values) => values.iter_mut().for_each(strip),
+            _ => {},
+        }
+    }
+    strip(&mut snapshot);
+    let mut replacement = grid(b"");
+    replacement.restore_migration_state(snapshot).unwrap();
+    assert_eq!(replacement.dump_screen(true), "e");
+}
+
+#[test]
 fn transferred_alternate_screen_overflow_never_enters_normal_history() {
     let mut original =
         grid(b"normal-1\r\nnormal-2\r\nnormal-3\r\nnormal-4\r\nnormal-5\r\nnormal-6\x1b[3;4H");

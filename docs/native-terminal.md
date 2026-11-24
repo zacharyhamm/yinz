@@ -998,7 +998,7 @@ images in its own medium.
 | Feature bit | Meaning and current production behavior |
 |---|---|
 | Geometry (1) | Pane bounds locate graphics and constrain clipping to the owning pane. |
-| Links (2) | Hyperlink table and cell references. Disabled clients receive plain cells. |
+| Links (2) | Hyperlink table and cell references. A full repaint carries every mapping its cells use; deltas carry only new or retargeted entries. See [Unicode cells, clusters and hyperlinks](#unicode-cells-clusters-and-hyperlinks). Disabled clients receive plain cells. |
 | Kitty (4), Sixel (8) | Independently selectable. Both require geometry and inline media. Kitty also follows the server's graphics setting. Text-only clients get cells without graphics placeholders. |
 | Row shifts (16) | Move existing cells within the current grid. The reader can apply shifts. The writer currently sends ordinary cell deltas. |
 | Scroll metadata (32) | Signed lines for a pane indexed in the preceding applicable geometry. Requires v3 or later and geometry. A producer must establish geometry first and omit hints on geometry replacement or reset. A consumer must resolve the index before applying the hint. Current live peers omit this feature. |
@@ -1037,6 +1037,72 @@ meter. Image and placement identifiers are unsigned 64-bit values throughout the
 scene. Row shifts apply to fully contained rectangles on incremental frames of
 the same grid size. A clear, full repaint or resize starts a new baseline.
 Media failure requires a new attachment and full repaint.
+
+### Unicode cells, clusters and hyperlinks
+
+The server's grid emulates one code point per cell, as Zellij does with grapheme
+mode (DECSET 2027) off. A combining mark, zero-width joiner, variation selector
+or other zero-width code point from U+0300 on (and the soft hyphen) is attached
+to the cell before it. A cell keeps at most 32 code points, and later marks are
+dropped. A mark with no cell before it on the row is dropped. Kitty placeholder
+diacritics stay image coordinates and never attach to a placeholder cell. Code
+points with their own width, such as skin-tone modifiers, regional indicators
+and the person after a joiner, keep cells of their own. Cell widths, wrapping,
+erasing, insertion, deletion and reflow therefore behave exactly as before.
+
+Attached text is kept in a per-screen-thread table. Identical texts share an
+entry, entries are reference counted and freed IDs are reused. IDs are 23 bits,
+as in Zellij, and the table holds at most 32 MiB. When it is full, new marks are
+dropped and a warning is logged once. Copying a selection, screen dumps, pane
+contents (plain and with ANSI) and session migration include attached text.
+Migration stores the text, not table IDs, in an optional field. The snapshot
+format version does not change. Older snapshots restore without marks, and an
+older server that receives a newer snapshot ignores the marks. Search and
+highlight rules match base characters only.
+
+Frames group the cells of one grapheme cluster when serialized. A group is the
+run that Unicode's grapheme rules join, of at most 32 cells or 255 columns. It
+is split where the effective style changes, including a selection or highlight
+edge. In a native frame a cell whose text has more than one code point carries a
+cluster ID from that frame's cluster record. Each group member after the first
+has `ATTR_GROUP_CONTINUE`; wide continuation cells never set it. The per-frame
+record holds entries of at most 4 KiB and at most 1 MiB in total. Past either
+limit a cell carries only its first code point, and the frame stays valid. A
+narrow cell's VS16 is dropped so the glyph keeps its one column. Built-in UI
+text (pane tabs, notifications, modals) gets the same clusters as pane content,
+because a width-0 entry in a composed chunk joins the glyph before it.
+
+ANSI clients receive the same units. Text whose widths all agree, including a
+letter with combining marks, is written as is. A group, or a cell whose width
+a host could draw differently, is written as an erase of its columns (`ECH`),
+its text, then an absolute cursor position (`CUP`) after its last column. So
+does every piece of a cluster that a style, selection or group-size edge
+splits, because a terminal that joins graphemes draws those pieces as one
+glyph. Later cells stay on their columns with or without mode 2027, and
+centered clients translate the `CUP` like every other cursor move. A cropped
+client, watcher or native viewer never receives part of a unit. The visible
+columns where a cluster or wide character does not fit are blanked with its
+background, without its link or other attributes.
+
+Each native viewer has a table of at most 255 hyperlink IDs. A link's identity
+is the program's explicit OSC 8 `id=` together with its URI, or the URI alone
+when the program gave no ID. Two explicit IDs for one URI are distinct links;
+detected URLs are keyed by URI. A URI longer than 65535 bytes is sent as a plain
+cell. The full mapping works as follows:
+
+- A full repaint clears the receiver's table together with its cells, and the
+  frame carries an entry for every ID its cells use.
+- A delta carries only IDs allocated or retargeted in that frame. The receiver
+  merges them into its table.
+- The server shadows the ID shown in every viewport cell. Before assigning IDs
+  for a frame it releases every cell the frame writes, including edge blanks.
+  When the table is full, it retargets only an ID that no shadowed cell shows and
+  that no row emitted earlier in the same frame uses. With none free, the cell
+  is sent without a link.
+
+The scrolling and replay work that adds row shifts must shift this shadow with
+the cells (as Zellij's `LinkTable::shift` does) before it releases written
+cells. Otherwise a shifted cell keeps an ID the server considers free.
 
 ### Pacing, budgets and cleanup
 
