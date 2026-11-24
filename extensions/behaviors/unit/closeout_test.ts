@@ -307,6 +307,45 @@ Deno.test("closeout explicit accept refreshes accepting turn and persists Git be
   equal(h.events.filter((e) => e.startsWith("effect:")).length, 3);
 });
 
+Deno.test("closeout cleanup request offers and accepts in one call", async () => {
+  const h = fixture();
+  const { dataHandles } = await closeout(
+    h.context,
+    { decision: "accept", request: "cleanup" },
+    h.deps,
+  );
+  const names = dataHandles.map((handle) => handle.name);
+  equal(names.length, new Set(names).size);
+  equal(h.events.filter((e) => e.startsWith("effect:")), [
+    "effect:worktree",
+    "effect:branch",
+    "effect:pane",
+  ]);
+  equal(h.state().closeout?.authorizedRequest, "cleanup");
+  equal(h.state().closeout?.pane, "closed");
+  equal(h.state().outcome, h.initial.outcome);
+});
+
+Deno.test("closeout cleanup request answers a current offer without its handoffId", async () => {
+  const h = fixture();
+  await h.offer();
+  await closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps);
+  equal(h.state().closeout?.git, "complete");
+  equal(h.state().closeout?.pane, "closed");
+});
+
+Deno.test("closeout one-call cleanup still refuses a dirty worktree", async () => {
+  const h = fixture();
+  h.failGit(true);
+  await rejects(
+    () =>
+      closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps),
+    "Git closeout failed",
+  );
+  assert(!h.events.includes("effect:pane"));
+  equal(h.state().closeout?.pane, "pending");
+});
+
 Deno.test("closeout offers end with the exact launcher command and keep the reason", async () => {
   const h = fixture();
   await h.offer();
@@ -494,7 +533,7 @@ Deno.test("closeout rejects stale offers receipts and replacement conversations"
         decision: "accept",
         request: "Yes",
       }, h.deps),
-    "current exact",
+    "current handoffId",
   );
   h.changeFence({ conversation: "replacement" });
   await rejects(() => h.accept(), "changed");
@@ -516,8 +555,23 @@ Deno.test("closeout old states require explicit original target binding before c
         handoffId: crypto.randomUUID(),
         request: "Yes",
       }, h.deps),
-    "Create and present",
+    "No current closeout offer",
   );
+  await rejects(
+    () =>
+      closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps),
+    "identity unavailable",
+  );
+  await rejects(
+    () =>
+      closeout(h.context, {
+        bind: origin,
+        decision: "accept",
+        request: "cleanup",
+      }, h.deps),
+    "binding creates an offer only",
+  );
+  assert(!h.state().closeout);
   await closeout(h.context, { bind: origin }, h.deps);
   equal(h.state().closeout?.origin, origin);
   assert(!h.events.some((e) => e.startsWith("effect:")));
@@ -578,6 +632,13 @@ Deno.test("closeout expired accepting turn requires renewed exact offer consent"
   await closeout(h.context, {}, h.deps);
   equal(h.state().closeout?.pane, "expired");
   assert(h.state().closeout?.offerId !== prior);
+  assert(!h.events.includes("effect:pane"));
+  // Replaying the original request without the renewed offer's id is refused.
+  await rejects(
+    () =>
+      closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps),
+    "renews an earlier acceptance",
+  );
   assert(!h.events.includes("effect:pane"));
   await h.accept();
   equal(h.state().closeout?.pane, "closed");
@@ -823,6 +884,14 @@ for (
     }
     const prior = h.state().closeout!;
     await recomplete(h);
+    // One-call acceptance would publish and accept the renewed offer unseen.
+    const before = h.state();
+    await rejects(
+      () =>
+        closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps),
+      "renews an earlier acceptance",
+    );
+    equal(h.state(), before);
     // summarize calls offerCloseout directly; exercise it as well as resume-closeout.
     await offerCloseout(h.context, h.state(), h.deps);
     const recovered = h.state().closeout!;
@@ -847,7 +916,7 @@ for (
           handoffId: firstOffer,
           decision: "accept",
           request: "Old approval",
-        }, h.deps), "current exact");
+        }, h.deps), "current handoffId");
       h.failBranch(false);
       await h.accept();
       equal(h.state().closeout?.pane, "closed");
@@ -876,7 +945,7 @@ Deno.test("closeout renewed pane-only offer can be declined terminally with Git 
       handoffId: prior.offerId,
       decision: "decline",
       request: "Keep pane",
-    }, h.deps), "current exact");
+    }, h.deps), "current handoffId");
   await closeout(h.context, {
     handoffId: current.offerId,
     decision: "decline",

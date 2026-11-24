@@ -1050,12 +1050,12 @@ def validate_receipt(receipt):
 def receipt_action(request):
     busy_stage = optional_lock_stage(request)
     repo, common = canonical_repo(text_field(request, "repoPath"))
+    directory = common / "yinz-lifecycle"
+    directory.mkdir(exist_ok=True)
+    path = attempt_path(directory, request)
     if request.get("failedOnly") is True:
         # A failed receipt is terminal and replaced atomically, so it needs no
         # lock. Waiting for one would block on the next queued merge's gate.
-        directory = common / "yinz-lifecycle"
-        directory.mkdir(exist_ok=True)
-        path = attempt_path(directory, request)
         if not path.is_file():
             return {"status": "missing", "attemptId": request["attemptId"]}
         receipt = json.loads(path.read_text())
@@ -1063,8 +1063,13 @@ def receipt_action(request):
         if receipt["status"] != "failed":
             return {"status": "not_failed", "attemptId": request["attemptId"]}
         return receipt
-    with merge_lock(common, busy_stage=busy_stage) as directory:
-        path = attempt_path(directory, request)
+    # A merged receipt is terminal too: nothing rewrites it, and reconcile only
+    # checks that local main still contains it. Reading it without the lock
+    # keeps completion after a merge from waiting on the next merge's CI gate.
+    # Only the verified-to-merged upgrade writes, so that path takes the lock.
+    if path.is_file() and json.loads(path.read_text()).get("status") == "merged":
+        return reconcile(repo, path)
+    with merge_lock(common, busy_stage=busy_stage):
         if not path.is_file():
             return {"status": "missing", "attemptId": request["attemptId"]}
         return reconcile(repo, path)

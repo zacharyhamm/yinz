@@ -423,14 +423,50 @@ export async function closeout(
   const state = await loadState(context);
   await validate(context, state, deps);
   if (!state.closeout || state.closeout.decision === "invalidated") {
-    if (args.decision) {
+    if (args.decision && (args.handoffId || !args.request)) {
       throw new Error(
-        "Create and present an exact closeout offer before recording consent",
+        "No current closeout offer: omit handoffId and pass the user's request to offer and decide in one call",
+      );
+    }
+    if (args.decision && args.bind) {
+      // A caller-supplied binding names the pane to close; the user must see
+      // that exact controller before deciding.
+      throw new Error(
+        "A binding creates an offer only: present it, then record the user's decision in a separate closeout call",
+      );
+    }
+    if (args.decision === "accept" && state.closeout?.authorizedRequest) {
+      // Re-completion recovers the earlier operation as a renewed offer,
+      // which needs fresh consent; refuse before publishing it.
+      throw new Error(
+        "Closeout recovery renews an earlier acceptance: run closeout without a decision, present the offer, then accept with its handoffId",
       );
     }
     const offered = await offerCloseout(context, state, deps, args.bind);
-    return { dataHandles: offered.dataHandles };
+    if (!args.decision) return { dataHandles: offered.dataHandles };
+    // The user's own cleanup request is the decision; the offer only records
+    // the exact targets it covers. Every target check still runs below.
+    const decided = await decide(context, state, args, deps);
+    // Swamp requires unique output names; both steps save state.
+    return {
+      dataHandles: [
+        ...new Map(
+          [...offered.dataHandles, ...decided.dataHandles].map((handle) => [
+            handle.name,
+            handle,
+          ]),
+        ).values(),
+      ],
+    };
   }
+  return decide(context, state, args, deps);
+}
+async function decide(
+  context: Context,
+  state: LifecycleState,
+  args: z.infer<typeof CloseoutArgsSchema>,
+  deps: CloseoutDependencies,
+) {
   const c = assertCurrent(state);
   if (
     c.decision === "offered" && c.git === "complete" && c.pane === "unknown"
@@ -453,9 +489,15 @@ export async function closeout(
     throw new Error("An existing offer freezes the original controller");
   }
   if (args.decision) {
-    if (!args.request || args.handoffId !== c.offerId) {
+    // An omitted handoffId answers a first offer: the behavior revalidates
+    // its targets, so a stale presentation cannot widen what is deleted.
+    // Accepting a renewed offer requires its id (checked below).
+    if (
+      !args.request ||
+      (args.handoffId !== undefined && args.handoffId !== c.offerId)
+    ) {
       throw new Error(
-        "Closeout consent requires the current exact handoffId and actual user request",
+        "Closeout consent requires the actual user request and, when given, the current handoffId",
       );
     }
     if (c.decision === "declined") {
@@ -468,6 +510,16 @@ export async function closeout(
     }
     if (c.decision !== "offered") {
       throw new Error("Accepted closeout must reconcile its saved progress");
+    }
+    if (
+      args.decision === "accept" && c.authorizedRequest &&
+      args.handoffId !== c.offerId
+    ) {
+      // A renewed offer (expired pane fence or rollback recovery) needs fresh
+      // consent: replaying the earlier request must not close the pane.
+      throw new Error(
+        `Closeout offer ${c.offerId} renews an earlier acceptance; present it and accept with its handoffId`,
+      );
     }
     const handoff = z.object({
       id: z.string(),

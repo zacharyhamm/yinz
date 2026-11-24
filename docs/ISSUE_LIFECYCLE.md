@@ -522,10 +522,10 @@ branch names or abbreviations.
 | `ready` | `handoffId` of the current `authorize_merge` handoff (commit derived); `mergeRequest` (from `--request`): user authorization to merge, accepting remaining findings at this commit. |
 | `merge` | Normally no input; explicit exception is `skipCiRequest`. |
 | `repair` | Optional `reason`; required only when no failed verification or merge attempt is recorded, whose details are attached automatically. |
-| `closeout` | Offer `handoffId`, `decision` (`accept` or `decline`) and actual user `request`. |
+| `closeout` | `decision` (`accept` or `decline`) and actual user `request`; optional offer `handoffId`, which must match the current offer when given. Without a current offer, a decision creates one and decides it in one call. |
 | `discard-agent` | Actual operator `request`; optional `confirmedStopped: true` only for a completed worker the behavior reports it cannot observe. |
 | `accept-submission` | Current running pane task's `taskId`; `request`: actual user authorization to import its accepted evidence without waiting for the pane. |
-| `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. |
+| `summarize` | `outcomeMet: true`; `summary`: original problem, delivered outcome and limits. Needed only to correct a rolled-back outcome; drive completes a landed merge itself. |
 
 Finding severities are `low`, `medium`, `high`, `critical`. Unresolved high/critical
 plan findings block planning approval unless the user explicitly defers them.
@@ -643,15 +643,33 @@ retained findings.
 Unresolved low findings are recorded in `state.reviewFollowUps` (finding
 identity, latest reported form, commit, issue digest) when their review is
 imported. They are excluded from blocking acceptance and from later reviewers'
-prior-finding obligations, and listed in the `address_review_findings`,
-`authorize_merge` and `summarize` handoffs. The user can still select one with
+prior-finding obligations, and listed in the `address_review_findings` and
+`authorize_merge` handoffs, in `summarize` after an outcome rollback, and with
+their Agenda item IDs in the handoffs after completion, which also show the
+recorded outcome. The user can still select one with
 `--repair`. A later report at medium or higher makes it blocking again. Before
-completing the Agenda issue, `summarize` files each remaining follow-up of the
+completing the Agenda issue, completion (automatic in `drive` after a merge, or
+`summarize`) files each remaining follow-up of the
 current requirements as its own Agenda item. It records `agendaItem: {marker,
 status: "creating"}` first, searches for the marker on retry before adding, and
 stores the created item's ID. It never edits the issue's own note, whose content
-is part of the issue digest. A failed add blocks `summarize` with a retryable
+is part of the issue digest. A failed add blocks completion with a retryable
 error and leaves the issue `merged`.
+
+#### Automatic completion
+
+When a merge lands, `drive` completes the issue without a handoff. It
+revalidates the Git receipt, records `outcomeMet: true` with a summary citing the
+merged commit, CI gate, approved plan and code review coverage, files
+follow-ups, marks the Agenda item done and continues to close-out. Drive compares
+Agenda requirements before dispatch, so changed requirements block instead of
+completing. An explicit rollback to `summarize` (or to `merge` after it landed)
+sets `outcomeRollback`; drive then returns `summarize` for a corrected outcome
+instead of recording one. A rollback saved before this marker existed is
+recognized by its recovery record targeting the merged state. Restarting an
+earlier step clears the marker with the receipt. If completion stops after
+Agenda accepted the item but before `done` was saved, rerunning `drive` finishes
+it: a merged issue may already be completed in Agenda.
 
 #### Auto-repair
 
@@ -1043,25 +1061,34 @@ failed worktrees remain for diagnosis. Completion requires local merge and
 After local merge, recorded `outcomeMet: true`, and Agenda completion, `drive`
 returns `authorize_closeout` when the targets can be validated. `summarize` also
 publishes this offer after saving completion; an unavailable offer reports
-completed outcome and retained resources. Completion itself deletes nothing. Present the exact
-bundled offer and obtain a separate explicit decision. Plan approval and merge
-authorization never authorize deletion. For example:
+completed outcome and retained resources. Completion itself deletes nothing.
+A user request to clean up the issue ("cleanup", "clean up", "merge and clean
+up") is the decision: pass it as `request` with `decision: "accept"` and do not
+ask again. Without such a request, present the bundled offer and record the
+user's answer. Plan approval and merge authorization alone never authorize
+deletion. For example:
 
 > Delete `/work/yinz/.worktrees/issue-77` including its build outputs, delete local
 > branch `issue-77`, then close the original controller `development/terminal_7`.
 > Accepting ends that conversation. Decline retains all resources and the completed
 > outcome.
 
-Use the returned handoff ID with the actual user request in an input file:
-
-```json
-{"handoffId":"<returned offer ID>","decision":"accept","request":"<actual user authorization>"}
-```
+Record the decision with the user's actual words:
 
 ```sh
-scripts/issue-lifecycle --item 77 closeout --input-file /tmp/issue-77-closeout.json
+scripts/issue-lifecycle --item 77 closeout --decision accept --request 'cleanup'
 scripts/issue-lifecycle --item 77 resume-closeout
 ```
+
+With no current offer, an accept or decline carrying `request` and no
+`handoffId` creates the offer and decides it in one call. With a current closeout
+offer, an omitted `handoffId` answers that offer; a supplied one must match it. The
+behavior revalidates every target before any effect, so a direct request cannot
+delete an unmerged, dirty, moved or in-use worktree. A renewed offer (after an
+expired pane fence, or the recovery offer after a summarize rollback) carries an
+earlier acceptance, so accepting it requires its `handoffId`: present it first.
+Replaying the earlier request is refused, including the one-call form that would
+create the recovery offer.
 
 These launcher methods dispatch directly to Swamp's issue behavior (`closeout`
 and `resume_closeout`). `decision: "decline"` records retention and ends the

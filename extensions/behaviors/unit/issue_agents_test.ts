@@ -37,6 +37,7 @@ import {
   createState,
   effectivePlanFindings,
   initialPlanning,
+  type Issue,
   type LifecycleState,
   priorFindingObligations,
   priorImplementationFindings,
@@ -301,6 +302,8 @@ function harness(
     clock: 0,
     reopenError: undefined as string | undefined,
     reopened: 0,
+    completed: [] as Issue[],
+    filedFollowUps: [] as string[],
     prepareCalls: [] as Record<string, unknown>[],
     receipt: { status: "missing" } as unknown,
     checkCalls: [] as {
@@ -331,6 +334,8 @@ function harness(
     agentRunner: undefined as YinzRunner | undefined,
     agentId: () => "submission-1",
     agendaReads: 0,
+    // Agenda already marks the issue done; readers must allow completion.
+    agendaCompleted: false,
     controlTab: 0,
     placementCalls: [] as string[][],
     notifications: [] as string[][],
@@ -650,8 +655,11 @@ function harness(
         issueLocked = false;
       }
     },
-    readAgenda: () => {
+    readAgenda: (_workspace, _itemId, allowCompleted) => {
       controls.agendaReads++;
+      if (controls.agendaCompleted && !allowCompleted) {
+        return Promise.reject(new Error("Agenda issue is already completed"));
+      }
       return Promise.resolve(controls.agenda);
     },
     inspect: () => Promise.resolve(controls.repo),
@@ -703,6 +711,14 @@ function harness(
       return controls.reopenError
         ? Promise.reject(new Error(controls.reopenError))
         : Promise.resolve();
+    },
+    completeAgenda: (issue) => {
+      controls.completed.push(issue);
+      return Promise.resolve(issue);
+    },
+    fileFollowUpItem: (_issue, _followUp, marker) => {
+      controls.filedFollowUps.push(marker);
+      return Promise.resolve(1000 + controls.filedFollowUps.length);
     },
     realPath: (path) => Promise.resolve(path),
     id: () => `a6da10b0-c980-4b82-b920-${String(++serial).padStart(12, "0")}`,
@@ -6062,6 +6078,22 @@ Deno.test("legacy workers retain implementation/control selection and pending ta
   }
 });
 
+/** The Git helper's merged receipt for a recorded state receipt. */
+function landedReceipt(receipt: NonNullable<LifecycleState["receipt"]>) {
+  return {
+    ...receipt,
+    previousAttempts: receipt.previousAttempts?.map((attempt) => ({
+      attemptId: attempt.attemptId,
+      failure: attempt.summary,
+      ...(attempt.log ? { ci: { log: attempt.log } } : {}),
+    })),
+    status: "merged",
+    issueKey: "default/85",
+    issueDigest: issue.digest,
+    ci: { status: "passed", command: ["cargo", "x", "ci", "check"] },
+  };
+}
+
 Deno.test("driver blocks a failed merge attempt with its evidence and keeps it listed after a later merge", async () => {
   let state = transition(implementing(), "review_code", {
     planVersion: 1,
@@ -6145,9 +6177,16 @@ Deno.test("driver blocks a failed merge attempt with its evidence and keeps it l
       ],
     },
   });
+  later.controls.receipt = landedReceipt(
+    (await loadState(later.context)).receipt!,
+  );
   await later.drive.execute({}, later.context);
+  // A landed merge completes automatically; the history stays in what drive
+  // presents next.
   const summary = result(later);
-  equal(summary.decision, "summarize");
+  equal((await loadState(later.context)).phase, "done");
+  equal(later.controls.completed.length, 1);
+  assert(summary.decision !== "summarize", summary.decision);
   for (
     const text of [
       "- f6da10b0-c980-4b82-b920-640238095f1a: failed; exit 1",
@@ -6159,6 +6198,142 @@ Deno.test("driver blocks a failed merge attempt with its evidence and keeps it l
   }
   // A failure recorded in state is listed once, not again from the receipt.
   equal(summary.presentation.split(`- ${id}`).length, 2);
+});
+
+function landedState() {
+  let state = transition(implementing(), "review_code", {
+    planVersion: 1,
+    commit: head,
+    steps: [{ id: "fix", status: "implemented" }],
+    findings: [],
+  });
+  state = transition(verify(state), "ready", {
+    commit: head,
+    mergeRequest: "Merge",
+  });
+  state = transition(state, "begin_merge", {
+    attempt: {
+      id: "a6da10b0-c980-4b82-b920-640238095f1b",
+      originalHead: head,
+      startedAt: timestamp,
+    },
+  });
+  return transition(state, "merged", {
+    receipt: {
+      attemptId: "a6da10b0-c980-4b82-b920-640238095f1b",
+      originalCommit: head,
+      rebasedCommit: "c".repeat(40),
+      baseCommit: "b".repeat(40),
+      mergedCommit: "c".repeat(40),
+      worktree: "/repo/issue",
+      branch: "issue-85",
+      ciStatus: "passed",
+      mergedAt: timestamp,
+    },
+  });
+}
+
+Deno.test("drive records the outcome and closes the Agenda issue once a merge lands", async () => {
+  const merged = landedState();
+  const h = harness(merged);
+  h.controls.receipt = landedReceipt(merged.receipt!);
+  await h.drive.execute({}, h.context);
+  const done = await loadState(h.context);
+  equal(done.phase, "done");
+  equal(done.outcome?.outcomeMet, true);
+  for (
+    const text of [
+      `Merged ${"c".repeat(40)} into local main`,
+      "full CI gate passed",
+      "every plan step implemented",
+      "Recorded automatically",
+    ]
+  ) assert(done.outcome!.summary.includes(text), done.outcome!.summary);
+  equal(h.controls.completed.map((item) => item.itemId), [85]);
+  assert(result(h).decision !== "summarize");
+  // Completion is idempotent on later passes.
+  await h.drive.execute({}, h.context);
+  equal(h.controls.completed.length, 1);
+});
+
+Deno.test("drive finishes a completion interrupted after Agenda accepted it", async () => {
+  const merged = landedState();
+  const h = harness(merged);
+  h.controls.receipt = landedReceipt(merged.receipt!);
+  // completeAgenda succeeded, then the `done` save was lost.
+  h.controls.agendaCompleted = true;
+  await h.drive.execute({}, h.context);
+  equal((await loadState(h.context)).phase, "done");
+  equal(h.controls.completed.length, 1);
+  assert(result(h).presentation.includes("Recorded outcome: Merged"));
+});
+
+Deno.test("drive blocks requirements changed after merge with a workable recovery", async () => {
+  const merged = landedState();
+  const h = harness(merged);
+  h.controls.receipt = landedReceipt(merged.receipt!);
+  h.controls.agenda = { ...issue, digest: "e".repeat(64), note: "Changed" };
+  await h.drive.execute({}, h.context);
+  const handoff = result(h);
+  equal(handoff.decision, "blocked");
+  assert(handoff.reason.includes("restore the previous Agenda text"));
+  assert(handoff.reason.includes("rollback to triage"));
+  assert(!handoff.reason.includes("summary"));
+  equal(h.controls.completed.length, 0);
+});
+
+Deno.test("drive keeps a rollback saved before outcomeRollback existed", async () => {
+  const merged = landedState();
+  const done = transition(merged, "done", {
+    outcomeMet: true,
+    summary: "First outcome",
+  });
+  const id = crypto.randomUUID();
+  const { outcomeRollback: _marker, ...legacy } = rollbackState(
+    done,
+    "summarize",
+    id,
+  );
+  const h = harness(legacy);
+  h.controls.receipt = landedReceipt(merged.receipt!);
+  h.resources.set("recovery", {
+    id,
+    step: "summarize",
+    request: "Correct the outcome",
+    createdAt: timestamp,
+    status: "completed",
+    before: done,
+    next: legacy,
+  });
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "summarize");
+  equal(h.controls.completed.length, 0);
+});
+
+Deno.test("drive waits for a corrected outcome after an explicit summarize rollback", async () => {
+  const merged = landedState();
+  const done = transition(merged, "done", {
+    outcomeMet: true,
+    summary: "First outcome",
+  });
+  const rolled = rollbackState(done, "summarize", crypto.randomUUID());
+  equal(rolled.outcomeRollback, true);
+  const h = harness(rolled);
+  h.controls.receipt = landedReceipt(merged.receipt!);
+  await h.drive.execute({}, h.context);
+  equal(result(h).decision, "summarize");
+  equal((await loadState(h.context)).phase, "merged");
+  equal(h.controls.completed.length, 0);
+  const corrected = transition(rolled, "done", {
+    outcomeMet: true,
+    summary: "Corrected outcome",
+  });
+  assert(!corrected.outcomeRollback);
+  // Restarting an earlier step clears the marker with the receipt.
+  equal(
+    rollbackState(rolled, "review_code", crypto.randomUUID()).outcomeRollback,
+    undefined,
+  );
 });
 
 Deno.test("rollback can supersede a task interrupted before its evidence slot opened", async () => {

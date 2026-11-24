@@ -1,3 +1,4 @@
+import { automaticOutcome, completeIssue } from "./issue_completion.ts";
 import { closeoutPresentation } from "./issue_closeout.ts";
 import { notifyHandoff } from "./issue_notifications.ts";
 import {
@@ -365,11 +366,14 @@ function present(
     );
   }
   const followUps = activeFollowUps(state);
+  // After completion (automatic in drive), report what was filed.
+  const completed = state.phase === "done";
   if (
     followUps.length &&
-    ["address_review_findings", "authorize_merge", "summarize"].includes(
-      handoff.decision,
-    )
+    (completed ||
+      ["address_review_findings", "authorize_merge", "summarize"].includes(
+        handoff.decision,
+      ))
   ) {
     lines.push(
       `Follow-ups (${
@@ -377,7 +381,9 @@ function present(
           a.indexOf(v) === i
         ).join("/")
       } severity, not repaired${
-        handoff.decision === "summarize"
+        completed
+          ? "; filed as separate Agenda items"
+          : handoff.decision === "summarize"
           ? "; summarize files each as a separate Agenda item"
           : "; select one of the current reviews with --repair to fix it now"
       }):`,
@@ -385,13 +391,15 @@ function present(
         `- ${f.finding.role}/${f.finding.findingId}: ${f.detail.description}${
           f.agendaItem?.itemId ? ` (Agenda item ${f.agendaItem.itemId})` : ""
         }${
-          handoff.decision === "summarize" || selectableFollowUp(state, f)
+          completed || handoff.decision === "summarize" ||
+            selectableFollowUp(state, f)
             ? ""
             : ` (from an earlier review at ${f.commit}; not selectable)`
         }`
       ),
     );
   }
+  if (state.outcome) lines.push(`Recorded outcome: ${state.outcome.summary}`);
   for (const decision of state.reviewDecisions ?? []) {
     lines.push(
       `Review decision ${decision.id}: ${decision.request}`,
@@ -901,7 +909,12 @@ function requirementsChangedReason(
     return `Agenda requirements changed during ${state.phase}; automatic refresh would discard the user's revision authorization for handoff ${authorizationHandoffId}, and refresh refuses while that authorization is reserved. Present the changes; with the user's direction run rollback to triage (it records the authorization's request as planning feedback and supersedes the reservation) then drive to re-plan, or restore the previous Agenda text to use the authorization.`;
   }
   if (["merged", "done"].includes(state.phase)) {
-    return "Agenda requirements changed after merge; record the difference in the summary/closeout instead of refreshing.";
+    // Completion only accepts the requirements the merge was reviewed against.
+    return `Agenda requirements changed after merge; completion only accepts the requirements the merged work was reviewed against. Present the changes; restore the previous Agenda text to ${
+      state.phase === "merged"
+        ? "complete the issue"
+        : "keep the recorded completion"
+    }, or with the user's direction run rollback to triage then drive to re-plan against the new requirements.`;
   }
   if (!impact.refreshable) {
     return "Agenda requirements changed during an active merge attempt. Repair the active merge attempt before refreshing its issue.";
@@ -1396,10 +1409,13 @@ async function drive(
       }
 
       const state = await loadState(context);
+      // Automatic completion can complete the Agenda item and stop before
+      // saving `done`; completeAgenda is idempotent, so a merged issue may
+      // already be completed in Agenda.
       const fresh = await dependencies.readAgenda(
         state.issue.workspace,
         state.issue.itemId,
-        state.phase === "done",
+        state.phase === "merged" || state.phase === "done",
       );
       if (fresh.digest !== state.issue.digest) {
         const impact = refreshImpact(state, fresh);
@@ -1694,10 +1710,28 @@ async function drive(
           "Merge authorization is recorded; run merge with the required CI gate (a waiver requires its own explicit user request)",
         );
       } else if (state.phase === "merged") {
-        return await handoff(
-          "summarize",
-          "Compare the merge receipt with the requirements and record the delivered outcome before Agenda close-out",
+        // A rollback saved before outcomeRollback existed is identified by its
+        // recovery record, whose target was this merged state.
+        const legacyOutcomeRollback = recovery?.id === state.rollbackId &&
+          recovery?.next.phase === "merged";
+        if (state.outcomeRollback || legacyOutcomeRollback) {
+          return await handoff(
+            "summarize",
+            "The recorded outcome was rolled back; compare the merge receipt with the requirements and record the corrected outcome",
+          );
+        }
+        // Requirements were compared above: changed Agenda text never reaches
+        // dispatch. Record the outcome, close the Agenda item and continue to
+        // the optional closeout offer.
+        handles.push(
+          ...(await completeIssue(
+            context,
+            state,
+            automaticOutcome(state),
+            dependencies,
+          )).dataHandles,
         );
+        continue;
       } else {
         if (
           state.closeout?.decision === "declined" ||

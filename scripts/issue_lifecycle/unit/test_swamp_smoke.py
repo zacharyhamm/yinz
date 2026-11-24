@@ -1003,7 +1003,7 @@ raise SystemExit(result.returncode)
         self.record_ux(commit)
         return worktree, commit
 
-    def test_installed_ready_handoff_chains_merge_to_summarize(self):
+    def test_installed_ready_handoff_chains_merge_to_completion(self):
         _, commit = self.direct_through_reviews("chain")
         authorize = json.loads(self.lifecycle("drive"))
         self.assertEqual(authorize["decision"], "authorize_merge", authorize)
@@ -1012,9 +1012,13 @@ raise SystemExit(result.returncode)
         self.assertFalse(self.cargo_log.exists())
         summary = json.loads(self.lifecycle("ready", flags=("--handoff", authorize["id"], "--request",
                                                             "Merge the disposable smoke fixture locally."), chain=True))
-        self.assertEqual(summary["decision"], "summarize", summary)
+        # A landed merge completes the issue without a summarize stop.
+        self.assertIn(summary["decision"], ("authorize_closeout", "complete"), summary)
         state = self.state()
-        self.assertEqual(state["phase"], "merged")
+        self.assertEqual(state["phase"], "done")
+        self.assertTrue(state["outcome"]["outcomeMet"])
+        self.assertIn(state["receipt"]["mergedCommit"], state["outcome"]["summary"])
+        self.assertTrue(self.agenda("item", "show", str(self.item_id))["item"]["completed"])
         self.assertEqual(state["mergeAuthorization"]["commit"], commit)
         self.assertEqual(state["mergeAuthorization"]["request"], "Merge the disposable smoke fixture locally.")
         self.assertEqual(len(self.cargo_log.read_text().splitlines()), 1)
@@ -1127,7 +1131,8 @@ raise SystemExit(result.returncode)
         self.assertNotEqual(merged["receipt"]["attemptId"], failure["attemptId"])
         self.assertEqual(len(self.cargo_log.read_text().splitlines()), 2)
         summary = json.loads(self.lifecycle("drive"))
-        self.assertEqual(summary["decision"], "summarize")
+        self.assertIn(summary["decision"], ("authorize_closeout", "complete"), summary)
+        self.assertEqual(self.state()["phase"], "done")
         self.assertIn(f"- {failure['attemptId']} at ", summary["presentation"])
         self.assertIn(f"- {merged['receipt']['attemptId']}: merged", summary["presentation"])
 

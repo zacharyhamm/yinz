@@ -16,8 +16,10 @@ import { AgentKindSchema } from "./worker_selection.ts";
 import {
   activeReviewFix,
   codeReviewFingerprint,
+  completeAgenda,
   deferredPlanFindings,
   describeMergeFailure,
+  fileFollowUpItem,
   implementationReviewFingerprint,
   initialPlanning,
   type LifecycleState,
@@ -347,6 +349,9 @@ export interface IssueAgentDependencies {
   inspect: typeof inspect;
   gitOperation: typeof gitOperation;
   reopenAgenda: typeof reopenAgenda;
+  /** Post-merge completion: closes the Agenda issue and files follow-ups. */
+  completeAgenda: typeof completeAgenda;
+  fileFollowUpItem: typeof fileFollowUpItem;
   realPath: (path: string) => Promise<string>;
   id: () => string;
   now: () => string;
@@ -387,6 +392,8 @@ export const defaultDependencies: IssueAgentDependencies = {
   inspect,
   gitOperation,
   reopenAgenda,
+  completeAgenda,
+  fileFollowUpItem,
   realPath: (path) => Deno.realPath(path),
   id: () => crypto.randomUUID(),
   now: () => new Date().toISOString(),

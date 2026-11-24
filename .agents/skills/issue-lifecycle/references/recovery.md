@@ -373,11 +373,14 @@ resume close-out using its receipt rather than merging again. Compare delivered
 outcome to the original requirements. Complete only after merge and
 `outcomeMet: true`; keep an unmet issue open and describe the remaining work.
 After successful completion, `authorize_closeout` offers optional bundled cleanup.
-Present the directory (including build outputs), local branch and original
-controller session/pane. Acceptance ends that conversation; record separate
-explicit consent with `closeout --handoff <id> --decision accept --request '<consent>'`.
+A user request for cleanup is the acceptance: run `closeout --decision accept
+--request '<their words>'` directly. Otherwise present the directory (including
+build outputs), local branch and original controller session/pane, and record
+the answer the same way. Acceptance ends that conversation.
 Initial decline retains everything and is terminal for automatic drive. A renewed
-offer describes only remaining actions. If Git is complete, decline keeps the
+offer describes only remaining actions and needs fresh consent: present it and
+accept with `closeout --handoff <id>`; replaying the earlier request is refused.
+If Git is complete, decline keeps the
 original pane and completed outcome; deleted resources remain deleted. Declining
 partial cleanup stops further effects, retaining remaining resources, saved
 progress and any unresolved ownership reservation without claiming completion.

@@ -35,6 +35,10 @@ OMIT_HANDOFF = [
     re.compile(r"\b(fills|fill in|fills in|infers|derives)\s+" + HANDOFF, re.IGNORECASE),
     re.compile(r"revisionApproval:\s*\{\s*request\s*\}"),
 ]
+CLOSEOUT = re.compile(r"\bcloseout\b", re.IGNORECASE)
+# Other commands whose handoff stays mandatory; a closeout sentence naming one is not exempt.
+OTHER_HANDOFF_COMMANDS = re.compile(r"\b(approve|adjudicate-plan|decide-review|approve-review-fixes|ready|drive)\b",
+                                    re.IGNORECASE)
 NEGATED_BEFORE = re.compile(r"\b(never|not|no|cannot)\s+$", re.IGNORECASE)
 
 
@@ -105,7 +109,11 @@ def requires_confirmed_stopped(sentence):
 
 
 def omits_handoff(sentence):
-    # "never fills --handoff" states the rule this guard protects.
+    # "never fills --handoff" states the rule this guard protects. Closeout is
+    # the deliberate exception: a user's cleanup request is its decision, and
+    # the behavior revalidates every target, so its handoffId is optional.
+    if CLOSEOUT.search(sentence) and not OTHER_HANDOFF_COMMANDS.search(sentence):
+        return False
     return any(not NEGATED_BEFORE.search(sentence[:match.start()])
                for pattern in OMIT_HANDOFF for match in pattern.finditer(sentence))
 
@@ -203,9 +211,12 @@ class GuardPredicateTests(unittest.TestCase):
             "Run approve without `--handoff`.",
             "The launcher fills `--handoff` from status.",
             "drive {revisionApproval: {request}} binds the current handoff.",
+            "Omit `--handoff` when cleaning up; the launcher uses the current offer.",
+            "Omit `--handoff` for approve and closeout alike.",
         ]:
             self.assertTrue(omits_handoff(sentence), sentence)
         for sentence in [
+            "With a current closeout offer, an omitted `handoffId` answers that offer.",
             "The launcher never fills `--handoff`: pass the id of the handoff you presented.",
             "`approve --handoff <id> --request '<approval>'` records explicit approval.",
         ]:

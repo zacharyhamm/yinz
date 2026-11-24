@@ -20,6 +20,7 @@ import {
   RecoverySchema,
 } from "./_lib/issue_agents.ts";
 import { compactIssue } from "./_lib/issue_compaction.ts";
+import { completeIssue } from "./_lib/issue_completion.ts";
 import {
   type DecisionAction,
   DecisionInputSchemas,
@@ -29,12 +30,8 @@ import {
 import { assertCheckPolicy } from "./_lib/check_policy.ts";
 import {
   ActionSchemas,
-  activeFollowUps,
   CheckSchema,
-  completeAgenda,
   createState,
-  fileFollowUpItem,
-  followUpMarker,
   type LifecycleState,
   type MergeFailure,
   readAgenda,
@@ -50,7 +47,6 @@ import {
   EventSchema,
   gitOperation,
   GlobalArgsSchema,
-  type Handle,
   inspect,
   loadState,
   mergeLogName,
@@ -646,49 +642,19 @@ export const behavior = {
       execute: (args: z.infer<typeof ActionSchemas.done>, context: Context) =>
         withIssue(context, async () => {
           const state = await mutableState(context);
-          if (!state.receipt) {
-            throw new Error("Completion requires a local merge receipt");
-          }
-          await gitOperation(context, {
-            action: "receipt",
-            attemptId: state.receipt.attemptId,
-          }).then((raw) => normalizeReceipt(raw, state));
-          if (state.phase === "done") return { dataHandles: [] };
-          // Validate the outcome before any Agenda write.
-          transition(state, "done", args);
-          const filed: Handle[] = [];
-          for (const followUp of activeFollowUps(state)) {
-            if (followUp.agendaItem?.status === "created") continue;
-            const marker = followUp.agendaItem?.marker ??
-              followUpMarker(followUp);
-            if (!followUp.agendaItem) {
-              // Record intent first: a retry searches for the marker before adding.
-              followUp.agendaItem = { marker, status: "creating" };
-              filed.push(
-                ...(await saveState(context, "file_follow_up", state))
-                  .dataHandles,
-              );
-            }
-            const itemId = await fileFollowUpItem(
-              state.issue,
-              followUp,
-              marker,
-            );
-            followUp.agendaItem = { marker, status: "created", itemId };
-            filed.push(
-              ...(await saveState(context, "file_follow_up", state))
-                .dataHandles,
-            );
-          }
-          const next = transition(state, "done", args);
-          await completeAgenda(state.issue);
-          const saved = await saveState(context, "done", next);
+          const wasDone = state.phase === "done";
+          const { state: next, dataHandles: filed } = await completeIssue(
+            context,
+            state,
+            args,
+          );
+          if (wasDone) return { dataHandles: [] };
           try {
             const offered = await offerCloseout(context, next);
             return {
               dataHandles: [
                 ...new Map(
-                  [...filed, ...saved.dataHandles, ...offered.dataHandles].map(
+                  [...filed, ...offered.dataHandles].map(
                     (handle) => [handle.name, handle],
                   ),
                 ).values(),
@@ -707,7 +673,7 @@ export const behavior = {
               ...handoffStateFields(StateSchema.parse(next)),
               presentation: reason,
             });
-            return { dataHandles: [...filed, ...saved.dataHandles, handoff] };
+            return { dataHandles: [...filed, handoff] };
           }
         }),
     },

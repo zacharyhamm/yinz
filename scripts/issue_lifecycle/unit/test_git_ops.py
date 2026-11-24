@@ -336,7 +336,13 @@ raise SystemExit(result.returncode)
                 name, label = ("merge", "repository merge") if action == "receipt" else ("worktree-ownership", "worktree ownership")
                 with (self.repo / ".git/yinz-lifecycle" / f"{name}.lock").open("a+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    child = self.start_request({**request, "action": action})
+                    # A merged receipt is read without the merge lock (see
+                    # test_merged_receipt_is_readable_while_the_next_merge_holds_the_lock);
+                    # one that may need reconciling still waits.
+                    query = {**request, "action": action}
+                    if action == "receipt":
+                        query["attemptId"] = str(uuid.uuid4())
+                    child = self.start_request(query)
                     try:
                         self.assertIn(f"Waiting for the {label} lock", child.stderr.readline())
                         self.assertIsNone(child.poll())
@@ -1110,6 +1116,25 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
                 self.assertEqual(other["status"], "not_failed")
                 self.assertEqual(missing["status"], "missing")
         self.assertEqual(receipt, self.receipt(failed))
+
+    def test_merged_receipt_is_readable_while_the_next_merge_holds_the_lock(self):
+        # Completion after a merge re-checks the receipt; it must not wait on
+        # the next queued merge's CI gate.
+        worktree = self.branch("issue-a")
+        merged = self.run_request(self.request(worktree, skipCiRequest="Skip this test merge."))
+        self.git(self.repo, "commit", "--allow-empty", "-m", "another issue")
+        import fcntl
+        query = {"action": "receipt", "repoPath": str(self.repo)}
+        with (self.repo / ".git" / "yinz-lifecycle" / "merge.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for policy in ({}, {"failIfBusy": False}, {"failIfBusy": True}):
+                receipt = self.run_request({**query, **policy, "attemptId": merged["attemptId"]})
+                saved = self.repo / ".git" / "yinz-lifecycle" / "merges" / f"{merged['attemptId']}.json"
+                self.assertEqual(receipt, json.loads(saved.read_text()))
+                self.assertEqual(receipt["status"], "merged")
+            # Anything that may need reconciling still takes the lock.
+            busy = self.run_request({**query, "failIfBusy": True, "attemptId": str(uuid.uuid4())}, success=False)
+            self.assertEqual((busy["code"], busy["stage"]), ("lock_busy", "merge-receipt validation"))
 
     def test_new_attempt_receipts_keep_earlier_failed_attempts_of_the_same_issue(self):
         worktree = self.branch("issue-a")

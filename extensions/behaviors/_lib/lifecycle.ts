@@ -706,6 +706,9 @@ export const StateSchema = z.object({
   receipt: ReceiptSchema.optional(),
   mergeFailures: z.array(MergeFailureSchema).optional(),
   outcome: z.object({ outcomeMet: z.literal(true), summary: Text }).optional(),
+  // Set by an explicit rollback of a landed merge's outcome: drive then waits
+  // for a corrected summarize instead of recording the outcome automatically.
+  outcomeRollback: z.literal(true).optional(),
   lastFailure: Text.optional(),
   /**
    * Review fingerprints that compaction preserved: the digest of a review
@@ -1358,6 +1361,7 @@ export function rollbackState(
     delete state.outcome;
     delete state.lastFailure;
     delete state.attempt;
+    state.outcomeRollback = true;
     state.phase = "merged";
     return state;
   }
@@ -1391,6 +1395,7 @@ export function rollbackState(
   }
   state.rollbackId = z.uuid().parse(id);
   delete state.outcome;
+  delete state.outcomeRollback;
   delete state.lastFailure;
   delete state.attempt;
   delete state.receipt;
@@ -2545,6 +2550,7 @@ export function transition(
         throw new Error("Completion requires a verified local merge receipt");
       }
       state.outcome = ActionSchemas.done.parse(args);
+      delete state.outcomeRollback;
       state.phase = "done";
       break;
     }

@@ -294,7 +294,7 @@ D036, D038, D039, D056 and D058.
 | R037 | recovery.md:206–213 | Legacy review states | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
 | R038 | recovery.md:215–223 | repair needs no reason when a failure is recorded; probe conflicts permit a rebase onto local main | [Recovery: review/verification](recovery.md#review-and-verification-failures), [Code: lifecycle.ts repair](../../../../extensions/behaviors/_lib/lifecycle.ts) |
 | R039 | recovery.md:237–251 | Merge failure details attached by repair; recurring tests named; the probe reports conflicts before the gate | [Recovery: integration failures](recovery.md#integration-failures), [Code: git_ops.py recurring_test_failures](../../../../scripts/issue_lifecycle/git_ops.py) |
-| R040 | recovery.md:266 | closeout --handoff with --decision and --request | [Recovery: close-out](recovery.md#close-out-failures) |
+| R040 | recovery.md:266 | closeout --handoff with --decision and --request (superseded by R060: the handoff is optional) | [Recovery: close-out](recovery.md#close-out-failures) |
 | R041 | recovery.md:323–354 | Duplicate qualified-completion section deleted | [Design: qualified completion](../../../../docs/ISSUE_LIFECYCLE.md#qualified-completion-after-closure) |
 | R042 | recovery.md:356–377 | taskRecovery fields and kinds | [Recovery: completion diagnostics](recovery.md#completion-and-stale-run-diagnostics), [Code: observations.py task_recovery](../../../../scripts/issue_lifecycle/observations.py) |
 | R043 | planning.md:15–32, 43–52 | Template pre-fills responses and mappings; helper submission; check policy section | [Planning](planning.md), [Planning: check policy](planning.md#check-policy) |
@@ -314,6 +314,8 @@ D036, D038, D039, D056 and D058.
 | R057 | ISSUE_LIFECYCLE.md:901–921 | Retry eligibility, budgets, observedVia, cleanupRefusal and taskRecovery | [Design: completion recovery](../../../../docs/ISSUE_LIFECYCLE.md#completion-recovery-and-inconsistent-run-observations) |
 | R058 | ISSUE_LIFECYCLE.md:925–931 | Contract 3 extends contract-2 continuity | [Design: review continuity](../../../../docs/ISSUE_LIFECYCLE.md#review-continuity-and-assessment) |
 | R059 | (new) | Legacy states collected in one section | [Design: legacy states](../../../../docs/ISSUE_LIFECYCLE.md#legacy-states) |
+| R060 | (new) | A user cleanup request is closeout acceptance: one call offers and accepts, handoffId optional, targets still revalidated (supersedes R040 and the separate-consent wording) | [Design: optional close-out](../../../../docs/ISSUE_LIFECYCLE.md#optional-resource-close-out), [Code: issue_closeout.ts closeout](../../../../extensions/behaviors/_lib/issue_closeout.ts) |
+| R061 | (new) | drive completes a landed merge automatically (outcome, follow-ups, Agenda done); summarize handoff only after an explicit outcome rollback | [Design: automatic completion](../../../../docs/ISSUE_LIFECYCLE.md#automatic-completion), [Code: issue_completion.ts](../../../../extensions/behaviors/_lib/issue_completion.ts) |
 
 ## Review-loop revision
 
