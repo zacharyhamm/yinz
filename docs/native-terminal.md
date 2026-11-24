@@ -972,7 +972,9 @@ another image at the same position. Cells, links, cursor, geometry, sideband
 and deletes are still delivered in order. The server logs one warning per
 overload episode. When the viewer's next ACK releases media, the screen
 re-renders the deferred panes and the image arrives as a shared file or
-transfer. A budget refusal never falls back to inline bytes. An image above
+transfer. A transfer abandoned before its first chunk returns its share at
+once, and the next ACK re-renders the deferred panes as if it had released
+media. A budget refusal never falls back to inline bytes. An image above
 the 100 MiB shared limit is dropped with a warning. A chunked viewer whose
 file write fails receives a transfer instead. Inline fallback remains only for
 viewers with neither shared nor chunked media, images below 256 KiB and a
@@ -980,12 +982,19 @@ failed file write without chunked media.
 
 A chunked transfer holds one lease for its whole image. One frame carries at
 most 8 MiB of media to a chunked viewer, counting inline residencies and chunk
-bytes, so a 100 MiB image takes 13 frames. New chunk bytes wait until the
-viewer ACKs the last frame that carried chunks, or that ran out of allowance
-for them. At most one such frame is unacknowledged, and the queue stays far
-below the writer's limit. Throughput is about 8 MiB per round trip. A placement
-whose transfer is incomplete is withheld like a deferred one, without a
-warning, and the ACK that opens the window re-renders its pane. The frame that
+bytes, so a 100 MiB image takes 13 frames. A transfer that spans frames
+sends new chunk bytes only after the viewer ACKs the last frame that carried
+chunks, or that ran out of allowance for them. At most one such frame is
+unacknowledged. Throughput for those transfers is about 8 MiB per round trip.
+A transfer that fits what remains of the frame's allowance is sent whole in
+that frame without waiting, like an inline image. A program that redraws an
+image of up to 8 MiB faster than the round trip therefore sees each
+replacement arrive in the frame that deletes the image it replaces, without
+a blank gap. Each such frame stays within the 8 MiB allowance, and its lease
+counts against the viewer's budget until its ACK. A placement whose transfer
+is incomplete is withheld like a deferred one, without a warning, and the ACK
+that opens the window re-renders its pane. A larger replacement leaves its
+position empty until its last chunk arrives. The frame that
 carries the last chunk also carries the residency and placement. The server
 keeps its copy of the pixels until the last chunk, then only the lease, which
 accounts for the client's assembly.

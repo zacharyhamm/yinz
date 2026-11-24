@@ -144,16 +144,22 @@ mod budget {
     /// The wire rules a client enforces: first chunks carry strictly increasing ids,
     /// continuations and cancels name a started incomplete transfer, offsets follow
     /// each other, and a transfer residency names a transfer its frame completed.
+    /// It also models what the viewer shows: each host image's first byte (its shade) and
+    /// the image each live placement shows.
     #[derive(Default)]
     struct Wire {
         highest: u64,
         incomplete: HashMap<u64, (u32, u32)>,
+        first_bytes: HashMap<u64, u8>,
+        images: HashMap<u64, u8>,
+        shown: HashMap<u64, u64>,
     }
 
     impl Wire {
         fn check(&mut self, cleared: bool, records: &[GraphicsRecord]) {
             if cleared {
                 self.incomplete.clear();
+                self.shown.clear();
             }
             let mut completed = HashSet::new();
             for record in records {
@@ -165,6 +171,9 @@ mod budget {
                         data,
                     } => {
                         assert!(!data.is_empty(), "empty chunk of {transfer_id}");
+                        if *offset == 0 {
+                            self.first_bytes.insert(*transfer_id, data[0]);
+                        }
                         let received = match self.incomplete.get(transfer_id) {
                             Some(&(declared, received)) => {
                                 assert_eq!(declared, *total);
@@ -201,21 +210,51 @@ mod budget {
                         );
                     },
                     GraphicsRecord::Residency {
+                        id: host_id,
                         medium: GraphicsMedium::Transfer,
                         data,
                         ..
                     } => {
                         let id = u64::from_le_bytes(data.as_slice().try_into().unwrap());
                         assert!(completed.remove(&id), "residency of incomplete {id}");
+                        self.images.insert(*host_id, self.first_bytes[&id]);
                     },
                     GraphicsRecord::Residency {
                         medium: GraphicsMedium::SharedFile,
                         ..
                     } => {},
+                    GraphicsRecord::Residency { id, data, .. } => {
+                        self.images.insert(*id, data[0]);
+                    },
+                    GraphicsRecord::Placement {
+                        image_id,
+                        placement_id,
+                        ..
+                    } => {
+                        self.shown.insert(*placement_id, *image_id);
+                    },
+                    GraphicsRecord::DeletePlacement { placement_id, .. } => {
+                        self.shown.remove(placement_id);
+                    },
+                    GraphicsRecord::DeleteImage { id } => {
+                        self.images.remove(id);
+                        self.shown.retain(|_, image| image != id);
+                    },
                     _ => {},
                 }
             }
             assert!(completed.is_empty(), "unconsumed transfers {completed:?}");
+        }
+
+        /// The shades of the images the viewer's placements show, sorted.
+        fn visible(&self) -> Vec<u8> {
+            let mut shades: Vec<u8> = self
+                .shown
+                .values()
+                .filter_map(|image| self.images.get(image).copied())
+                .collect();
+            shades.sort_unstable();
+            shades
         }
     }
 
@@ -1004,29 +1043,36 @@ mod budget {
         let opener = scene.store(256, 1);
         let frame = scene.render_one(viewer, pane(3), &[(opener, 3, 256)]);
         assert_eq!(frame.transfers.len(), 1);
-        let late = scene.store(256, 2);
-        let early = scene.store(256, 3);
+        // Larger than a frame's allowance, so neither may start before the window opens.
+        let late = scene.store(512, 2);
+        let early = scene.store(512, 3);
         assert!(scene
-            .render_one(viewer, pane(2), &[(late, 2, 256)])
+            .render_one(viewer, pane(2), &[(late, 2, 512)])
             .chunks
             .is_empty());
         assert!(scene
-            .render_one(viewer, pane(1), &[(early, 1, 256)])
+            .render_one(viewer, pane(1), &[(early, 1, 512)])
             .chunks
             .is_empty());
         let retried = scene.ack(viewer, frame.seq);
         assert_eq!(retried, BTreeSet::from([pane(1), pane(2)]));
-        let frame = scene
-            .render_panes(&[(pane(2), &[(late, 2, 256)]), (pane(1), &[(early, 1, 256)])])
-            .remove(&viewer)
-            .unwrap();
-        // Pane 1 sorts first, so its transfer takes the lower id; the wire checker in
-        // `render_with` asserts the order across every frame.
-        let started = frame.first_chunks();
-        assert_eq!(started.len(), 2, "{frame:?}");
-        assert!(started[0] < started[1]);
-        assert_eq!(frame.data[&started[0]][0], 3);
-        assert_eq!(frame.transfers, started);
+        let both: [(PaneId, &[Shown]); 2] =
+            [(pane(2), &[(late, 2, 512)]), (pane(1), &[(early, 1, 512)])];
+        let frame = scene.render_panes(&both).remove(&viewer).unwrap();
+        // Pane 1 sorts first, so its transfer takes the lower id and the whole allowance;
+        // the wire checker in `render_with` asserts the order across every frame.
+        let [first] = frame.first_chunks()[..] else {
+            panic!("expected pane 1 to start: {frame:?}")
+        };
+        assert_eq!(frame.data[&first][0], 3);
+        scene.ack_last(viewer);
+        let frame = scene.render_panes(&both).remove(&viewer).unwrap();
+        let [second] = frame.first_chunks()[..] else {
+            panic!("expected pane 2 to start: {frame:?}")
+        };
+        assert!(first < second);
+        assert_eq!(frame.data[&second][0], 2);
+        assert_eq!(frame.transfers, [first]);
     }
 
     #[test]
@@ -1039,11 +1085,12 @@ mod budget {
         let [opener_id] = opened.transfers[..] else {
             panic!("expected the opener to complete")
         };
-        let waiting = scene.store(256, 2);
-        scene.render_one(viewer, pane(1), &[(waiting, 1, 256)]);
+        // Larger than a frame's allowance, so it waits for the window to open.
+        let waiting = scene.store(512, 2);
+        scene.render_one(viewer, pane(1), &[(waiting, 1, 512)]);
         assert_eq!(budget.usage().entries, 2);
-        let replacement = scene.replace(waiting, 256, 3);
-        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 256)]);
+        let replacement = scene.replace(waiting, 512, 3);
+        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 512)]);
         assert!(
             frame.cancels.is_empty() && frame.chunks.is_empty(),
             "{frame:?}"
@@ -1052,7 +1099,7 @@ mod budget {
         assert_eq!(budget.usage().entries, 2);
         assert_eq!(scene.ack(viewer, opened.seq), BTreeSet::from([pane(1)]));
         assert_eq!(budget.usage().entries, 1);
-        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 256)]);
+        let frame = scene.render_one(viewer, pane(1), &[(replacement, 1, 512)]);
         assert_eq!(frame.first_chunks(), [opener_id + 1]);
         assert_eq!(frame.data[&(opener_id + 1)][0], 3);
     }
@@ -1133,5 +1180,93 @@ mod budget {
         };
         let frame = scene.render_one(viewer, pane(1), &[]);
         assert_eq!(frame.cancels, [pending]);
+    }
+
+    #[test]
+    fn render_negotiation_portable_replacement_before_ack_swaps_in_one_frame() {
+        use yinz_runtime::native_media::VIEWER_MEDIA_ENTRIES;
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), ALLOWANCE);
+        scene.states.get_mut(&viewer).unwrap().frame_media = None;
+        let mut image = scene.store(256, 1);
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+        assert_eq!((frame.transfers.len(), frame.placements), (1, 1));
+        assert_eq!(scene.wire[&viewer].visible(), [1]);
+        // Each replacement arrives before the previous chunk frame's ACK. It fits the
+        // frame, so it replaces the old image in the frame that deletes it.
+        for shade in 2..=6u8 {
+            image = scene.replace(image, 256, shade);
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, 256)]);
+            assert_eq!(
+                (frame.inline, frame.transfers.len(), frame.placements),
+                (0, 1, 1),
+                "replacement {shade}: {frame:?}"
+            );
+            assert_eq!(
+                scene.wire[&viewer].visible(),
+                [shade],
+                "replacement {shade}"
+            );
+            // Every completed transfer's lease waits for its own frame's ACK.
+            assert_eq!(budget.usage().entries, usize::from(shade));
+            assert!(budget.usage().entries <= VIEWER_MEDIA_ENTRIES);
+        }
+        assert!(scene.ack_last(viewer).is_empty());
+        assert_eq!(budget.usage(), MediaUsage::default());
+        // A transfer that spans frames still waits for the window.
+        let large = scene.store(2048, 9);
+        let frame = scene.render_one(viewer, pane(2), &[(large, 2, 2048)]);
+        assert_eq!((frame.chunks.len(), frame.transfers.len()), (1, 0));
+        let replaced = scene.replace(image, 256, 7);
+        let frame = scene.render_panes(&[
+            (pane(1), &[(replaced, 1, 256)]),
+            (pane(2), &[(large, 2, 2048)]),
+        ]);
+        let frame = &frame[&viewer];
+        assert_eq!(
+            frame.first_chunks().len(),
+            1,
+            "only the whole replacement: {frame:?}"
+        );
+        assert_eq!(frame.transfers.len(), 1);
+        assert_eq!(scene.wire[&viewer].visible(), [7]);
+    }
+
+    #[test]
+    fn render_negotiation_portable_unstarted_abandonment_retries_deferred_panes() {
+        let small = 64 * 64 * 4;
+        let budget = MediaBudget::new(32, IMAGE);
+        let (mut scene, viewer) = portable_scene(budget.clone(), 3 * small);
+        let inline: Vec<Shown> = (0..3u8)
+            .map(|n| (scene.store(64, 10 + n), 10 + n as u64, 64))
+            .collect();
+        let held = scene.store(256, 1);
+        let refused = scene.store(256, 2);
+        let mut first = inline.clone();
+        first.push((held, 20, 256));
+        // The inline images spend the allowance, so `held` reserves the budget but stays
+        // unstarted and waits for this frame's ACK; `refused` is deferred behind it.
+        let frame = scene
+            .render_panes(&[(pane(1), &first), (pane(2), &[(refused, 2, 256)])])
+            .remove(&viewer)
+            .unwrap();
+        assert_eq!((frame.inline, frame.chunks.len()), (3, 0), "{frame:?}");
+        assert_eq!(
+            scene.states[&viewer].deferred_panes,
+            BTreeSet::from([pane(2)])
+        );
+        // Before that ACK, pane 1 re-renders without `held`, which drops its lease.
+        let frame = scene.render_one(viewer, pane(1), &inline);
+        assert!(
+            frame.chunks.is_empty() && frame.cancels.is_empty(),
+            "{frame:?}"
+        );
+        assert_eq!(budget.usage(), MediaUsage::default());
+        // The chunk-window ACK releases no retained media and opens no transfer, yet the
+        // deferred pane is retried and its image starts.
+        assert_eq!(scene.ack(viewer, frame.seq - 1), BTreeSet::from([pane(2)]));
+        let frame = scene.render_one(viewer, pane(2), &[(refused, 2, 256)]);
+        assert_eq!(frame.first_chunks().len(), 1, "{frame:?}");
+        assert_eq!(budget.usage().entries, 1);
     }
 }

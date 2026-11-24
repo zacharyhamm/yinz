@@ -53,11 +53,16 @@ if sys.argv[1] == "large":
     print("\033[1;1HLARGE-SENT", flush=True)
     wait_for(lambda: False)
 if sys.argv[1] == "ordered":
-    # Threshold-sized images, each followed by a marker naming it.
+    # A threshold-sized image, then two 16 MiB images shown through small source
+    # rectangles, which span frames and so wait for the chunk window. Each is followed
+    # by a marker naming it.
     for n in range(1, 4):
         wait_for(lambda: (root / f"image-{n}").exists())
         os.write(1, f"\033[3;{8 * n}H".encode())
-        transmit(n, 256, 256, f"i={n},")
+        if n == 1:
+            transmit(n, 256, 256, f"i={n},")
+        else:
+            transmit(n, 2048, 2048, f"i={n},x=0,y=0,w=64,h=64,")
         print(f"\033[1;1HSENT-{n:03}", flush=True)
     wait_for(lambda: False)
 for n in range(1, int(sys.argv[1]) + 1):

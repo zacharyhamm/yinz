@@ -1646,8 +1646,9 @@ fn drain_transfers(receiver: &ServerReceiver, client: ClientId) -> Transfers {
     seen
 }
 
-/// A forwarded viewer with a 16 MiB transfer half sent and a 256 KiB one waiting, unstarted,
-/// for the ACK of the frame that carried the first half.
+/// A forwarded viewer with a 16 MiB transfer half sent and a 9 MiB one waiting, unstarted,
+/// for the ACK of the frame that carried the first half. The second image spans frames, so
+/// it cannot ride whole past the closed window.
 fn portable_viewer_mid_transfer() -> (Screen, ServerReceiver, u64) {
     use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
     use yinz_types::render_negotiation::{Offer, Request, CHUNKED};
@@ -1695,7 +1696,7 @@ fn portable_viewer_mid_transfer() -> (Screen, ServerReceiver, u64) {
         .unwrap()
         .get_active_pane_mut(CLIENT_1)
         .unwrap()
-        .handle_pty_bytes([b"\x1b[20;1H".to_vec(), kitty_rgba_upload(2, 256, 2)].concat());
+        .handle_pty_bytes([b"\x1b[20;1H".to_vec(), kitty_rgba_upload(2, SECOND, 2)].concat());
     screen.render_to_clients().unwrap();
     let waiting = drain_transfers(&receiver, CLIENT_1);
     assert!(
@@ -1705,10 +1706,15 @@ fn portable_viewer_mid_transfer() -> (Screen, ServerReceiver, u64) {
     let usage = screen.core.native_render_clients[&CLIENT_1].media_usage();
     assert_eq!(
         (usage.entries, usage.bytes),
-        (2, 2048 * 2048 * 4 + 256 * 256 * 4)
+        (2, 2048 * 2048 * 4 + SECOND_BYTES)
     );
     (screen, receiver, high)
 }
+
+/// The side of the second image in `portable_viewer_mid_transfer`, larger than one frame's
+/// media allowance.
+const SECOND: u32 = 1536;
+const SECOND_BYTES: usize = (SECOND * SECOND * 4) as usize;
 
 #[test]
 fn render_negotiation_portable_ack_opens_the_window_and_continues_transfers() {
@@ -1731,16 +1737,31 @@ fn render_negotiation_portable_ack_opens_the_window_and_continues_transfers() {
         )]
     );
     assert_eq!(rest.completed, [1]);
-    // The second image starts on the next opened window, with the next id.
+    // The second image starts on the next opened window, with the next id, and
+    // completes on the one after.
     screen
         .acknowledge_native_frame(CLIENT_1, rest.last.unwrap())
         .unwrap();
     screen.render_to_clients().unwrap();
     let second = drain_transfers(&receiver, CLIENT_1);
-    assert_eq!(second.chunks, [(2, 0, 256 * 256 * 4)]);
-    assert_eq!(second.completed, [2]);
+    assert_eq!(second.chunks, [(2, 0, PORTABLE_FRAME_MEDIA_BYTES)]);
+    assert!(second.completed.is_empty());
     screen
         .acknowledge_native_frame(CLIENT_1, second.last.unwrap())
+        .unwrap();
+    screen.render_to_clients().unwrap();
+    let last = drain_transfers(&receiver, CLIENT_1);
+    assert_eq!(
+        last.chunks,
+        [(
+            2,
+            PORTABLE_FRAME_MEDIA_BYTES as u32,
+            SECOND_BYTES - PORTABLE_FRAME_MEDIA_BYTES
+        )]
+    );
+    assert_eq!(last.completed, [2]);
+    screen
+        .acknowledge_native_frame(CLIENT_1, last.last.unwrap())
         .unwrap();
     let usage = screen.core.native_render_clients[&CLIENT_1].media_usage();
     assert_eq!((usage.entries, usage.bytes), (0, 0));

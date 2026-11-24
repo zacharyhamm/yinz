@@ -29,8 +29,12 @@ pub struct NativeRenderState {
     /// chunks carry strictly increasing ids on this attachment.
     last_transfer_id: u64,
     /// The last frame that carried chunk bytes, or ran out of allowance for them. New
-    /// chunk bytes wait until the client acknowledges it.
+    /// chunk bytes wait until the client acknowledges it, unless a whole transfer fits
+    /// what remains of the frame's allowance.
     chunk_frame: Option<u64>,
+    /// An unstarted transfer returned its lease without an ACK-keyed entry. The next
+    /// accepted ACK retries deferred panes as if it had released media.
+    released_unretained: bool,
     /// Media bytes one frame may carry to a chunked viewer; `None` is the production value.
     frame_media: Option<usize>,
     /// What remains of the current frame's media allowance.
@@ -153,6 +157,7 @@ impl NativeRenderState {
         }
         self.chunk_frame = None;
         self.deferred_panes.clear();
+        self.released_unretained = false;
     }
 
     /// The viewer's retained-media budget. Chunked transfer buffers and assembled images
@@ -278,7 +283,13 @@ impl NativeRenderState {
         let window_open = self
             .chunk_frame
             .is_none_or(|frame| frame <= self.acknowledged || frame == self.seq);
-        if !window_open {
+        // An unstarted transfer that fits what remains of this frame's allowance starts
+        // and completes here, so it is bounded like an inline image and need not wait for
+        // the window. A replacement then arrives in the frame that deletes the image it
+        // replaces, instead of leaving the position blank for a round trip.
+        let transfer = &self.transfers[index];
+        let whole = transfer.sent == 0 && transfer.rgba.len() <= self.frame_media_left;
+        if !window_open && !whole {
             return None;
         }
         if self.frame_media_left == 0 {
@@ -302,7 +313,10 @@ impl NativeRenderState {
         });
         transfer.sent += len;
         self.frame_media_left -= len;
-        self.chunk_frame = Some(self.seq);
+        if window_open {
+            // A whole transfer sent past a closed window leaves the window as it was.
+            self.chunk_frame = Some(self.seq);
+        }
         if transfer.sent < total {
             return None;
         }
@@ -322,6 +336,9 @@ impl NativeRenderState {
     /// it at the client, and its lease waits for this frame's ACK.
     fn abandon(&mut self, transfer: PendingTransfer, cleared: bool, out: &mut Vec<GraphicsRecord>) {
         let Some(transfer_id) = transfer.wire_id else {
+            // The lease drops here, so no ACK will report its release; the next one must
+            // still retry images this lease deferred.
+            self.released_unretained = true;
             return;
         };
         if !cleared {
@@ -395,7 +412,8 @@ impl NativeRenderState {
         released || opened
     }
 
-    /// Returns whether media was released, and whether pending transfers may continue.
+    /// Returns whether media was released (by this ACK, or by an unstarted transfer since
+    /// the last accepted one), and whether pending transfers may continue.
     fn acknowledge_frames(&mut self, seq: u64) -> (bool, bool) {
         if seq > self.seq {
             return (false, false);
@@ -408,7 +426,11 @@ impl NativeRenderState {
                 .is_some_and(|frame| previous < frame && frame <= self.acknowledged);
         let retained = self.media.len();
         self.media.retain(|(frame, _)| *frame > self.acknowledged);
-        (self.media.len() < retained, opened)
+        let released = self.media.len() < retained;
+        (
+            std::mem::take(&mut self.released_unretained) || released,
+            opened,
+        )
     }
 }
 

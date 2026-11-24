@@ -2423,7 +2423,8 @@ fn native_media_portable_waiting_transfers_apply_in_order() {
     let frames = viewer.frames_until("SENT-001");
     let completed: Vec<_> = frames.iter().flat_map(|f| f.transfers.clone()).collect();
     assert_eq!(completed, [1]);
-    // The chunk frame stays unacknowledged while two more images are staged.
+    // The chunk frame stays unacknowledged while two more images, each larger than a
+    // frame's allowance, are staged.
     for n in 2..=3 {
         trigger(&fixture, &format!("image-{n}"));
         for frame in viewer.frames_until(&format!("SENT-{n:03}")) {
