@@ -149,7 +149,7 @@ fn test_only_features_are_enabled_only_from_dev_dependencies() {
         ("yinz-tab", "yinz-panes"),
         ("yinz-screen", "yinz-panes"),
         ("yinz-screen", "yinz-tab"),
-        (COMPOSITION_ROOT, "yinz-plugin-api"),
+        (COMPOSITION_ROOT, "yinz-types"),
     ] {
         let index = metadata["packages"]
             .as_array()

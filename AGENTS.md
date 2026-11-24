@@ -176,7 +176,7 @@ first attempt.
 | `yinz-plugin-location/` | Plugin URL parsing; re-exported as `yinz_runtime::plugin_location` |
 | `yinz-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `yinz-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
-| `yinz-config/`, `yinz-plugin-api/`, `yinz-ipc/` | Config, plugin wire API, transport |
+| `yinz-config/`, `yinz-ipc/` | Config and client/server transport |
 | `yinz-project-config/` | Agent-exit settings in `.yinz/agent-exit.kdl` |
 | `yinz-steel-builtins/` | Installed Scheme builtin plugin sources |
 | `yinz-session/`, `yinz-cli/` | Session lifecycle, serialization, CLI |
@@ -202,8 +202,8 @@ first attempt.
   `[workspace.lints.clippy]` in `Cargo.toml`.
 - Put tests in adjacent `unit/` directories, not top-level `tests/`.
   Review `.snap` diffs and commit snapshot updates for intentional changes.
-- After changing protobufs in `yinz-plugin-api/assets/` or
-  `yinz-ipc/assets/`, regenerate with `cargo x proto`.
+- After changing protobufs in `yinz-ipc/src/client_server_contract/` or
+  `yinz-ipc/src/nested_session_contract/`, regenerate with `cargo x proto`.
 - Debug logs: `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`, truncated at 100KB.
   `--debug` also dumps raw pty bytes per pane.
 

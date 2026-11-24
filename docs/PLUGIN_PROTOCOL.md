@@ -905,9 +905,7 @@ rate-limited checks back off from 15 minutes to one hour while honoring longer
 
 ## Web interface commands
 
-Four commands serve the mobile web interface. They are Steel-only: the
-protobuf wire refuses them with "Web commands are Steel-only". Each requires
-`RunCommands`.
+Four Steel commands serve the mobile web interface. Each requires `RunCommands`.
 
 - `HttpRespond {request_id, response}` answers one web request delivered to
   this instance. `response` is JSON:
@@ -1159,11 +1157,6 @@ Registering such a checkout can change its key. `root` is the local configuratio
 root (the primary checkout for Git), not the identity of a multi-repository project.
 Store the returned identity rather than deriving a key from `name` or `root`.
 
-The protobuf command carries `resolve_project_payload` as a directory string.
-Its reply uses the existing `AgentProvidersResponse` JSON result envelope:
-`{"Ok": ResolvedProject | null}` or `{"Err": string}`. The Steel bridge unwraps
-this envelope and raises errors.
-
 `GetClientTimezone {client_id?}` defaults to the acting client. Its nullable string
 is the validated report: an IANA name, POSIX rules, a fixed UTC offset, or `tzif:`
 followed by base64 TZif data. Missing, invalid, disconnected and unknown reports
@@ -1195,13 +1188,16 @@ asynchronous process enrichment. Palette discovery, source refresh and execution
 contexts carry `timezone: string | null` for the requesting client at the time of
 each request. Older omitted fields decode as null.
 
-Rust callers use `PluginCommand::GetClientTimezone { client_id: None }` and decode
-`ProtobufGetClientTimezoneResponse::timezone`. Offset commands specify
-`PluginCommand::GetLocalUtcOffset { epoch_ms, client_id, timezone }` and decode
-`ProtobufGetLocalUtcOffsetResponse`. Its existing scalar `offset_seconds` field
-and tag remain unchanged; additive `unavailable = true` means null. A missing
-flag means available, preserving legacy scalar zero replies. Old decoders cannot
-distinguish unavailable replies from zero and should upgrade before using selectors.
+An offset of zero is valid at UTC. Steel callers can distinguish the integer
+`0` from `null`, which indicates an unavailable offset.
+
+### Migrating Rust plugin reply decoders
+
+The WASM-era `yinz-plugin-api` crate and its protobuf reply format have been
+retired. Code that decoded those messages must migrate its plugin calls to the
+Steel SDK and consume the values documented above. For example,
+`GetClientTimezone` returns a string or null directly. The client/server IPC
+schema continues to serve Yinz clients and servers.
 
 ## Authenticated HTTP transport
 

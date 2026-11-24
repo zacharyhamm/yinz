@@ -16,10 +16,8 @@
 //!
 //! Everything in here returns `Result<String, String>` rather than reporting to
 //! a client. Both halves of that pair are prose meant for whoever asked: the CLI
-//! path writes them to a cli client, the plugin path writes them into a protobuf
-//! response for a model to read. The failure strings already carry their own
-//! recovery instructions, so a caller that reworded them would be making things
-//! worse.
+//! path writes them to a CLI client and the plugin path returns them to Steel. The failure
+//! strings already carry recovery instructions.
 
 use std::time::{Duration, Instant};
 use yinz_types::internal_ids::SessionName;

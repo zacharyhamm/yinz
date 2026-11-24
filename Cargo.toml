@@ -115,7 +115,6 @@ members = [
     "yinz-project-config",
     "yinz-steel",
     "yinz-steel-builtins",
-    "yinz-plugin-api",
     "yinz-ipc",
     "yinz-session",
     "yinz-cli",
@@ -171,7 +170,6 @@ result_large_err = "allow"
 yinz-cli = { path = "yinz-cli", version = "0.1.2-alpha.27" }
 yinz-session = { path = "yinz-session", version = "0.1.2-alpha.27" }
 yinz-ipc = { path = "yinz-ipc", version = "0.1.2-alpha.27" }
-yinz-plugin-api = { path = "yinz-plugin-api", version = "0.1.2-alpha.27" }
 yinz-plugin-authoring = { default-features = false, path = "yinz-plugin-authoring", version = "0.1.2-alpha.27" }
 yinz-config = { path = "yinz-config", version = "0.1.2-alpha.27" }
 yinz-project-config = { path = "yinz-project-config", version = "0.1.2-alpha.27" }

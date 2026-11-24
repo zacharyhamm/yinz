@@ -7341,22 +7341,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yinz-plugin-api"
-version = "0.1.2-alpha.27"
-dependencies = [
- "hegeltest",
- "log",
- "prost",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "yinz-plugin-authoring",
- "yinz-plugin-location",
- "yinz-types",
-]
-
-[[package]]
 name = "yinz-plugin-authoring"
 version = "0.1.2-alpha.27"
 dependencies = [

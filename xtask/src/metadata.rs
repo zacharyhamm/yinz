@@ -76,14 +76,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "yinz-plugin-api",
-        &[
-            "yinz-types",
-            "yinz-plugin-location",
-            "yinz-plugin-authoring",
-        ],
-    ),
-    (
         "yinz-plugin-authoring",
         &[
             "yinz-config",

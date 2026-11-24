@@ -49,11 +49,6 @@ pub(crate) fn run_proto_codegen(sh: &Shell, force: bool) {
 
     let specs: &[(&str, &str, &str)] = &[
         (
-            "yinz-plugin-api/assets",
-            "yinz-plugin-api/src",
-            "generated_plugin_api.rs",
-        ),
-        (
             "yinz-ipc/assets/prost_ipc",
             "yinz-ipc/src/client_server_contract",
             "generated_client_server_api.rs",

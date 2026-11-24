@@ -87,7 +87,7 @@ use crate::geometry::{Direction, Resize, ResizeStrategy};
 /// Each wheel direction has its own variant, carrying a count rather than a sign, because
 /// horizontal scrolling exists alongside vertical. The middle button is not delivered.
 ///
-/// The variants mirror `MouseEventName` in yinz-plugin-api's `event.proto` and the Scheme SDK event values.
+/// The variants mirror the Scheme SDK event values.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mouse {
     ScrollUp(usize),   // number of lines

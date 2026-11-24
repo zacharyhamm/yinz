@@ -23,11 +23,6 @@ fn gate_runs_integration_and_aggregates_failures() {
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     for (out, src, generated) in [
         (
-            "yinz-plugin-api/assets",
-            "yinz-plugin-api/src",
-            "generated_plugin_api.rs",
-        ),
-        (
             "yinz-ipc/assets/prost_ipc",
             "yinz-ipc/src/client_server_contract",
             "generated_client_server_api.rs",
@@ -144,4 +139,53 @@ exit 0
             );
         }
     }
+}
+
+#[test]
+fn live_proto_targets_generate() {
+    let root = tempfile::tempdir().unwrap();
+    let targets = [
+        (
+            "yinz-ipc/src/client_server_contract",
+            "yinz-ipc/assets/prost_ipc",
+            "generated_client_server_api.rs",
+            "client_fixture",
+            "ClientMessage",
+        ),
+        (
+            "yinz-ipc/src/nested_session_contract",
+            "yinz-host-protocol/assets/prost_nested_session",
+            "generated_nested_session_api.rs",
+            "nested_fixture",
+            "NestedMessage",
+        ),
+    ];
+    for (src, _, _, package, message) in targets {
+        let src = root.path().join(src);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("fixture.proto"),
+            format!(r#"syntax = "proto3"; package {package}; message {message} {{}}"#),
+        )
+        .unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("proto")
+        .env("CARGO_MANIFEST_DIR", root.path().join("xtask"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (_, out, include, package, message) in targets {
+        let out = root.path().join(out);
+        let index = fs::read_to_string(out.join(include)).unwrap();
+        assert!(index.contains(&format!("pub mod {package} {{")));
+        assert!(index.contains(&format!(r#"include!("{package}.rs");"#)));
+        let definitions = fs::read_to_string(out.join(format!("{package}.rs"))).unwrap();
+        assert!(definitions.contains(&format!("pub struct {message} {{")));
+    }
+    assert!(!root.path().join("yinz-plugin-api").exists());
 }

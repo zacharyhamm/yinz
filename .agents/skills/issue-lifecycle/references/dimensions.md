@@ -155,7 +155,7 @@ Source: [Shared plugin data](../../../../AGENTS.md#shared-plugin-data).
 ## generated-artifacts
 
 Applies to protobuf and snapshot changes. After changing protobufs under
-`yinz-plugin-api/assets/` or `yinz-ipc/assets/`, regenerate with
+`yinz-ipc/src/client_server_contract/` or `yinz-ipc/src/nested_session_contract/`, regenerate with
 `cargo x proto`. Review `.snap` diffs and commit updates for intentional
 behavior changes.
 
