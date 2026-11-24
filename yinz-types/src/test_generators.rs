@@ -105,9 +105,8 @@ pub fn optional_paths(tc: &hegel::TestCase) -> Option<PathBuf> {
     booleans(tc).then(|| paths(tc))
 }
 
-/// `usize` fields cross both wires as `uint32` (`optional uint32 tab_id`, `uint32 tab_index`,
-/// `optional uint32 line_number`, `optional uint32 logical_position`, ...), so nothing wider can
-/// come back.
+/// Draw `usize` values that fit IPC's `uint32` fields, such as `TabLayoutInfo.tab_index`
+/// and `OpenFilePayload.line_number`.
 pub fn usize_as_u32(tc: &hegel::TestCase) -> usize {
     tc.draw(generators::integers::<u32>()) as usize
 }
@@ -116,8 +115,8 @@ pub fn optional_usize_as_u32(tc: &hegel::TestCase) -> Option<usize> {
     booleans(tc).then(|| usize_as_u32(tc))
 }
 
-/// `Option<Vec>` fields cross both wires as `repeated` (`NewTabPayload.swap_tiled_layouts`,
-/// `NewTabAction.initial_panes`, ...), which cannot tell `Some(vec![])` from `None`.
+/// IPC decodes empty repeated fields such as `NewTabAction.swap_tiled_layouts` and
+/// `NewTabAction.initial_panes` as `None`, so draw at least one element for `Some`.
 fn optional_non_empty<T>(
     tc: &hegel::TestCase,
     draw: impl Fn(&hegel::TestCase) -> T,
@@ -290,9 +289,8 @@ fn mouse_events(tc: &hegel::TestCase) -> MouseEvent {
     }
 }
 
-/// A percentage crosses the client-server wire as `FloatingCoordinate { float percent }` and
-/// is documented there as 1 to 100, which a `float` holds exactly; a fixed size is `uint32` on
-/// both wires.
+/// IPC's `FloatingCoordinate.percent` is a `float` that exactly represents the generated
+/// integers from 0 through 100. Its `fixed` field is a `uint32`.
 fn percents_or_fixed(tc: &hegel::TestCase) -> PercentOrFixed {
     if booleans(tc) {
         PercentOrFixed::Percent(tc.draw(generators::integers::<u8>().max_value(100)) as usize)
@@ -433,7 +431,8 @@ fn open_file_payloads(tc: &hegel::TestCase) -> OpenFilePayload {
     }
 }
 
-/// `CommandOrPluginFile.line_number` is an `optional int32` on both wires.
+/// Keep file line numbers in the nonnegative range of IPC's optional `int32`
+/// field `CommandOrPluginFile.line_number`.
 pub fn files_to_open(tc: &hegel::TestCase) -> FileToOpen {
     FileToOpen {
         path: paths(tc),
@@ -528,8 +527,7 @@ fn layout_constraints(tc: &hegel::TestCase) -> LayoutConstraint {
     }
 }
 
-/// `run_instructions_to_ignore` is never drawn: it is server-internal and, as both proto files
-/// say, not represented on either wire.
+/// IPC omits the server-only `TiledPaneLayout.run_instructions_to_ignore`, so leave it empty.
 fn tiled_pane_layouts(tc: &hegel::TestCase) -> TiledPaneLayout {
     tiled_pane_layouts_of_depth(tc, 0)
 }
@@ -609,8 +607,8 @@ fn swap_floating_layouts(tc: &hegel::TestCase) -> SwapFloatingLayout {
     )
 }
 
-/// `tab_name` is never drawn empty: both decoders read `Some("")` as `None`, on the grounds
-/// that a tab with an empty name has no name.
+/// The IPC decoder maps an empty `TabLayoutInfo.tab_name` to `None`, so draw nonempty
+/// names for `Some`.
 fn tab_layout_infos(tc: &hegel::TestCase) -> TabLayoutInfo {
     TabLayoutInfo {
         tab_index: TabPosition::new(usize_as_u32(tc)),
