@@ -1,10 +1,22 @@
-//! Fixed serialized values retained across the model extraction.
+//! Native model API signatures and fixed serialized values.
 use crate::{
     agent::{AgentInfo, AgentSource, AgentState},
     command::{CommandToRun, PaneTarget},
     geometry::{FloatingPaneCoordinates, PercentOrFixed, SplitSize},
     pane_size::{Dimension, PaneGeom, Size},
 };
+
+#[test]
+fn native_plugin_api_signatures() {
+    use crate::data::{MultiplayerColors, OriginatingPlugin, PaletteColor};
+    use crate::internal_ids::{ClientId, PluginId};
+    use crate::multiplayer::ColorSlot;
+    use std::collections::BTreeMap;
+
+    let _: fn(ColorSlot, MultiplayerColors) -> (PaletteColor, PaletteColor) = ColorSlot::colors;
+    let _: fn(PluginId, ClientId, BTreeMap<String, String>) -> OriginatingPlugin =
+        OriginatingPlugin::new;
+}
 
 #[test]
 fn geometry_preserves_persisted_fields_and_rounding() {

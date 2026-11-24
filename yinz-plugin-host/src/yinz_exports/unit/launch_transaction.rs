@@ -1010,7 +1010,12 @@ fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
         )
         .unwrap();
         let branch = if terminal == 1 { "review-2" } else { "review" };
-        let cwd = root.path().join(".worktrees").join(branch);
+        let cwd = root
+            .path()
+            .join(".worktrees")
+            .join(branch)
+            .canonicalize()
+            .unwrap();
         assert!(cwd.join(".git").exists());
         assert_eq!(
             reply.expect_json(),

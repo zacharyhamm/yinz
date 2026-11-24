@@ -9,7 +9,7 @@ use yinz_bus::screen::ScreenInstruction;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, PaneScrollbackResponse,
+    GetPaneRunningCommandResponse, PaneInfo, PaneScrollbackResponse,
 };
 use yinz_types::internal_ids::TabId;
 
@@ -68,8 +68,8 @@ pub(super) fn get_focused_pane_info(env: &mut PluginEnv) -> Result<DecodedRespon
     }
 }
 
-/// Guest pane and tab snapshots historically expose unsigned 32-bit sizes.
-pub(super) fn project_pane(pane: &mut yinz_types::data::PaneInfo) -> bool {
+/// Guest pane snapshots use 32-bit sizes and UTF-8 paths in pane-tab descriptors.
+pub(super) fn project_pane(pane: &mut PaneInfo) -> bool {
     for index in pane.index_in_pane_group.values_mut() {
         *index = *index as u32 as usize;
     }
@@ -87,6 +87,12 @@ pub(super) fn project_pane(pane: &mut yinz_types::data::PaneInfo) -> bool {
         && pane
             .cursor_coordinates_in_pane
             .is_none_or(|cursor| i64::try_from(cursor.x).is_ok() && i64::try_from(cursor.y).is_ok())
+        && pane
+            .pane_tabs
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| tab.descriptor.initial_cwd.as_deref())
+            .all(|cwd| cwd.to_str().is_some())
 }
 
 pub(super) fn project_tab(tab: &mut yinz_types::data::TabInfo) -> bool {
@@ -132,7 +138,7 @@ pub(super) fn get_pane_info(
         .non_fatal();
 
     // Block waiting for response with 100ms timeout
-    let mut pane_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
+    let pane_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
         Ok(Some(pane_info)) => Some(pane_info),
         Ok(None) => None, // Pane not found
         Err(RecvTimeoutError::Timeout) => {
@@ -152,6 +158,10 @@ pub(super) fn get_pane_info(
         },
     };
 
+    pane_info_reply(pane_info)
+}
+
+pub(super) fn pane_info_reply(mut pane_info: Option<PaneInfo>) -> Result<DecodedResponse> {
     value(pane_info.take_if(project_pane))
 }
 

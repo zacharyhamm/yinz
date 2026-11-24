@@ -149,11 +149,8 @@ pub struct StyledText {
     pub indices: Vec<Vec<usize>>,
 }
 
-/// These events can be subscribed to with subscribe method exported by `yinz-tile`.
-/// Once subscribed to, they will trigger the `update` method of the `YinzPlugin` trait.
-// `ModeUpdate` is the widest variant, but this enum is the plugin-facing event API and is
-// mirrored in the protobuf contract: boxing a variant would break the `update()` match arm of
-// every plugin built against it, in and out of this repo.
+/// Events delivered to plugins through their `update` callback.
+// Keeping ModeInfo inline preserves the public Rust signature of Event::ModeUpdate.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
 #[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
@@ -660,13 +657,10 @@ pub struct RegexHighlight {
 /// `yinz-panes/src/ui/context_menu.rs` for the drawing and `input::context_menu` for the
 /// configured half of where they come from.
 ///
-/// **`actions` does not cross the plugin boundary, and `id` is why it does not have to.** A good
-/// many `Action` variants have no protobuf representation at all - `Action::Copy` among them - so
-/// a wire format carrying actions would drop some items' behaviour in silence. Instead the server
-/// keeps the action lists and sends the plugin an `id` per configured item; a plugin returning an
-/// item with that `id` gets the actions re-attached on arrival. An item the plugin *invented* has
-/// no `id`, no actions, and acts through its `context` instead - which reaches it as
-/// `Event::ContextMenuItemSelected`, from where `run_action` can do anything an action could.
+/// The server keeps each configured item's actions and sends its `id` to the plugin.
+/// When the plugin returns an item with that ID, the server restores the original actions.
+/// For a plugin-created item, the server sends its `context` in
+/// `Event::ContextMenuItemSelected` so the plugin can handle the selection.
 ///
 /// `separator` is a variant spelled as a flag rather than as an enum because a separator is a row
 /// like any other everywhere it matters - layout, hit-testing, and the wire format - and an enum

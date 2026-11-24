@@ -260,8 +260,8 @@ pub fn keys_with_modifier(tc: &hegel::TestCase) -> KeyWithModifier {
     }
 }
 
-/// The line crosses the client-server wire as `int32 line`; the column is `uint64` there and
-/// `int64` on the plugin wire, so generate values representable by both.
+/// Client/server IPC uses an `int32` line and a `uint64` column. The shared generator
+/// retains the column range that also fit the retired plugin protocol's signed field.
 fn positions(tc: &hegel::TestCase) -> Position {
     Position {
         line: Line::new(tc.draw(generators::integers::<i32>()) as isize),
@@ -449,11 +449,8 @@ fn plugin_user_configurations(tc: &hegel::TestCase) -> PluginUserConfiguration {
     PluginUserConfiguration::new(context(tc))
 }
 
-/// The plugin wire carries some plugin locations as a URL string (`string plugin_url`,
-/// `string start_or_reload_plugin_payload`) that comes back through `Url::parse`, which
-/// percent-decodes the path, cuts it at `?` and `#`, collapses dot segments and normalises a
-/// host. So paths and tags here use only characters a URL leaves alone, and a remote URL is one
-/// `Url::parse` already considers normal. A segment is never empty: `//a` is a host to a URL.
+/// The retired plugin protocol round-tripped locations through a URL string. Keep its
+/// nonempty, URL-safe path and tag segments for the IPC and KDL action properties.
 fn url_safe_segments(tc: &hegel::TestCase) -> String {
     tc.draw(
         generators::vecs(generators::sampled_from(vec![
@@ -489,10 +486,9 @@ fn run_plugins(tc: &hegel::TestCase) -> RunPlugin {
     }
 }
 
-/// An alias is whatever `yinz_plugin_location::run_plugin_or_alias_from_url` could not parse as a plugin URL, and the
-/// plugin wire sends one back through that same parse as `string plugin_url` - so a name that
-/// reads as a `yinz:` or `file:` URL would come back as that plugin instead, and an `http(s):`
-/// one would be refused. The prefix keeps the scheme, if the text forms one, from being any of those.
+/// IPC distinguishes aliases from plugin locations. The prefix keeps the original generator
+/// domain, where an alias had to survive parsing as a URL string. KDL also reads plugin
+/// references from strings.
 fn plugin_aliases(tc: &hegel::TestCase) -> PluginAlias {
     PluginAlias {
         name: format!("alias-{}", strings(tc)),

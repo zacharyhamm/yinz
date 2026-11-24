@@ -658,10 +658,6 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
         ),
         "hé🙂!"
     );
-    use std::os::unix::ffi::OsStrExt;
-    let directory = roots.host.path().join("files/nested");
-    std::fs::write(directory.join(std::ffi::OsStr::from_bytes(&[0x80])), []).unwrap();
-    std::fs::write(directory.join("é"), []).unwrap();
     let entries = run(
         &roots,
         permissions(),
@@ -674,15 +670,7 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
         .iter()
         .map(|entry| entry["path"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(
-        paths,
-        [
-            "/host/files/nested/a",
-            "/host/files/nested/b",
-            "/host/files/nested/é",
-            "/host/files/nested/�"
-        ]
-    );
+    assert_eq!(paths, ["/host/files/nested/a", "/host/files/nested/b"]);
     assert_eq!(
         run(
             &roots,
@@ -754,6 +742,36 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
         "unchanged"
     );
     assert!(!outside.path().join("new").exists());
+}
+
+#[test]
+fn steel_fs_list_sorts_raw_names_by_guest_display_path() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let roots = Roots::new();
+    let directory = roots.host.path().join("names");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("猫"), []).unwrap();
+    match std::fs::write(directory.join(OsStr::from_bytes(&[0x80])), []) {
+        Ok(()) => {},
+        // Filesystems such as APFS require valid UTF-8 in entry names.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EILSEQ | libc::EINVAL)) => return,
+        Err(error) => panic!("creating a raw filename: {error}"),
+    }
+    let entries = run(
+        &roots,
+        permissions(),
+        &[json!({"FsList":{"path":"/host/names"}})],
+    )
+    .unwrap();
+    let paths: Vec<_> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["/host/names/猫", "/host/names/�"]);
 }
 
 #[test]
