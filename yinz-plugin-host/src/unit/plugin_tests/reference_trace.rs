@@ -1,6 +1,6 @@
 //! Checked transcripts captured from the original guest engines before their removal.
 //! Replay executes typed host calls against the test's independent backend.
-use crate::response::{decode_response, DecodedResponse};
+use crate::response::DecodedResponse;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use yinz_types::data::{CommandType, PluginCommand};
+use yinz_types::data::PluginCommand;
 
 pub(super) fn legacy_keybinds() -> yinz_types::data::KeybindsVec {
     let source = std::str::from_utf8(yinz_config::assets::DEFAULT_CONFIG).unwrap();
@@ -92,7 +92,10 @@ pub(crate) struct HostCall {
     pub reply: Value,
 }
 impl HostCall {
-    pub(crate) fn new(command: &PluginCommand, reply: Option<&[u8]>) -> Self {
+    pub(crate) fn new(
+        command: &PluginCommand,
+        reply: Option<super::runtime_parity::Reply>,
+    ) -> Self {
         let mut command_json = serde_json::to_value(command).unwrap();
         for name in ["Subscribe", "Unsubscribe"] {
             if let Some(events) = command_json.get_mut(name).and_then(Value::as_array_mut) {
@@ -105,12 +108,12 @@ impl HostCall {
         }
     }
 }
-fn reply_value(command: &PluginCommand, bytes: Option<&[u8]>) -> Value {
-    let Some(bytes) = bytes else {
+fn reply_value(command: &PluginCommand, reply: Option<super::runtime_parity::Reply>) -> Value {
+    let Some(reply) = reply else {
         return json!({"absent":true});
     };
-    match decode_response(CommandType::from(command), bytes).transpose() {
-        Ok(Some(DecodedResponse::Json(mut value))) => {
+    match reply {
+        Ok(DecodedResponse::Json(mut value)) => {
             // The original runtime recorded these typed fields as byte arrays. Compare their
             // full contents without making the current compact transport part of the fixture.
             if matches!(command, PluginCommand::GetPaneGitProbe { .. }) && value.is_object() {
@@ -121,8 +124,7 @@ fn reply_value(command: &PluginCommand, bytes: Option<&[u8]>) -> Value {
             }
             json!({"json":value})
         },
-        Ok(Some(DecodedResponse::Bytes(value))) => json!({"bytes":value}),
-        Ok(None) => json!({"protobuf":bytes}),
+        Ok(DecodedResponse::Bytes(value)) => json!({"bytes":value}),
         Err(error) => json!({"error":error.to_string()}),
     }
 }
@@ -204,7 +206,7 @@ impl Trace {
     pub(crate) fn replay(
         &mut self,
         input: Value,
-        mut responder: impl FnMut(&PluginCommand) -> Option<Vec<u8>>,
+        mut responder: impl FnMut(&PluginCommand) -> Option<super::runtime_parity::Reply>,
     ) -> (Value, Vec<Value>) {
         let step = self.transcript.steps.get(self.cursor).unwrap_or_else(|| {
             panic!(
@@ -253,11 +255,7 @@ impl Trace {
                 }
             }
             let reply = responder(&command);
-            let mut actual = replace(
-                reply_value(&command, reply.as_deref()),
-                &self.root,
-                "<fixture-root>",
-            );
+            let mut actual = replace(reply_value(&command, reply), &self.root, "<fixture-root>");
             legacy_project_fields(&mut actual);
             if matches!(&command, PluginCommand::DataDefineEntity { def, .. } if def.name == "agent_run_entry")
             {
@@ -444,7 +442,9 @@ fn reference_trace_replays_typed_host_effects_and_checks_replies() {
     assert_eq!(commands, vec![json!({"SetSelectable":true})]);
     assert!(std::panic::catch_unwind(|| {
         let mut trace = fixture_for_test();
-        trace.replay(json!(["update", "Visible"]), |_| Some(vec![]));
+        trace.replay(json!(["update", "Visible"]), |_| {
+            Some(super::runtime_parity::json_reply(()))
+        });
     })
     .is_err());
 }

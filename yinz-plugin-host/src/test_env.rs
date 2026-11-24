@@ -20,7 +20,7 @@ pub(crate) fn test_env() -> PluginEnv {
         pick_request: None,
         pick_cancelled: None,
         pick_opening: None,
-        response_sink: None,
+
         plugin_id: crate::PluginId::new(1),
         instance_id: Default::default(),
         unavailable: Default::default(),

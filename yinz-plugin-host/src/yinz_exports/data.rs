@@ -1,23 +1,15 @@
 //! Plugin namespaces, guarded data mutations, and watch delivery.
 
-use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::PluginInstruction;
-use prost::Message;
 use std::collections::BTreeSet;
 use yinz_bus::screen::ScreenInstruction;
-use yinz_plugin_api::plugin_command::{
-    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
-    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-    ProtobufDataWatchResponse,
-};
 use yinz_runtime::errors::prelude::*;
 use yinz_storage::plugin_data_store;
 use yinz_types::data::{
-    validate_namespace, DataApplyResponse, DataCatalogResponse, DataCountResponse,
-    DataDefineResponse, DataEntityInfo, DataError, DataFetchResponse, DataUnwatchResponse,
-    DataWatchResponse, EntityDef, Event, EventType, FetchRequest, Mutation, PermissionType,
-    WatchMode, SHARED_NAMESPACE_PREFIX,
+    validate_namespace, DataEntityInfo, DataError, EntityDef, Event, EventType, FetchRequest,
+    Mutation, PermissionType, WatchMode, SHARED_NAMESPACE_PREFIX,
 };
 use yinz_types::internal_ids::DataWatchId;
 
@@ -76,9 +68,9 @@ pub(super) fn data_define_entity(
     namespace: Option<String>,
     def: EntityDef,
     allow_destructive: bool,
-) {
+) -> Result<DecodedResponse> {
     let plugin_url = env.data_owner.to_string();
-    let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
+    match resolve_data_namespace(env, namespace).and_then(|namespace| {
         env.data_access.plugin_data().define_entity(
             &namespace,
             &plugin_url,
@@ -86,18 +78,17 @@ pub(super) fn data_define_entity(
             allow_destructive,
         )
     }) {
-        Ok(info) => DataDefineResponse::Ok(info),
-        Err(e) => DataDefineResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataDefineResponse::from(response).encode_to_vec(),
-        "define response",
-    );
+        Ok(info) => value(info),
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
-pub(super) fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutations: Vec<Mutation>) {
-    let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
+pub(super) fn data_apply(
+    env: &mut PluginEnv,
+    namespace: Option<String>,
+    mutations: Vec<Mutation>,
+) -> Result<DecodedResponse> {
+    match resolve_data_namespace(env, namespace).and_then(|namespace| {
         Ok((
             namespace.clone(),
             env.data_access
@@ -107,59 +98,45 @@ pub(super) fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutatio
     }) {
         Ok((namespace, outcome)) => {
             notify_watchers(env, &namespace, &outcome.touched_entities);
-            DataApplyResponse::Ok(outcome.report)
+            value(outcome.report)
         },
         // A conflict is its own answer, not an error: the caller asked for a compare-and-set and
         // is being told the comparison failed, which is a race to retry rather than a request to
         // fix.
-        Err(DataError::Conflict(message)) => DataApplyResponse::Conflict(message),
-        Err(e) => DataApplyResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataApplyResponse::from(response).encode_to_vec(),
-        "apply response",
-    );
+        Err(DataError::Conflict(message)) => Err(anyhow!(
+            "{}{message}",
+            crate::response::DATA_CONFLICT_MARKER
+        )),
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
-pub(super) fn data_fetch(env: &mut PluginEnv, request: FetchRequest) {
-    let response = match resolve_fetch_namespace(env, &request)
+pub(super) fn data_fetch(env: &mut PluginEnv, request: FetchRequest) -> Result<DecodedResponse> {
+    match resolve_fetch_namespace(env, &request)
         .and_then(|namespace| env.data_access.plugin_data().fetch(&namespace, &request))
     {
-        Ok(rows) => DataFetchResponse::Ok(rows),
-        Err(e) => DataFetchResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataFetchResponse::from(response).encode_to_vec(),
-        "fetch response",
-    );
+        Ok(rows) => crate::binary_data::rows(&rows).map(DecodedResponse::Json),
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
-pub(super) fn data_count(env: &mut PluginEnv, request: FetchRequest) {
-    let response = match resolve_fetch_namespace(env, &request)
+pub(super) fn data_count(env: &mut PluginEnv, request: FetchRequest) -> Result<DecodedResponse> {
+    match resolve_fetch_namespace(env, &request)
         .and_then(|namespace| env.data_access.plugin_data().count(&namespace, &request))
     {
-        Ok(count) => DataCountResponse::Ok(count),
-        Err(e) => DataCountResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataCountResponse::from(response).encode_to_vec(),
-        "count response",
-    );
+        Ok(count) => value(count),
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
-pub(super) fn data_catalog(env: &mut PluginEnv, namespace: Option<String>) {
-    let response = match catalog_entities(env, namespace) {
-        Ok(entities) => DataCatalogResponse::Ok(entities),
-        Err(e) => DataCatalogResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataCatalogResponse::from(response).encode_to_vec(),
-        "catalog response",
-    );
+pub(super) fn data_catalog(
+    env: &mut PluginEnv,
+    namespace: Option<String>,
+) -> Result<DecodedResponse> {
+    match catalog_entities(env, namespace) {
+        Ok(entities) => crate::binary_data::catalog(entities).map(DecodedResponse::Json),
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
 /// The entities this plugin may see.
@@ -197,8 +174,12 @@ fn catalog_entities(
         .collect())
 }
 
-pub(super) fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
-    let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
+pub(super) fn data_watch(
+    env: &mut PluginEnv,
+    request: FetchRequest,
+    mode: WatchMode,
+) -> Result<DecodedResponse> {
+    match resolve_fetch_namespace(env, &request).and_then(|namespace| {
         let mut generations = env.watch_generations.lock().unwrap();
         let handle = env.data_access.plugin_data().register_watch(
             &namespace,
@@ -220,36 +201,28 @@ pub(super) fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: Watch
                 .lock()
                 .unwrap()
                 .insert(EventType::PluginDataChanged);
-            DataWatchResponse::Ok(handle)
+            Ok(DecodedResponse::Json(serde_json::json!({
+                "watch_id": handle.watch_id,
+                "rows": crate::binary_data::rows(&handle.rows)?,
+            })))
         },
-        Err(e) => DataWatchResponse::Err(e.to_string()),
-    };
-    write_data_response(
-        env,
-        ProtobufDataWatchResponse::from(response).encode_to_vec(),
-        "watch response",
-    );
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
-pub(super) fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
+pub(super) fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) -> Result<DecodedResponse> {
     let mut generations = env.watch_generations.lock().unwrap();
-    let response = match env
+    match env
         .data_access
         .plugin_data()
         .unregister_watch(env.plugin_id, watch_id)
     {
         Ok(()) => {
             generations.remove(&watch_id);
-            DataUnwatchResponse::Ok
+            value(true)
         },
-        Err(e) => DataUnwatchResponse::Err(e.to_string()),
-    };
-    drop(generations);
-    write_data_response(
-        env,
-        ProtobufDataUnwatchResponse::from(response).encode_to_vec(),
-        "unwatch response",
-    );
+        Err(e) => Err(anyhow!("{e}")),
+    }
 }
 
 /// Re-run every watch the write could have affected, and queue an event for each whose results
@@ -328,10 +301,4 @@ fn deliver_data_watch_changes(
             .with_context(|| "failed to deliver a data store change".to_string())
             .non_fatal();
     }
-}
-
-fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
-    write_response(env, &encoded)
-        .with_context(|| format!("failed to write the data store {}", what))
-        .non_fatal();
 }

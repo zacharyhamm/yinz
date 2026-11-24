@@ -166,7 +166,6 @@ fn denied_commands_are_errors_and_host_state_survives_them() {
     );
     let error = plugin.load(&BTreeMap::new(), true).unwrap_err();
     assert!(format!("{error:#}").contains("ChangeApplicationState"));
-    assert!(plugin.env().response_sink.is_none());
     assert!(!plugin.render(10, 80).unwrap().is_empty());
     plugin
         .env_mut()
@@ -270,7 +269,6 @@ fn invalid_commands_are_rejected_before_dispatch() {
     let mut env = env();
     assert!(dispatch(&mut env, json!({"Subscribe": ["NotAnEvent"]})).is_err());
     assert!(env.subscriptions.lock().unwrap().is_empty());
-    assert!(env.response_sink.is_none());
 }
 
 #[test]
@@ -1107,5 +1105,56 @@ fn web_sdk_startup_phase_timings() {
             }
         }
         instance.dispose_with_cleanup(true);
+    }
+}
+
+#[test]
+fn granted_cwd_queries_preserve_distinct_guest_path_projections() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use yinz_bus::pty::PtyInstruction;
+    use yinz_runtime::consts::{YINZ_SOCK_DIR, YINZ_SOCK_MAX_LENGTH};
+    use yinz_types::data::GetPaneCwdResponse;
+    let mut env = env();
+    env.plugin_id = yinz_types::internal_ids::PluginId::new(u32::MAX);
+    env.client_id = u32::MAX.into();
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::ReadApplicationState]));
+    for (bytes, cwd, initial) in [
+        ("/work/雪".as_bytes(), "/work/雪", "/work/雪"),
+        (&b"/work/\xff"[..], "", "/work/�"),
+    ] {
+        let path = std::path::PathBuf::from(OsString::from_vec(bytes.to_vec()));
+        env.plugin_cwd = path.clone();
+        let (sender, receiver) = channels::unbounded();
+        env.senders.to_pty = Some(SenderWithContext::new(sender));
+        let responder = std::thread::spawn(move || {
+            for reply in [
+                GetPaneCwdResponse::Ok(path),
+                GetPaneCwdResponse::Err("gone".into()),
+            ] {
+                let (
+                    PtyInstruction::GetPaneCwd {
+                        response_channel, ..
+                    },
+                    _,
+                ) = receiver.recv().unwrap()
+                else {
+                    panic!("expected cwd query")
+                };
+                response_channel.send(reply).unwrap();
+            }
+        });
+        let query = json!({"GetPaneCwd":{"pane_id":{"Terminal":1}}});
+        assert_eq!(dispatch(&mut env, query.clone()).unwrap(), cwd);
+        assert_eq!(dispatch(&mut env, query).unwrap_err().to_string(), "gone");
+        assert_eq!(
+            dispatch(&mut env, json!("GetPluginIds")).unwrap(),
+            json!({
+                "initial_cwd": initial, "plugin_id":u32::MAX, "client_id":u32::MAX, "yinz_pid":std::process::id(),
+                "host_id":yinz_runtime::host_identity::host_id(), "hostname":yinz_runtime::host_identity::host_display_name(),
+                "max_session_name_bytes": YINZ_SOCK_MAX_LENGTH.saturating_sub(YINZ_SOCK_DIR.join("x").as_os_str().len())
+            })
+        );
+        responder.join().unwrap();
     }
 }

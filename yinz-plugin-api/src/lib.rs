@@ -14,7 +14,7 @@ pub mod plugin_permission;
 pub mod resize;
 pub mod style;
 #[cfg(any(test, feature = "test-support"))]
-// IPC reuses the action generators; the plugin-only generators are used by this crate's tests.
+// Retain the public test-support module alongside the legacy protocol.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod test_generators;
 // prost writes these, `cargo x proto` regenerates them and `cargo x assets --check` compares

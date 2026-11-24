@@ -142,6 +142,8 @@ fn test_only_features_are_enabled_only_from_dev_dependencies() {
         .unwrap()
         .push(json!(COMPOSITION_ROOT));
     for (source, destination) in [
+        ("yinz-cli", "yinz-types"),
+        ("yinz-ipc", "yinz-types"),
         ("yinz-plugin-host", "yinz-plugin-authoring"),
         ("yinz-plugin-host", "project-data"),
         ("yinz-tab", "yinz-panes"),

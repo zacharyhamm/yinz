@@ -10,15 +10,10 @@ use super::permissions::{check_command_permission, command_permission, LAYOUT_FI
 use super::run_plugin_command;
 use crate::plugin_map::PluginEnv;
 use crate::PaneId;
-use prost::Message;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::{fs, process};
 use yinz_bus::ServerInstruction;
-use yinz_plugin_api::plugin_command::{
-    fs_mutate_response, ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufFsMutateResponse, ProtobufKillSessionsResponse,
-};
 use yinz_runtime::errors::prelude::*;
 use yinz_storage::plugin_data_store;
 use yinz_types::agent::AgentSpawnSpec;
@@ -91,26 +86,17 @@ fn plugin_info_self_inspection_needs_no_permission() {
 #[test]
 fn plugin_url_query_denial_is_an_error_not_an_empty_match() {
     let mut env = crate::test_env::test_env();
-    env.response_sink = None;
+
     let command = PluginCommand::GetPluginIdsForUrl("file:/plugin.scm".into());
     assert_eq!(
         command_permission(CommandType::GetPluginIdsForUrl),
         Some(PermissionType::ReadApplicationState)
     );
-    run_plugin_command(&mut env, command).unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    let reply = yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse::decode(
-        bytes.as_slice(),
-    )
-    .unwrap();
     assert_eq!(
-        reply.error.as_deref(),
-        Some("Permission denied: ReadApplicationState")
-    );
-    assert!(
-        crate::response::decode_response(CommandType::GetPluginIdsForUrl, &bytes)
-            .unwrap()
-            .is_err()
+        run_plugin_command(&mut env, command)
+            .unwrap_err()
+            .to_string(),
+        "Permission denied: ReadApplicationState"
     );
 }
 
@@ -126,9 +112,8 @@ fn a_missing_plugin_root_under_a_symlink_does_not_block_data_writes() {
     env.plugin_own_data_dir = temp.path().to_owned();
     env.user_plugin_dir = Some(plugin_dir.clone());
     *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
-    env.response_sink = None;
 
-    run_plugin_command(
+    let result = run_plugin_command(
         &mut env,
         PluginCommand::FsWrite {
             path: "/data/output.txt".into(),
@@ -138,13 +123,7 @@ fn a_missing_plugin_root_under_a_symlink_does_not_block_data_writes() {
         },
     )
     .unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    assert_eq!(
-        ProtobufFsMutateResponse::decode(bytes.as_slice())
-            .unwrap()
-            .result,
-        Some(fs_mutate_response::Result::Success(true))
-    );
+    assert_eq!(result.expect_json(), true);
     assert_eq!(fs::read(temp.path().join("output.txt")).unwrap(), b"output");
     assert!(
         !plugin_dir.exists(),
@@ -170,7 +149,7 @@ fn a_missing_plugin_root_under_a_symlink_still_requires_authoring_permission() {
             env.plugin_cwd = temp.path().to_owned();
             env.user_plugin_dir = Some(plugin_dir.clone());
             *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
-            env.response_sink = None;
+
             let path = PathBuf::from(prefix).join("new/nested/plugin.scm");
 
             for resolution in [
@@ -194,7 +173,7 @@ fn a_missing_plugin_root_under_a_symlink_still_requires_authoring_permission() {
                         .unwrap()
                         .insert(PermissionType::AuthorPlugins);
                 }
-                run_plugin_command(
+                let result = run_plugin_command(
                     &mut env,
                     PluginCommand::FsWrite {
                         path: path.clone(),
@@ -202,25 +181,16 @@ fn a_missing_plugin_root_under_a_symlink_still_requires_authoring_permission() {
                         append: false,
                         create_dirs: true,
                     },
-                )
-                .unwrap();
-                let bytes: Vec<u8> = env.response_sink.take().unwrap();
-                let result = ProtobufFsMutateResponse::decode(bytes.as_slice())
-                    .unwrap()
-                    .result;
+                );
                 if authorized {
-                    assert_eq!(
-                        result,
-                        Some(fs_mutate_response::Result::Success(true)),
-                        "{path:?}"
-                    );
+                    assert_eq!(result.unwrap().expect_json(), true, "{path:?}");
                     assert_eq!(
                         fs::read(config.join(suffix).join("new/nested/plugin.scm")).unwrap(),
                         b"export {};"
                     );
                 } else {
                     assert!(
-                        matches!(result, Some(fs_mutate_response::Result::Error(error)) if error.contains("AuthorPlugins")),
+                        format!("{:#}", result.unwrap_err()).contains("AuthorPlugins"),
                         "{path:?}"
                     );
                     assert!(
@@ -286,8 +256,8 @@ fn authoring_permission_follows_plugin_directory_aliases_and_ancestors() {
     // Ensuring an existing ancestor directory is harmless; only removing or renaming
     // that entry changes the plugin folder below it.
     *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
-    env.response_sink = None;
-    run_plugin_command(
+
+    let result = run_plugin_command(
         &mut env,
         PluginCommand::FsCreateDir {
             path: PathBuf::from("/host"),
@@ -295,13 +265,7 @@ fn authoring_permission_follows_plugin_directory_aliases_and_ancestors() {
         },
     )
     .unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    assert!(matches!(
-        ProtobufFsMutateResponse::decode(bytes.as_slice())
-            .unwrap()
-            .result,
-        Some(fs_mutate_response::Result::Success(true))
-    ));
+    assert_eq!(result.expect_json(), true);
     *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::AuthorPlugins]));
     assert!(resolve_fs_path_with_permission(
         &env,
@@ -350,16 +314,12 @@ fn a_folder_holding_a_root_cannot_be_removed_or_renamed() {
 
 /// Run one `Fs*` mutation and return its error, or `None` when it succeeded.
 fn fs_mutation_error(env: &mut PluginEnv, command: PluginCommand) -> Option<String> {
-    env.response_sink = None;
-    run_plugin_command(env, command).unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    match ProtobufFsMutateResponse::decode(bytes.as_slice())
-        .unwrap()
-        .result
-    {
-        Some(fs_mutate_response::Result::Success(true)) => None,
-        Some(fs_mutate_response::Result::Error(error)) => Some(error),
-        other => panic!("unexpected filesystem reply {other:?}"),
+    match run_plugin_command(env, command) {
+        Ok(reply) => {
+            assert_eq!(reply.expect_json(), true);
+            None
+        },
+        Err(error) => Some(format!("{error:#}")),
     }
 }
 
@@ -1255,17 +1215,13 @@ fn the_plugins_own_folders_inside_protected_state_stay_writable() {
 
 #[test]
 fn disconnect_target_queries_isolate_late_replies_and_report_failures() {
-    use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
     use yinz_runtime::channels::{unbounded, SenderWithContext};
     use yinz_types::internal_ids::ClientId;
     let mut env = crate::test_env::test_env();
-    env.response_sink = None;
+
     let (sender, server) = unbounded();
     env.senders.to_server = Some(SenderWithContext::new(sender));
-    let read = |env: &mut PluginEnv| {
-        let bytes: Vec<u8> = env.response_sink.take().unwrap();
-        ProtobufGetDisconnectTargetsResponse::decode(bytes.as_slice()).unwrap()
-    };
+    let query = |env: &mut PluginEnv| run_plugin_command(env, PluginCommand::GetDisconnectTargets);
     assert_eq!(
         check_command_permission(&env, &PluginCommand::GetDisconnectTargets),
         (
@@ -1273,19 +1229,16 @@ fn disconnect_target_queries_isolate_late_replies_and_report_failures() {
             Some(PermissionType::ReadApplicationState)
         )
     );
-    run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
-    assert!(read(&mut env).error.unwrap().contains("Permission denied"));
+    let reply = query(&mut env);
+    assert!(format!("{:#}", reply.unwrap_err()).contains("Permission denied"));
     assert!(server.try_recv().is_err());
     *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::ReadApplicationState]));
-    run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
-    assert!(read(&mut env)
-        .error
-        .unwrap()
-        .contains("receive disconnect targets"));
+    let reply = query(&mut env);
+    assert!(format!("{:#}", reply.unwrap_err()).contains("receive disconnect targets"));
     let ServerInstruction::GetDisconnectTargets(_, stale) = server.recv().unwrap().0 else {
         panic!()
     };
-    std::thread::scope(|scope| {
+    let reply = std::thread::scope(|scope| {
         scope.spawn(|| {
             let ServerInstruction::GetDisconnectTargets(_, fresh) = server.recv().unwrap().0 else {
                 panic!()
@@ -1295,31 +1248,26 @@ fn disconnect_target_queries_isolate_late_replies_and_report_failures() {
                 .send(vec![ClientId::new(2), ClientId::new(3)])
                 .unwrap();
         });
-        run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        query(&mut env)
     });
-    let response = read(&mut env);
-    assert_eq!(response.client_ids, vec![2, 3]);
-    assert!(response.error.is_none());
-    std::thread::scope(|scope| {
+    assert_eq!(reply.unwrap().expect_json(), serde_json::json!([2, 3]));
+    let reply = std::thread::scope(|scope| {
         scope.spawn(|| {
             let _ = server.recv().unwrap();
         });
-        run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        query(&mut env)
     });
-    assert!(read(&mut env).error.unwrap().contains("disconnected"));
+    assert!(format!("{:#}", reply.unwrap_err()).contains("disconnected"));
     drop(server);
     env.senders.should_silently_fail = false;
-    run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
-    assert!(read(&mut env)
-        .error
-        .unwrap()
-        .contains("send disconnect-target query"));
+    let reply = query(&mut env);
+    assert!(format!("{:#}", reply.unwrap_err()).contains("send disconnect-target query"));
 }
 
 #[test]
 fn denied_session_commands_reply_with_permission_errors() {
     let mut env = crate::test_env::test_env();
-    env.response_sink = None;
+
     for command in [
         PluginCommand::KillSessionsAndReply(vec!["test-session".into()]),
         PluginCommand::DeleteDeadSessionAndReply("test-session".into()),
@@ -1333,29 +1281,11 @@ fn denied_session_commands_reply_with_permission_errors() {
                 Some(PermissionType::ChangeApplicationState)
             )
         );
-        run_plugin_command(&mut env, command).unwrap();
-        let bytes: Vec<u8> = env.response_sink.take().unwrap();
-        let error = match kind {
-            CommandType::KillSessionsAndReply => {
-                ProtobufKillSessionsResponse::decode(bytes.as_slice())
-                    .unwrap()
-                    .error
-            },
-            CommandType::DeleteDeadSessionAndReply => {
-                ProtobufDeleteDeadSessionResponse::decode(bytes.as_slice())
-                    .unwrap()
-                    .error
-            },
-            CommandType::DeleteAllDeadSessionsAndReply => {
-                ProtobufDeleteAllDeadSessionsResponse::decode(bytes.as_slice())
-                    .unwrap()
-                    .error
-            },
-            _ => unreachable!(),
-        };
         assert_eq!(
-            error.as_deref(),
-            Some("Permission denied: ChangeApplicationState"),
+            run_plugin_command(&mut env, command)
+                .unwrap_err()
+                .to_string(),
+            "Permission denied: ChangeApplicationState",
             "{kind}"
         );
     }
@@ -1364,10 +1294,13 @@ fn denied_session_commands_reply_with_permission_errors() {
 #[test]
 fn other_denied_commands_keep_their_empty_reply() {
     let mut env = crate::test_env::test_env();
-    env.response_sink = None;
-    run_plugin_command(&mut env, PluginCommand::GetSessionList).unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    assert!(bytes.is_empty());
+
+    assert_eq!(
+        run_plugin_command(&mut env, PluginCommand::GetSessionList)
+            .unwrap_err()
+            .to_string(),
+        "Empty GetSessionListResponse"
+    );
 }
 
 /// `prepare_git_checkout_in` asking for reuse, which is what every test written before

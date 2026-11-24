@@ -1,19 +1,11 @@
 //! Application-state queries and their correlated responses.
 
-use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::PaneId;
-use prost::Message;
 use std::time::Duration;
 use yinz_bus::pty::PtyInstruction;
 use yinz_bus::screen::ScreenInstruction;
-use yinz_plugin_api::event::ProtobufPaneScrollbackResponse;
-use yinz_plugin_api::plugin_command::{
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetPaneCwdResponse,
-    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-    ProtobufGetPaneRunningCommandResponse, ProtobufGetTabInfoResponse,
-    ProtobufListNotificationsResponse,
-};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
@@ -21,12 +13,10 @@ use yinz_types::data::{
 };
 use yinz_types::internal_ids::TabId;
 
-pub(super) fn get_focused_pane_info(env: &mut PluginEnv) {
+pub(super) fn get_focused_pane_info(env: &mut PluginEnv) -> Result<DecodedResponse> {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
-    // Bound up front rather than captured: the closure would otherwise hold an immutable
-    // borrow of `env` across the `write_response` that replies to the plugin.
     let plugin_name = env.name();
     let client_id = env.client_id;
     let err_context = || {
@@ -70,14 +60,51 @@ pub(super) fn get_focused_pane_info(env: &mut PluginEnv) {
         },
     };
 
-    // Convert to protobuf and write response back to plugin
-    let protobuf_response = ProtobufGetFocusedPaneInfoResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(err_context)
-        .non_fatal();
+    match response {
+        GetFocusedPaneInfoResponse::Ok { tab_id, pane_id } => value(
+            serde_json::json!({"tab_id": u32::try_from(tab_id.get()).map_err(|_| anyhow!("tab_id is outside u32 range"))?, "pane_id":pane_id}),
+        ),
+        GetFocusedPaneInfoResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
-pub(super) fn get_pane_info(env: &mut PluginEnv, pane_id: yinz_types::data::PaneId) {
+/// Guest pane and tab snapshots historically expose unsigned 32-bit sizes.
+pub(super) fn project_pane(pane: &mut yinz_types::data::PaneInfo) -> bool {
+    for index in pane.index_in_pane_group.values_mut() {
+        *index = *index as u32 as usize;
+    }
+    if let yinz_types::command::PaneTarget::Bubblewrap { root } = &mut pane.target {
+        *root = root.display().to_string().into();
+    }
+    u32::try_from(pane.pane_x).is_ok()
+        && u32::try_from(pane.pane_y).is_ok()
+        && u32::try_from(pane.pane_content_x).is_ok()
+        && u32::try_from(pane.pane_content_y).is_ok()
+        && u32::try_from(pane.pane_columns).is_ok()
+        && u32::try_from(pane.pane_rows).is_ok()
+        && u32::try_from(pane.pane_content_columns).is_ok()
+        && u32::try_from(pane.pane_content_rows).is_ok()
+        && pane
+            .cursor_coordinates_in_pane
+            .is_none_or(|cursor| i64::try_from(cursor.x).is_ok() && i64::try_from(cursor.y).is_ok())
+}
+
+pub(super) fn project_tab(tab: &mut yinz_types::data::TabInfo) -> bool {
+    tab.panes_to_hide = tab.panes_to_hide as u32 as usize;
+    tab.selectable_tiled_panes_count = tab.selectable_tiled_panes_count as u32 as usize;
+    tab.selectable_floating_panes_count = tab.selectable_floating_panes_count as u32 as usize;
+    u32::try_from(tab.tab_id.get()).is_ok()
+        && u32::try_from(tab.position.get()).is_ok()
+        && u32::try_from(tab.viewport_rows).is_ok()
+        && u32::try_from(tab.viewport_columns).is_ok()
+        && u32::try_from(tab.display_area_rows).is_ok()
+        && u32::try_from(tab.display_area_columns).is_ok()
+}
+
+pub(super) fn get_pane_info(
+    env: &mut PluginEnv,
+    pane_id: yinz_types::data::PaneId,
+) -> Result<DecodedResponse> {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -105,21 +132,8 @@ pub(super) fn get_pane_info(env: &mut PluginEnv, pane_id: yinz_types::data::Pane
         .non_fatal();
 
     // Block waiting for response with 100ms timeout
-    let pane_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
-        Ok(Some(pane_info)) => {
-            // Convert PaneInfo to ProtobufPaneInfo
-            match pane_info.try_into() {
-                Ok(protobuf_pane_info) => Some(protobuf_pane_info),
-                Err(e) => {
-                    log::error!(
-                        "Failed to convert PaneInfo to protobuf for pane {:?}: {}",
-                        pane_id,
-                        e
-                    );
-                    None
-                },
-            }
-        },
+    let mut pane_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
+        Ok(Some(pane_info)) => Some(pane_info),
         Ok(None) => None, // Pane not found
         Err(RecvTimeoutError::Timeout) => {
             log::error!(
@@ -138,11 +152,10 @@ pub(super) fn get_pane_info(env: &mut PluginEnv, pane_id: yinz_types::data::Pane
         },
     };
 
-    let response = ProtobufGetPaneInfoResponse { pane_info };
-    let _ = write_response(env, &response.encode_to_vec());
+    value(pane_info.take_if(project_pane))
 }
 
-pub(super) fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
+pub(super) fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) -> Result<DecodedResponse> {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -167,21 +180,8 @@ pub(super) fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
         .non_fatal();
 
     // Block waiting for response with 100ms timeout
-    let tab_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
-        Ok(Some(tab_info)) => {
-            // Convert TabInfo to ProtobufTabInfo
-            match tab_info.try_into() {
-                Ok(protobuf_tab_info) => Some(protobuf_tab_info),
-                Err(e) => {
-                    log::error!(
-                        "Failed to convert TabInfo to protobuf for tab {}: {}",
-                        tab_id,
-                        e
-                    );
-                    None
-                },
-            }
-        },
+    let mut tab_info = match response_receiver.recv_timeout(Duration::from_millis(100)) {
+        Ok(Some(tab_info)) => Some(tab_info),
         Ok(None) => None, // Tab not found
         Err(RecvTimeoutError::Timeout) => {
             log::error!(
@@ -200,11 +200,10 @@ pub(super) fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
         },
     };
 
-    let response = ProtobufGetTabInfoResponse { tab_info };
-    let _ = write_response(env, &response.encode_to_vec());
+    value(tab_info.take_if(project_tab))
 }
 
-pub(super) fn list_notifications(env: &mut PluginEnv) {
+pub(super) fn list_notifications(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
     let notifications = if env
         .senders
@@ -227,17 +226,7 @@ pub(super) fn list_notifications(env: &mut PluginEnv) {
     } else {
         Err("Failed to request notifications from screen".to_owned())
     };
-    let response = match notifications {
-        Ok(notifications) => ProtobufListNotificationsResponse {
-            notifications: notifications.into_iter().map(Into::into).collect(),
-            error: None,
-        },
-        Err(error) => ProtobufListNotificationsResponse {
-            notifications: vec![],
-            error: Some(error),
-        },
-    };
-    let _ = write_response(env, &response.encode_to_vec());
+    value(notifications.map_err(anyhow::Error::msg)?)
 }
 
 pub(super) fn list_clients(env: &PluginEnv) {
@@ -250,12 +239,14 @@ pub(super) fn list_clients(env: &PluginEnv) {
     });
 }
 
-pub(super) fn get_pane_scrollback(env: &mut PluginEnv, pane_id: PaneId, get_full_scrollback: bool) {
+pub(super) fn get_pane_scrollback(
+    env: &mut PluginEnv,
+    pane_id: PaneId,
+    get_full_scrollback: bool,
+) -> Result<DecodedResponse> {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
-    // See the note in `get_focused_pane_info`: bound up front so the closure does not hold a
-    // borrow of `env` across the reply.
     let plugin_name = env.name();
     let err_context = || {
         format!(
@@ -305,23 +296,25 @@ pub(super) fn get_pane_scrollback(env: &mut PluginEnv, pane_id: PaneId, get_full
         },
     };
 
-    // Convert to protobuf and write back to plugin
-    ProtobufPaneScrollbackResponse::try_from(response)
-        .map_err(|e| anyhow!("Failed to serialize pane scrollback response: {}", e))
-        .and_then(|serialized| {
-            write_response(env, &serialized.encode_to_vec())?;
-            Ok(())
-        })
-        .with_context(err_context)
-        .non_fatal();
+    match response {
+        PaneScrollbackResponse::Ok(contents) => {
+            let valid = contents.cursor.is_none_or(|cursor| {
+                i64::try_from(cursor.x).is_ok() && i64::try_from(cursor.y).is_ok()
+            }) && contents.selected_text.as_ref().is_none_or(|selection| {
+                [selection.start, selection.end]
+                    .iter()
+                    .all(|pos| i64::try_from(pos.column).is_ok() && i64::try_from(pos.line).is_ok())
+            });
+            value(valid.then_some(contents))
+        },
+        PaneScrollbackResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
-pub(super) fn get_pane_pid(env: &mut PluginEnv, pane_id: PaneId) {
+pub(super) fn get_pane_pid(env: &mut PluginEnv, pane_id: PaneId) -> Result<DecodedResponse> {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
-    // See the note in `get_focused_pane_info`: bound up front so the closure does not hold a
-    // borrow of `env` across the reply.
     let plugin_name = env.name();
     let err_context = || {
         format!(
@@ -366,20 +359,24 @@ pub(super) fn get_pane_pid(env: &mut PluginEnv, pane_id: PaneId) {
         },
     };
 
-    // Encode the synchronous command response.
-    let protobuf_response = ProtobufGetPanePidResponse::from(response);
-    let serialized = protobuf_response.encode_to_vec();
-    write_response(env, &serialized)
-        .with_context(err_context)
-        .non_fatal();
+    match response {
+        GetPanePidResponse::Ok(pid) => value(pid.legacy_signed_bits()),
+        GetPanePidResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
-pub(super) fn get_pane_running_command(env: &mut PluginEnv, pane_id: PaneId) {
+pub(super) fn get_pane_running_command(
+    env: &mut PluginEnv,
+    pane_id: PaneId,
+) -> Result<DecodedResponse> {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     send_get_pane_running_command_request(env, pane_id, sender);
     let response = await_pane_running_command_response(env, pane_id, receiver);
-    write_pane_running_command_response(env, pane_id, response);
+    match response {
+        GetPaneRunningCommandResponse::Ok(args) => value(args),
+        GetPaneRunningCommandResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
 fn send_get_pane_running_command_request(
@@ -431,23 +428,15 @@ fn await_pane_running_command_response(
     }
 }
 
-fn write_pane_running_command_response(
-    env: &mut PluginEnv,
-    pane_id: PaneId,
-    response: GetPaneRunningCommandResponse,
-) {
-    let protobuf_response = ProtobufGetPaneRunningCommandResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| format!("Failed to get running command for pane {:?}", pane_id))
-        .non_fatal();
-}
-
-pub(super) fn get_pane_cwd(env: &mut PluginEnv, pane_id: PaneId) {
+pub(super) fn get_pane_cwd(env: &mut PluginEnv, pane_id: PaneId) -> Result<DecodedResponse> {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     send_get_pane_cwd_request(env, pane_id, sender);
     let response = await_pane_cwd_response(env, pane_id, receiver);
-    write_pane_cwd_response(env, pane_id, response);
+    match response {
+        GetPaneCwdResponse::Ok(path) => value(path.to_str().unwrap_or_default()),
+        GetPaneCwdResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
 fn send_get_pane_cwd_request(
@@ -496,13 +485,6 @@ fn await_pane_cwd_response(
     }
 }
 
-fn write_pane_cwd_response(env: &mut PluginEnv, pane_id: PaneId, response: GetPaneCwdResponse) {
-    let protobuf_response = ProtobufGetPaneCwdResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| format!("Failed to get CWD for pane {:?}", pane_id))
-        .non_fatal();
-}
-
 /// The far machine's Git probe for a remote pane, from the cache the broker
 /// pushes up.
 ///
@@ -515,7 +497,7 @@ pub(super) fn get_pane_git_probe(
     pane_id: PaneId,
     cwd: String,
     refresh_token: Option<String>,
-) {
+) -> Result<DecodedResponse> {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     env.senders
@@ -530,10 +512,11 @@ pub(super) fn get_pane_git_probe(
 
     let response = await_pane_git_probe_response(env, pane_id, receiver);
 
-    let protobuf_response = ProtobufGetPaneGitProbeResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| format!("Failed to get the git probe for pane {:?}", pane_id))
-        .non_fatal();
+    match response {
+        GetPaneGitProbeResponse::Ok(probe) => crate::response::git_probe(probe),
+        GetPaneGitProbeResponse::Pending => value(()),
+        GetPaneGitProbeResponse::Err(error) => Err(anyhow!(error)),
+    }
 }
 
 fn await_pane_git_probe_response(

@@ -1,5 +1,5 @@
 use crate::plugin_bridge::LoadingContext;
-use crate::plugin_map::{PluginEnv, PluginMap, ResponseSink, RunningPlugin, CANCELLED_BY_HOST};
+use crate::plugin_map::{PluginEnv, PluginMap, RunningPlugin, CANCELLED_BY_HOST};
 use crate::plugin_panes::Surface;
 use crate::{ClientId, PluginId};
 use std::{
@@ -541,7 +541,7 @@ impl PluginLoader {
             pick_request: self.pick_request.clone(),
             pick_cancelled: self.pick_cancelled.clone(),
             pick_opening: self.pick_opening.clone(),
-            response_sink: ResponseSink::default(),
+
             plugin_id: self.plugin_id,
             instance_id: Default::default(),
             unavailable: Default::default(),

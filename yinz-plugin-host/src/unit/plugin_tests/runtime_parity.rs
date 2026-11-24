@@ -1,8 +1,7 @@
 //! Compare real Scheme guests with recordings captured from the original Wasm runtimes.
 //! Recorded commands run against independent host services, preserving database and filesystem checks.
 use super::reference_trace::Trace;
-use crate::response::{decode_response, DecodedResponse};
-use prost::Message;
+use crate::response::DecodedResponse;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -12,12 +11,8 @@ use std::{
         Arc, Mutex,
     },
 };
-use yinz_plugin_api::{
-    plugin_command::*,
-    plugin_ids::{ProtobufPluginIds, ProtobufYinzVersion},
-};
 use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
-use yinz_types::data::{CommandType, Event, InputMode, ModeInfo, PipeMessage, PluginCommand};
+use yinz_types::data::{Event, InputMode, ModeInfo, PipeMessage, PluginCommand};
 use yinz_types::internal_ids::PluginId;
 use yinz_types::own_pane::own_pane_command;
 
@@ -54,7 +49,11 @@ pub(crate) fn legacy_provider_agents(value: &mut Value) {
     }
 }
 
-pub(crate) type Responder = Arc<dyn Fn(&PluginCommand) -> Option<Vec<u8>> + Send + Sync>;
+pub(crate) type Reply = Result<DecodedResponse, String>;
+pub(crate) fn json_reply(value: impl serde::Serialize) -> Reply {
+    Ok(DecodedResponse::Json(serde_json::to_value(value).unwrap()))
+}
+pub(crate) type Responder = Arc<dyn Fn(&PluginCommand) -> Option<Reply> + Send + Sync>;
 type Commands = Arc<Mutex<Vec<Value>>>;
 
 fn record(commands: &Commands, command: &PluginCommand) {
@@ -70,55 +69,26 @@ fn record(commands: &Commands, command: &PluginCommand) {
     commands.lock().unwrap().push(value);
 }
 
-pub(crate) fn default_reply(command: &PluginCommand) -> Option<Vec<u8>> {
+pub(crate) fn default_reply(command: &PluginCommand) -> Option<Reply> {
     Some(match command {
-        PluginCommand::GetProjectProviders => ProtobufAgentProvidersResponse {
-            json: "{\"Ok\":[]}".into(),
-        }
-        .encode_to_vec(),
-        PluginCommand::PublishProjectLocations(_) => ProtobufAgentProvidersResponse {
-            json: "{\"Ok\":null}".into(),
-        }
-        .encode_to_vec(),
-        PluginCommand::GetPluginIds => ProtobufPluginIds {
-            plugin_id: 1,
-            client_id: 1,
-            yinz_pid: 1234,
-            initial_cwd: "/work".into(),
-            hostname: "parity-host".into(),
-            host_id: "parity-host-id".into(),
-            max_session_name_bytes: Some(80),
-        }
-        .encode_to_vec(),
-        PluginCommand::GetYinzVersion => ProtobufYinzVersion {
-            version: "test".into(),
-        }
-        .encode_to_vec(),
-        PluginCommand::GetLocalTime { epoch_ms } => ProtobufGetLocalTimeResponse {
-            text: chrono::DateTime::from_timestamp_millis(epoch_ms.get())
+        PluginCommand::GetProjectProviders => json_reply(serde_json::json!([])),
+        PluginCommand::PublishProjectLocations(_) => json_reply(()),
+        PluginCommand::GetPluginIds => json_reply(
+            serde_json::json!({"plugin_id":1,"client_id":1,"yinz_pid":1234,"initial_cwd":"/work","hostname":"parity-host","host_id":"parity-host-id","max_session_name_bytes":80}),
+        ),
+        PluginCommand::GetYinzVersion => json_reply("test"),
+        PluginCommand::GetLocalTime { epoch_ms } => json_reply(
+            chrono::DateTime::from_timestamp_millis(epoch_ms.get())
                 .map(|at| at.format("%b %-d, %Y, %-I:%M %p UTC").to_string())
                 .unwrap_or_default(),
-        }
-        .encode_to_vec(),
-        PluginCommand::GetLocalUtcOffset { .. } => ProtobufGetLocalUtcOffsetResponse {
-            offset_seconds: 0,
-            unavailable: false,
-        }
-        .encode_to_vec(),
-        PluginCommand::OpenFile(..) => ProtobufOpenFileResponse::default().encode_to_vec(),
-        PluginCommand::OpenTerminal(..) => ProtobufOpenTerminalResponse::default().encode_to_vec(),
-        PluginCommand::OpenFileInPlaceOfPlugin(..) => {
-            ProtobufOpenFileInPlaceOfPluginResponse::default().encode_to_vec()
-        },
-        PluginCommand::OpenTerminalInPlaceOfPlugin(..) => {
-            ProtobufOpenTerminalInPlaceOfPluginResponse::default().encode_to_vec()
-        },
-        PluginCommand::BreakPanesToNewTab(..) => {
-            ProtobufBreakPanesToNewTabResponse::default().encode_to_vec()
-        },
-        PluginCommand::BreakPanesToTabWithIndex(..) => {
-            ProtobufBreakPanesToTabWithIndexResponse::default().encode_to_vec()
-        },
+        ),
+        PluginCommand::GetLocalUtcOffset { .. } => json_reply(0),
+        PluginCommand::OpenFile(..) => json_reply(()),
+        PluginCommand::OpenTerminal(..) => json_reply(()),
+        PluginCommand::OpenFileInPlaceOfPlugin(..) => json_reply(()),
+        PluginCommand::OpenTerminalInPlaceOfPlugin(..) => json_reply(()),
+        PluginCommand::BreakPanesToNewTab(..) => json_reply(()),
+        PluginCommand::BreakPanesToTabWithIndex(..) => json_reply(()),
         _ => return None,
     })
 }
@@ -255,8 +225,9 @@ impl SteelReference {
             .unwrap()
             .applies(&configuration);
         let me = responder(&PluginCommand::GetPluginIds)
-            .and_then(|reply| ProtobufPluginIds::decode(reply.as_slice()).ok())
-            .and_then(|ids| u32::try_from(ids.plugin_id).ok())
+            .and_then(Result::ok)
+            .and_then(|reply| reply.expect_json()["plugin_id"].as_u64())
+            .and_then(|id| u32::try_from(id).ok())
             .map_or(PluginId::new(u32::MAX), PluginId::new);
         let plugin = name.to_owned();
         let commands = Commands::default();
@@ -276,13 +247,10 @@ impl SteelReference {
             let Some(response) = responder(&command) else {
                 return Ok(Value::Null);
             };
-            Ok(
-                match decode_response(CommandType::from(&command), &response).transpose()? {
-                    Some(DecodedResponse::Json(value)) => value,
-                    Some(DecodedResponse::Bytes(bytes)) => serde_json::to_value(bytes)?,
-                    None => serde_json::to_value(response)?,
-                },
-            )
+            Ok(match response.map_err(anyhow::Error::msg)? {
+                DecodedResponse::Json(value) => value,
+                DecodedResponse::Bytes(bytes) => serde_json::to_value(bytes)?,
+            })
         };
         let mut runtime = match clock {
             Some(clock) => {

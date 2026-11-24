@@ -1,6 +1,6 @@
 //! Picker ownership lives on the plugin thread; screen acknowledges focus restoration.
 use super::*;
-use prost::Message;
+use crate::response::{value, DecodedResponse};
 use std::path::Path;
 use yinz_types::geometry::{FloatingPaneCoordinates, PercentOrFixed};
 use yinz_types::pick::{PickCommand, PickKind, PickRequest, PickResult};
@@ -19,7 +19,7 @@ pub(super) struct PendingPick {
     result: Option<Result<Option<String>, String>>,
 }
 
-pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<()> {
+pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<DecodedResponse> {
     let result = (|| -> Result<Option<PickRequest>> {
         if command == PickCommand::Request {
             return Ok(env.pick_request.clone());
@@ -82,11 +82,7 @@ pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<
         send_command(env, command, cwd, focused_plugin)
     })()
     .map_err(|error| format!("{error:#}"));
-    let response = yinz_plugin_api::plugin_command::ProtobufPickResponse {
-        json: serde_json::to_string(&result).context("encode picker reply")?,
-    };
-    crate::yinz_exports::write_response(env, &response.encode_to_vec())
-        .context("write picker reply")
+    value(result.map_err(anyhow::Error::msg)?)
 }
 
 fn send_command(

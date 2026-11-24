@@ -260,20 +260,14 @@ fn unsupported_client_falls_back_to_current_server_sessions() {
             current_server_only: true,
         }
     );
-    let response = |env: &mut crate::plugin_map::PluginEnv| {
-        let bytes = env.response_sink.take().unwrap();
-        let json =
-            yinz_plugin_api::generated_api::api::plugin_command::SessionDestinationResponse::decode(
-                bytes.as_slice(),
-            )
-            .unwrap()
-            .json;
-        serde_json::from_str::<std::result::Result<serde_json::Value, String>>(&json).unwrap()
-    };
     // There is nothing to cancel on a client that cannot prepare a switch.
-    switch(&mut env, SwitchRequest::Cancel("picker".into())).unwrap();
-    assert_eq!(response(&mut env), Ok(serde_json::json!("Complete")));
-    switch(
+    assert_eq!(
+        switch(&mut env, SwitchRequest::Cancel("picker".into()))
+            .unwrap()
+            .expect_json(),
+        serde_json::json!("Complete")
+    );
+    let reply = switch(
         &mut env,
         SwitchRequest::Prepare {
             id: "picker".into(),
@@ -284,8 +278,8 @@ fn unsupported_client_falls_back_to_current_server_sessions() {
             },
         },
     )
-    .unwrap();
-    assert_eq!(response(&mut env), Err(UNSUPPORTED_CLIENT.to_owned()));
+    .unwrap_err();
+    assert_eq!(reply.to_string(), UNSUPPORTED_CLIENT);
     assert!(env.session_preparations.is_empty());
     worker.join().unwrap();
 }

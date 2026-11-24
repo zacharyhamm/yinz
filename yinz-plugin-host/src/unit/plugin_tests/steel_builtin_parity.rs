@@ -45,9 +45,7 @@ impl Reference {
             json!({"operation":operation,"now":now,"replies":*self.replies.lock().unwrap()});
         let result = self
             .trace
-            .replay(input, |_| {
-                panic!("fixed JSON reference has no protobuf host calls")
-            })
+            .replay(input, |_| panic!("fixed JSON reference has no host calls"))
             .0;
         self.commands.extend(
             serde_json::from_value::<Vec<(Value, u32)>>(result["commands"].clone()).unwrap(),

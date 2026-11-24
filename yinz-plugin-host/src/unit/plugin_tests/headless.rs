@@ -922,12 +922,9 @@ fn own_pane_commands_are_refused_only_without_a_pane() {
 #[test]
 fn plugin_info_reports_whether_each_plugin_has_a_pane() {
     let info = |env: &mut crate::plugin_map::PluginEnv, id: Option<PluginId>| {
-        crate::yinz_exports::run_plugin_command(env, PluginCommand::GetPluginInfo(id)).unwrap();
-        let response = <yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse as prost::Message>::decode(
-            env.response_sink.take().unwrap().as_slice(),
-        )
-        .unwrap();
-        serde_json::from_str::<Option<PluginInstanceInfo>>(&response.json).unwrap()
+        let reply =
+            crate::yinz_exports::run_plugin_command(env, PluginCommand::GetPluginInfo(id)).unwrap();
+        serde_json::from_value::<Option<PluginInstanceInfo>>(reply.expect_json()).unwrap()
     };
     let mut env = headless_env();
     // Asking about another plugin reads application state.

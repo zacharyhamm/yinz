@@ -1,7 +1,5 @@
-//! `yinz_config::kdl::action::to_kdl`'s contract, drawn from the plugin API's action
-//! generator: every action either has no config spelling and says so, or reads back from the
-//! line `to_kdl` writes as the very same value. It lives here rather than beside the serializer
-//! because `yinz-config` may not depend on `yinz-plugin-api`, even for its tests.
+//! Check that actions with a writable KDL spelling read back as the same value.
+//! The CLI and IPC contract tests draw actions from the same generators.
 use hegel::generators;
 use kdl::KdlDocument;
 use strum::IntoEnumIterator;

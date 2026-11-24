@@ -1,11 +1,10 @@
+use super::runtime_parity::json_reply;
 use super::{
     data_parity::DataHost,
     runtime_parity::{default_reply, Pair, Responder},
 };
-use prost::Message;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
-use yinz_plugin_api::plugin_command::*;
 use yinz_types::{
     data::*,
     internal_ids::{PluginId, TabPosition, TerminalId},
@@ -18,32 +17,13 @@ fn configured_responder(projects: bool, fail_open: bool) -> Responder {
     let data = DataHost::new("new-agent-parity");
     let responder = data.responder(Arc::new(move |command| {
         Some(match command {
-            PluginCommand::GetAgentProviders => ProtobufAgentProvidersResponse {
-                json: "{\"Ok\":[]}".into(),
-            }
-            .encode_to_vec(),
-            PluginCommand::SpawnAgent { .. } => ProtobufSpawnAgentResponse::from(if fail_open {
-                Err("fixture launch failed".into())
-            } else {
-                Ok(SpawnedAgent {
-                    pane_id: PaneId::Terminal(TerminalId::new(11)),
-                    branch: Some("topic".into()),
-                    cwd: Some("/work/.worktrees/topic".into()),
-                    ..Default::default()
-                })
-            })
-            .encode_to_vec(),
+            PluginCommand::GetAgentProviders => json_reply(serde_json::json!([])),
+            PluginCommand::SpawnAgent { .. } => if fail_open {Err("fixture launch failed".into())} else {json_reply(json!({"pane_id":{"Terminal":11},"branch":"topic","cwd":"/work/.worktrees/topic"}))},
             PluginCommand::OpenCommandPaneNearPlugin(..) => {
-                ProtobufOpenCommandPaneNearPluginResponse {
-                    pane_id: (!fail_open).then_some(ProtobufPaneId {
-                        pane_type: 0,
-                        id: 12,
-                    }),
-                }
-                .encode_to_vec()
+                json_reply((!fail_open).then_some(PaneId::Terminal(TerminalId::new(12))))
             },
             PluginCommand::GetPaneInfo(..) => {
-                ProtobufGetPaneInfoResponse { pane_info: None }.encode_to_vec()
+                json_reply(())
             },
             _ => return default_reply(command),
         })
@@ -55,6 +35,7 @@ fn configured_responder(projects: bool, fail_open: bool) -> Responder {
                 def,
                 allow_destructive: false,
             })
+            .unwrap()
             .unwrap();
         }
         data.apply(
@@ -434,26 +415,17 @@ fn new_agent_actual_runtimes_duplicate_explicit_hidden_sandbox_source() {
         let fallback = responder();
         Arc::new(move |command: &PluginCommand| {
             if matches!(command, PluginCommand::GetPaneInfo(..)) {
-                Some(
-                    ProtobufGetPaneInfoResponse {
-                        pane_info: Some(
-                            PaneInfo {
-                                id: PaneId::Terminal(TerminalId::new(7)),
-                                terminal_command: Some("codex".into()),
-                                cwd: Some("/sandbox/work".into()),
-                                is_suppressed: true,
-                                target: yinz_types::command::PaneTarget::bubblewrap(
-                                    std::path::Path::new("/sandbox"),
-                                )
-                                .unwrap(),
-                                ..Default::default()
-                            }
-                            .try_into()
-                            .unwrap(),
-                        ),
-                    }
-                    .encode_to_vec(),
-                )
+                Some(json_reply(PaneInfo {
+                    id: PaneId::Terminal(TerminalId::new(7)),
+                    terminal_command: Some("codex".into()),
+                    cwd: Some("/sandbox/work".into()),
+                    is_suppressed: true,
+                    target: yinz_types::command::PaneTarget::bubblewrap(std::path::Path::new(
+                        "/sandbox",
+                    ))
+                    .unwrap(),
+                    ..Default::default()
+                }))
             } else {
                 fallback(command)
             }

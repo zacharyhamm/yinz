@@ -3,7 +3,6 @@ use super::plugins::load_new_plugin;
 use super::sessions::switch_session;
 use crate::plugin_map::PluginEnv;
 use crate::{PaneId, PluginInstruction};
-use prost::Message;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -224,12 +223,9 @@ fn pick_command(roots: Option<Vec<String>>) -> PickCommand {
 }
 
 fn pick_reply(env: &mut PluginEnv, command: PickCommand) -> Result<Option<PickRequest>, String> {
-    env.response_sink = None;
-    crate::plugin_bridge::picker::dispatch(env, command).unwrap();
-    let bytes: Vec<u8> = env.response_sink.take().unwrap();
-    let reply =
-        yinz_plugin_api::plugin_command::ProtobufPickResponse::decode(bytes.as_slice()).unwrap();
-    serde_json::from_str(&reply.json).unwrap()
+    let reply = crate::plugin_bridge::picker::dispatch(env, command)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(serde_json::from_value(reply.expect_json()).unwrap())
 }
 
 fn browse(env: &mut PluginEnv, roots: Option<Vec<String>>, focused_cwd: &Path) -> PickRequest {
@@ -415,7 +411,6 @@ fn layout_tab_commands_preserve_kdl_cwds_without_a_tab_override() {
         for use_layout_info in [false, true] {
             let mut env = crate::test_env::test_env();
             env.plugin_cwd = PathBuf::from("/caller");
-            env.response_sink = None;
             let (to_screen, screen_receiver) = channels::unbounded();
             env.senders.to_screen = Some(SenderWithContext::new(to_screen));
             let screen_thread = thread::spawn(move || {

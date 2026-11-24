@@ -1,31 +1,5 @@
 use super::*;
-
-#[test]
-fn shared_decoder_distinguishes_missing_unknown_invalid_and_failed_replies() {
-    assert_eq!(
-        decode_response(CommandType::GetPaneCwd, &[])
-            .unwrap()
-            .unwrap(),
-        DecodedResponse::Json(serde_json::Value::Null)
-    );
-    assert!(decode_response(CommandType::Subscribe, &[]).is_none());
-    assert!(decode_response(CommandType::GetPaneCwd, &[255])
-        .unwrap()
-        .unwrap_err()
-        .to_string()
-        .contains("could not be read"));
-    let failed = ProtobufFsReadResponse {
-        result: Some(fs_read_response::Result::Error("denied".into())),
-    }
-    .encode_to_vec();
-    assert_eq!(
-        decode_response(CommandType::FsRead, &failed)
-            .unwrap()
-            .unwrap_err()
-            .to_string(),
-        "denied"
-    );
-}
+use yinz_types::data::{ClientInfo, PaneGitProbe};
 
 #[test]
 fn remote_git_probe_keeps_large_metadata_and_config_compact() {
@@ -36,16 +10,7 @@ fn remote_git_probe_keeps_large_metadata_and_config_compact() {
         metadata: vec![255; 200_001],
         config: vec![0; 200_001],
     };
-    let response = ProtobufGetPaneGitProbeResponse::from(
-        yinz_types::data::GetPaneGitProbeResponse::Ok(probe.clone()),
-    )
-    .encode_to_vec();
-    let DecodedResponse::Json(value) = decode_response(CommandType::GetPaneGitProbe, &response)
-        .unwrap()
-        .unwrap()
-    else {
-        panic!("expected probe object")
-    };
+    let value = git_probe(probe.clone()).unwrap().expect_json();
     assert_eq!(value["host"], "remote");
     assert_eq!(value["cwd"], "/project");
     assert_eq!(value["exit_code"], 128);
@@ -59,37 +24,23 @@ fn remote_git_probe_keeps_large_metadata_and_config_compact() {
 }
 
 #[test]
-fn client_timezone_decoder_distinguishes_unavailable_and_legacy_zero_offsets() {
-    for (bytes, expected) in [
-        (vec![], serde_json::json!(0)),
-        (
-            ProtobufGetLocalUtcOffsetResponse {
-                offset_seconds: 0,
-                unavailable: true,
-            }
-            .encode_to_vec(),
-            serde_json::Value::Null,
-        ),
-        (
-            ProtobufGetLocalUtcOffsetResponse {
-                offset_seconds: 19800,
-                unavailable: false,
-            }
-            .encode_to_vec(),
-            serde_json::json!(19800),
-        ),
-    ] {
-        assert_eq!(
-            decode_response(CommandType::GetLocalUtcOffset, &bytes)
-                .unwrap()
-                .unwrap(),
-            DecodedResponse::Json(expected)
-        );
-    }
-    assert_eq!(
-        decode_response(CommandType::GetClientTimezone, &[])
-            .unwrap()
-            .unwrap(),
-        DecodedResponse::Json(serde_json::Value::Null)
-    );
+fn older_client_info_defaults_to_an_unavailable_timezone() {
+    let info: ClientInfo = serde_json::from_value(serde_json::json!({
+        "client_id":7,"pane_id":{"Terminal":1},"running_command":"shell","is_current_client":true
+    }))
+    .unwrap();
+    assert_eq!(info.timezone, None);
+}
+
+#[test]
+fn plugin_ids_preserve_maximum_unsigned_json_scalars() {
+    let fields = serde_json::json!({
+        "plugin_id": u32::MAX, "client_id": u32::MAX, "yinz_pid": u32::MAX,
+        "initial_cwd": "/work", "hostname": "", "host_id": "", "max_session_name_bytes": null
+    });
+    let ids: yinz_types::data::PluginIds = serde_json::from_value(fields.clone()).unwrap();
+    assert_eq!(ids.plugin_id.get(), u32::MAX);
+    assert_eq!(ids.client_id.get(), u32::MAX);
+    assert_eq!(ids.yinz_pid.get(), u32::MAX);
+    assert_eq!(value(ids).unwrap().expect_json(), fields);
 }

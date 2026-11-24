@@ -2,9 +2,8 @@
 
 use super::filesystem::resolve_fs_ancestors;
 use super::pane_creation::translate_plugin_path;
-use super::write_response;
 use crate::plugin_map::PluginEnv;
-use prost::Message;
+use crate::response::DecodedResponse;
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -16,7 +15,6 @@ use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::thread_bus::ThreadSenders;
-use yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse;
 use yinz_runtime::errors::prelude::*;
 use yinz_storage::data_access::DataAccess;
 use yinz_types::agent::control::{AgentOutcome, AgentResponse};
@@ -40,7 +38,7 @@ pub(super) fn spawn_agent(
     name: Option<String>,
     mut context: BTreeMap<String, String>,
     start_suppressed: bool,
-) {
+) -> Result<DecodedResponse> {
     let result: SpawnAgentResponse = {
         let host_paths = env.plugin_config.is_builtin()
             && context
@@ -111,10 +109,12 @@ pub(super) fn spawn_agent(
                 .unwrap_or_else(|| format!("launch needs observation: {:?}", response.launch)))
         }
     };
-    let response = ProtobufSpawnAgentResponse::from(result);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write spawn_agent response".to_string())
-        .non_fatal();
+    let spawned = result.map_err(crate::response::guest_error)?;
+    Ok(DecodedResponse::Json(serde_json::json!({
+        "pane_id": spawned.pane_id,
+        "branch": spawned.branch,
+        "cwd": spawned.cwd.map(|cwd| cwd.display().to_string()),
+    })))
 }
 
 #[derive(Debug)]

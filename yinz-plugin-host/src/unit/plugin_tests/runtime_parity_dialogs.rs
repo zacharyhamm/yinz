@@ -1,5 +1,5 @@
+use super::runtime_parity::json_reply;
 use super::runtime_parity::{default_reply, Responder, SteelReference, WasmReference};
-use prost::Message;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -7,9 +7,6 @@ use std::{
         atomic::{AtomicU32, Ordering},
         Arc,
     },
-};
-use yinz_plugin_api::{
-    plugin_command::ProtobufOpenTerminalFloatingResponse, plugin_ids::ProtobufPluginIds,
 };
 use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
 use yinz_types::{
@@ -215,17 +212,10 @@ fn shared_test_actual_wasm_steel_acting_clients_render_sweeps_and_actions() {
     let client = Arc::new(AtomicU32::new(1));
     let acting = client.clone();
     let responder: Responder = Arc::new(move |command| match command {
-        PluginCommand::GetPluginIds => Some(
-            ProtobufPluginIds {
-                plugin_id: 42,
-                client_id: acting.load(Ordering::SeqCst),
-                ..Default::default()
-            }
-            .encode_to_vec(),
-        ),
-        PluginCommand::OpenTerminalFloating(..) => {
-            Some(ProtobufOpenTerminalFloatingResponse::default().encode_to_vec())
-        },
+        PluginCommand::GetPluginIds => Some(json_reply(
+            serde_json::json!({"plugin_id":42,"client_id":acting.load(Ordering::SeqCst),"yinz_pid":0,"initial_cwd":"","hostname":"","host_id":"","max_session_name_bytes":null}),
+        )),
+        PluginCommand::OpenTerminalFloating(..) => Some(json_reply(())),
         _ => default_reply(command),
     });
     let mut wasm = WasmReference::new(

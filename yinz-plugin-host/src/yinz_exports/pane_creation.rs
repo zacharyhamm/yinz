@@ -2,10 +2,9 @@
 
 use super::agent_launch::{prepare_git_checkout, wait_for_agent_placement};
 use super::pane_control::notify;
-use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
-use prost::Message;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::thread;
@@ -15,21 +14,6 @@ use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::ScreenInstruction;
-use yinz_plugin_api::plugin_command::{
-    ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
-    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
-    ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
-    ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
-    ProtobufOpenCommandPaneOverlayResponse, ProtobufOpenCommandPaneResponse,
-    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
-    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
-    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
-    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
-    ProtobufOpenPluginPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalFloatingNearPluginResponse,
-    ProtobufOpenTerminalFloatingResponse, ProtobufOpenTerminalInPlaceOfPluginResponse,
-    ProtobufOpenTerminalInPlaceResponse, ProtobufOpenTerminalNearPluginResponse,
-    ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-};
 use yinz_routing::{route_action, wait_for_action_completion};
 use yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR;
 use yinz_runtime::errors::prelude::*;
@@ -158,9 +142,9 @@ pub(super) fn open_command_pane_in_new_tab(
     env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let Some(run_command_action) = run_command_action(env, command_to_run, true, context) else {
-        return;
+        return value(());
     };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
@@ -180,11 +164,7 @@ pub(super) fn open_command_pane_in_new_tab(
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
-    let response =
-        ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_in_new_tab response".to_string())
-        .non_fatal();
+    value(OpenPaneInNewTabResponse { tab_id, pane_id })
 }
 
 pub(super) fn open_plugin_pane_in_new_tab(
@@ -192,7 +172,7 @@ pub(super) fn open_plugin_pane_in_new_tab(
     plugin_url: String,
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         &Some(configuration),
@@ -203,14 +183,7 @@ pub(super) fn open_plugin_pane_in_new_tab(
         Ok(r) => r,
         Err(e) => {
             log::error!("Failed to parse plugin url '{}': {}", plugin_url, e);
-            let response =
-                ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse::default());
-            write_response(env, &response.encode_to_vec())
-                .with_context(|| {
-                    "failed to write open_plugin_pane_in_new_tab error response".to_string()
-                })
-                .non_fatal();
-            return;
+            return value(OpenPaneInNewTabResponse::default());
         },
     };
     let _ = context; // context is not currently used for plugin panes
@@ -232,11 +205,7 @@ pub(super) fn open_plugin_pane_in_new_tab(
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
-    let response =
-        ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_plugin_pane_in_new_tab response".to_string())
-        .non_fatal();
+    value(OpenPaneInNewTabResponse { tab_id, pane_id })
 }
 
 pub(super) fn open_plugin_pane_floating(
@@ -245,7 +214,7 @@ pub(super) fn open_plugin_pane_floating(
     configuration: BTreeMap<String, String>,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         &Some(configuration),
@@ -256,15 +225,7 @@ pub(super) fn open_plugin_pane_floating(
         Ok(r) => r,
         Err(e) => {
             log::error!("Failed to parse plugin url '{}': {}", plugin_url, e);
-            let response = ProtobufOpenPluginPaneFloatingResponse::from(
-                OpenPluginPaneFloatingResponse::default(),
-            );
-            write_response(env, &response.encode_to_vec())
-                .with_context(|| {
-                    "failed to write open_plugin_pane_floating error response".to_string()
-                })
-                .non_fatal();
-            return;
+            return value(Option::<PaneId>::None);
         },
     };
     let _ = context; // context is not currently used for plugin panes
@@ -281,17 +242,14 @@ pub(super) fn open_plugin_pane_floating(
     let result = apply_action!(action, error_msg, env);
 
     let pane_id: OpenPluginPaneFloatingResponse = result.and_then(|r| r.affected_pane_id);
-    let response = ProtobufOpenPluginPaneFloatingResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_plugin_pane_floating response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_editor_pane_in_new_tab(
     env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let _ = context; // context is not currently used for editor panes in new tab
     let path = translate_plugin_path(env, file_to_open.path);
     let cwd = file_to_open
@@ -321,18 +279,14 @@ pub(super) fn open_editor_pane_in_new_tab(
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
-    let response =
-        ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_editor_pane_in_new_tab response".to_string())
-        .non_fatal();
+    value(OpenPaneInNewTabResponse { tab_id, pane_id })
 }
 
 pub(super) fn open_file(
     env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let floating = false;
     let in_place = false;
@@ -360,11 +314,7 @@ pub(super) fn open_file(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenFileResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenFileResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, String>) {
@@ -436,7 +386,7 @@ pub(super) fn open_file_floating(
     file_to_open: FileToOpen,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let floating = true;
     let in_place = false;
@@ -464,18 +414,14 @@ pub(super) fn open_file_floating(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenFileFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenFileFloatingResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file_floating response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_file_in_place(
     env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let floating = false;
     let in_place = true;
@@ -504,18 +450,14 @@ pub(super) fn open_file_in_place(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenFileInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenFileInPlaceResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file_in_place response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_file_near_plugin(
     env: &mut PluginEnv,
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -544,11 +486,7 @@ pub(super) fn open_file_near_plugin(
     let result = wait_for_action_completion(completion_rx, "open_file_near_plugin", false);
     let pane_id: OpenFileNearPluginResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenFileNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file_near_plugin response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_file_floating_near_plugin(
@@ -556,7 +494,7 @@ pub(super) fn open_file_floating_near_plugin(
     file_to_open: FileToOpen,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -585,11 +523,7 @@ pub(super) fn open_file_floating_near_plugin(
     let result = wait_for_action_completion(completion_rx, "open_file_floating_near_plugin", false);
     let pane_id: OpenFileFloatingNearPluginResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenFileFloatingNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file_floating_near_plugin response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 /// The pane an in-place command opened, or why it could not open one. A target that is
@@ -609,7 +543,7 @@ pub(super) fn open_file_in_place_of_plugin(
     file_to_open: FileToOpen,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -635,15 +569,10 @@ pub(super) fn open_file_in_place_of_plugin(
     let result = wait_for_action_completion(completion_rx, "open_file_in_place_of_plugin", false);
     let pane_id: OpenFileInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
-    // Write response to plugin
-    let response = ProtobufOpenFileInPlaceOfPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_file_in_place_of_plugin response".to_string())
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
-pub(super) fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
+pub(super) fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
@@ -672,14 +601,13 @@ pub(super) fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenTerminalResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
-pub(super) fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
+pub(super) fn open_terminal_near_plugin(
+    env: &mut PluginEnv,
+    cwd: PathBuf,
+) -> Result<DecodedResponse> {
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -710,18 +638,14 @@ pub(super) fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
     let result = wait_for_action_completion(completion_rx, "open_terminal_near_plugin", false);
     let pane_id: OpenTerminalNearPluginResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal_near_plugin response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_terminal_floating(
     env: &mut PluginEnv,
     cwd: PathBuf,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
@@ -749,18 +673,14 @@ pub(super) fn open_terminal_floating(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenTerminalFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalFloatingResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal_floating response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_terminal_floating_near_plugin(
     env: &mut PluginEnv,
     cwd: PathBuf,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
-) {
+) -> Result<DecodedResponse> {
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -789,14 +709,10 @@ pub(super) fn open_terminal_floating_near_plugin(
         wait_for_action_completion(completion_rx, "open_terminal_floating_near_plugin", false);
     let pane_id: OpenTerminalFloatingNearPluginResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalFloatingNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal_floating_near_plugin response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
-pub(super) fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
+pub(super) fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open file in plugin {}", env.name());
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
@@ -825,18 +741,14 @@ pub(super) fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenTerminalInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalInPlaceResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal_in_place response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_terminal_in_place_of_plugin(
     env: &mut PluginEnv,
     cwd: PathBuf,
     close_plugin_after_replace: bool,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -865,12 +777,7 @@ pub(super) fn open_terminal_in_place_of_plugin(
         wait_for_action_completion(completion_rx, "open_terminal_in_place_of_plugin", false);
     let pane_id: OpenTerminalInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
-    // Write response to plugin
-    let response = ProtobufOpenTerminalInPlaceOfPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_terminal_in_place_of_plugin response".to_string())
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_in_place_of_plugin(
@@ -878,10 +785,10 @@ pub(super) fn open_command_pane_in_place_of_plugin(
     command_to_run: CommandToRun,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return Ok(());
+        return value(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -902,14 +809,7 @@ pub(super) fn open_command_pane_in_place_of_plugin(
         wait_for_action_completion(completion_rx, "open_command_pane_in_place_of_plugin", false);
     let pane_id: OpenCommandPaneInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            "failed to write open_command_pane_in_place_of_plugin response".to_string()
-        })
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
 pub(super) fn open_terminal_pane_in_place_of_pane_id(
@@ -917,7 +817,7 @@ pub(super) fn open_terminal_pane_in_place_of_pane_id(
     pane_id_to_replace: yinz_types::data::PaneId,
     cwd: FileToOpen,
     close_replaced_pane: bool,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let cwd_path = translate_plugin_path(env, cwd.path);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -947,13 +847,7 @@ pub(super) fn open_terminal_pane_in_place_of_pane_id(
     );
     let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
-    let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            "failed to write open_terminal_pane_in_place_of_pane_id response".to_string()
-        })
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_in_place_of_pane_id(
@@ -962,10 +856,10 @@ pub(super) fn open_command_pane_in_place_of_pane_id(
     command_to_run: CommandToRun,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return Ok(());
+        return value(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -987,13 +881,7 @@ pub(super) fn open_command_pane_in_place_of_pane_id(
     );
     let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
-    let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            "failed to write open_command_pane_in_place_of_pane_id response".to_string()
-        })
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
 /// Load a plugin in place of `pane_id`, which lends the new pane its slot: it comes back
@@ -1005,7 +893,7 @@ pub(super) fn open_plugin_pane_in_place_of_pane_id(
     plugin_url: String,
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let _ = context; // context is not currently used for plugin panes
     let (completion_tx, completion_rx) = oneshot::channel();
     env.senders
@@ -1027,9 +915,7 @@ pub(super) fn open_plugin_pane_in_place_of_pane_id(
         .context("in-place plugin pane outcome unknown; inspect the pane before retrying")?
         .context("in-place plugin pane was dropped before it was placed")?;
     let pane_id = in_place_pane_id(result)?.context("in-place plugin pane was not placed")?;
-    let response = ProtobufOpenPluginPaneInPlaceOfPaneIdResponse::from(Some(pane_id));
-    write_response(env, &response.encode_to_vec())
-        .context("failed to write open_plugin_pane_in_place_of_pane_id response")
+    value(Some(pane_id))
 }
 
 pub(super) fn open_edit_pane_in_place_of_pane_id(
@@ -1038,7 +924,7 @@ pub(super) fn open_edit_pane_in_place_of_pane_id(
     file_to_open: FileToOpen,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -1063,23 +949,19 @@ pub(super) fn open_edit_pane_in_place_of_pane_id(
         wait_for_action_completion(completion_rx, "open_edit_pane_in_place_of_pane_id", false);
     let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
-    let response = ProtobufOpenEditPaneInPlaceOfPaneIdResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_edit_pane_in_place_of_pane_id response".to_string())
-        .non_fatal();
-    Ok(())
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane(
     env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let direction: Option<Direction> = None;
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return value(());
     };
     let action = Action::NewTiledPane {
         direction,
@@ -1095,24 +977,17 @@ pub(super) fn open_command_pane(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenCommandPaneResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_near_plugin(
     env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let pane_id =
         spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false).ok();
-    let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn spawn_command_pane_near_plugin(
@@ -1177,7 +1052,7 @@ pub(super) fn open_command_pane_in_git_checkout_near_plugin(
     mut command_to_run: CommandToRun,
     source_directory: PathBuf,
     checkout: GitCheckout,
-) {
+) -> Result<DecodedResponse> {
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
             command_to_run.cwd = Some(cwd);
@@ -1194,10 +1069,7 @@ pub(super) fn open_command_pane_in_git_checkout_near_plugin(
                 false,
             )
         });
-    let response = ProtobufOpenCommandPaneInGitCheckoutResponse::from(result);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_in_git_checkout response".to_string())
-        .non_fatal();
+    value(result.map_err(crate::response::guest_error)?)
 }
 
 pub(super) fn open_command_pane_floating(
@@ -1205,11 +1077,11 @@ pub(super) fn open_command_pane_floating(
     command_to_run: CommandToRun,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return value(());
     };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
@@ -1224,11 +1096,7 @@ pub(super) fn open_command_pane_floating(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenCommandPaneFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneFloatingResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_floating response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 /// Open a command pane directly onto the session surface.
@@ -1241,7 +1109,7 @@ pub(super) fn open_command_pane_overlay(
     command_to_run: CommandToRun,
     placement: OverlayPlacement,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     if let Some(opening) = &env.pick_opening {
         opening.store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -1251,16 +1119,12 @@ pub(super) fn open_command_pane_overlay(
         .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::SeqCst))
     {
         crate::plugin_bridge::picker::attach_opened_pane(env, None).non_fatal();
-        let response = ProtobufOpenCommandPaneOverlayResponse::from(None);
-        write_response(env, &response.encode_to_vec())
-            .context("reject cancelled picker overlay")
-            .non_fatal();
-        return;
+        return value(Option::<PaneId>::None);
     }
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
         crate::plugin_bridge::picker::attach_opened_pane(env, None).non_fatal();
-        return;
+        return value(());
     };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
@@ -1274,10 +1138,7 @@ pub(super) fn open_command_pane_overlay(
 
     let pane_id: OpenCommandPaneOverlayResponse = result.and_then(|r| r.affected_pane_id);
     crate::plugin_bridge::picker::attach_opened_pane(env, pane_id).non_fatal();
-    let response = ProtobufOpenCommandPaneOverlayResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_overlay response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_floating_near_plugin(
@@ -1285,10 +1146,10 @@ pub(super) fn open_command_pane_floating_near_plugin(
     command_to_run: CommandToRun,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return value(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -1312,24 +1173,18 @@ pub(super) fn open_command_pane_floating_near_plugin(
     );
     let pane_id: OpenCommandPaneFloatingNearPluginResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneFloatingNearPluginResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            "failed to write open_command_pane_floating_near_plugin response".to_string()
-        })
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_in_place(
     env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return value(());
     };
     let action = Action::NewInPlacePane {
         command: Some(run_command_action),
@@ -1345,22 +1200,18 @@ pub(super) fn open_command_pane_in_place(
     // Extract pane_id from result and convert to yinz_types PaneId
     let pane_id: OpenCommandPaneInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneInPlaceResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_in_place response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn open_command_pane_background(
     env: &mut PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) {
+) -> Result<DecodedResponse> {
     let start_suppressed = true;
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, true, context) else {
-        return;
+        return value(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -1382,11 +1233,7 @@ pub(super) fn open_command_pane_background(
     let result = wait_for_action_completion(completion_rx, "open_command_pane_background", true);
     let pane_id: OpenCommandPaneBackgroundResponse = result.affected_pane_id;
 
-    // Write response to plugin
-    let response = ProtobufOpenCommandPaneBackgroundResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write open_command_pane_background response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn rerun_command_pane(env: &PluginEnv, terminal_pane_id: TerminalId) {

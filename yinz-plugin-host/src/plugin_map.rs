@@ -905,9 +905,6 @@ impl PluginMap {
 
 pub type Subscriptions = HashSet<EventType>;
 
-/// The encoded reply to one synchronous host command.
-pub type ResponseSink = Option<Vec<u8>>;
-
 /// The host cancelled the instance or its active call.
 pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
 
@@ -1000,8 +997,6 @@ pub struct PluginEnv {
     pub subscriptions: Arc<Mutex<Subscriptions>>,
     pub keybinds: Keybinds,
     pub intercepting_key_presses: bool,
-    /// Where replies to host commands are delivered. See [`ResponseSink`].
-    pub response_sink: ResponseSink,
 }
 
 impl PluginEnv {

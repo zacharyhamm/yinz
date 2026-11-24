@@ -1,8 +1,8 @@
+use super::runtime_parity::json_reply;
 use super::{
     data_parity::DataHost,
     runtime_parity::{default_reply, Pair, Responder},
 };
-use prost::Message;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -11,8 +11,6 @@ use std::{
         Arc,
     },
 };
-use yinz_plugin_api::event::ProtobufPaneScrollbackResponse;
-use yinz_plugin_api::plugin_command::*;
 use yinz_types::internal_ids::DataRevision;
 use yinz_types::plugin_data::REV_ABSENT;
 use yinz_types::{
@@ -34,103 +32,39 @@ fn host(
 fn service_host(data: &Arc<DataHost>, session: SessionInfo, configured: bool) -> Responder {
     data.responder(Arc::new(move |command| {
         Some(match command {
-            PluginCommand::GetAgentProviders => ProtobufAgentProvidersResponse {
-                json: "{\"Ok\":[]}".into(),
-            }
-            .encode_to_vec(),
+            PluginCommand::GetAgentProviders => json_reply(serde_json::json!([])),
             PluginCommand::GetSessionEnvironmentVariables => {
-                ProtobufGetSessionEnvironmentVariablesResponse {
-                    env_vars: if configured {
-                        vec![EnvVariable {
-                            name: "OPENAI_API_KEY".into(),
-                            value: "parity-test-key".into(),
-                        }]
-                    } else {
-                        vec![]
-                    },
-                }
-                .encode_to_vec()
+                json_reply(if configured { json!({"OPENAI_API_KEY":"parity-test-key"}) } else { json!({}) })
             },
             PluginCommand::GetPluginAliasConfiguration(_) => {
-                ProtobufGetPluginAliasConfigurationResponse::default().encode_to_vec()
+                json_reply(serde_json::json!({}))
             },
-            PluginCommand::GetSessionList => ProtobufGetSessionListResponse::from(
-                GetSessionListResponse::Ok(SessionListSnapshot {
+            PluginCommand::GetSessionList => json_reply(SessionListSnapshot {
                     live_sessions: vec![session.clone()],
                     ..Default::default()
                 }),
-            )
-            .encode_to_vec(),
             PluginCommand::GetPaneRunningCommand { .. } => {
-                ProtobufGetPaneRunningCommandResponse::from(GetPaneRunningCommandResponse::Ok(
-                    vec!["claude".into()],
-                ))
-                .encode_to_vec()
+                json_reply(["claude"])
             },
             PluginCommand::GetPaneCwd { .. } => {
-                ProtobufGetPaneCwdResponse::from(GetPaneCwdResponse::Ok("/work/topic".into()))
-                    .encode_to_vec()
+                json_reply("/work/topic")
             },
             PluginCommand::GetPaneScrollback { .. } => {
-                ProtobufPaneScrollbackResponse::try_from(PaneScrollbackResponse::Ok(PaneContents {
-                    viewport: vec!["Working on the project".into()],
-                    ..Default::default()
-                }))
-                .unwrap()
-                .encode_to_vec()
+                json_reply(PaneContents {viewport:vec!["Working on the project".into()], ..Default::default()})
             },
-            PluginCommand::GetPaneInfo(id) => ProtobufGetPaneInfoResponse {
-                pane_info: session
-                    .panes
-                    .panes
-                    .values()
-                    .flatten()
-                    .find(|pane| pane.id == *id)
-                    .cloned()
-                    .map(|pane| pane.try_into().unwrap()),
-            }
-            .encode_to_vec(),
-            PluginCommand::GetPluginIdsForUrl(url) => ProtobufGetPluginIdsForUrlResponse {
-                plugin_ids: if url == "yinz:agents" {
+            PluginCommand::GetPaneInfo(id) => json_reply(session.panes.panes.values().flatten().find(|pane| pane.id == *id)),
+            PluginCommand::GetPluginIdsForUrl(url) => json_reply(if url == "yinz:agents" {
                     vec![7]
                 } else {
                     vec![]
-                },
-                error: None,
-            }
-            .encode_to_vec(),
-            PluginCommand::NewTab { .. } => ProtobufNewTabResponse {
-                result: Some(new_tab_response::Result::TabId(2)),
-            }
-            .encode_to_vec(),
+                }),
+            PluginCommand::NewTab { .. } => json_reply(2),
             PluginCommand::BreakPanesToTabWithId(_, id, _) => {
-                ProtobufBreakPanesToTabWithIdResponse {
-                    result: Some(break_panes_to_tab_with_id_response::Result::TabId(
-                        id.get() as u64
-                    )),
-                }
-                .encode_to_vec()
+                json_reply(id.get())
             },
             PluginCommand::ProjectConfigRead { directory }
-            | PluginCommand::ProjectConfigWrite { directory, .. } => ProtobufFsReadResponse {
-                result: Some(fs_read_response::Result::Contents(
-                    serde_json::to_vec(&json!({"root":directory,"source":null,"config":{"default_branch":"main"},"error":null}))
-                    .unwrap(),
-                )),
-            }
-            .encode_to_vec(),
-            PluginCommand::GetPaneGitProbe { cwd, .. } => ProtobufGetPaneGitProbeResponse {
-                result: Some(get_pane_git_probe_response::Result::Probe(
-                    ProtobufPaneGitProbe {
-                        host: "builder".into(),
-                        cwd: cwd.clone(),
-                        exit_code: Some(0),
-                        metadata: format!("{cwd}\n{cwd}/.git\n{cwd}/.git\nmain\n").into_bytes(),
-                        config: vec![],
-                    },
-                )),
-            }
-            .encode_to_vec(),
+            | PluginCommand::ProjectConfigWrite { directory, .. } => json_reply(json!({"root":directory,"source":null,"config":{"default_branch":"main"},"error":null})),
+            PluginCommand::GetPaneGitProbe { cwd, .. } => probe_reply("builder",cwd,&format!("{cwd}\n{cwd}/.git\n{cwd}/.git\nmain\n")),
             _ => return default_reply(command),
         })
     }))
@@ -808,6 +742,7 @@ fn seed(data: &Arc<DataHost>) {
             def,
             allow_destructive: false,
         })
+        .unwrap()
         .unwrap();
     }
 }
@@ -1424,12 +1359,7 @@ fn agent_service_actual_runtimes_match_delayed_bootstrap_after_newer_pane_event(
             if matches!(command, PluginCommand::GetSessionList)
                 && scans.fetch_add(1, Ordering::SeqCst) == 0
             {
-                return Some(
-                    ProtobufGetSessionListResponse::from(GetSessionListResponse::Err(
-                        "starting".into(),
-                    ))
-                    .encode_to_vec(),
-                );
+                return Some(Err("starting".into()));
             }
             base(command)
         });
@@ -1579,10 +1509,7 @@ fn ordinary_remote_probe_batches_retry_and_publish_locations() {
     let responder = Arc::new(move |command: &PluginCommand| match command {
         PluginCommand::GetPaneCwd {
             pane_id: PaneId::Terminal(id),
-        } => Some(
-            ProtobufGetPaneCwdResponse::from(GetPaneCwdResponse::Ok(pane_cwd(id.get()).into()))
-                .encode_to_vec(),
-        ),
+        } => Some(json_reply(pane_cwd(id.get()))),
         PluginCommand::GetPaneGitProbe {
             pane_id: PaneId::Terminal(id),
             cwd,
@@ -1594,30 +1521,18 @@ fn ordinary_remote_probe_batches_retry_and_publish_locations() {
             let mut attempts = attempts.lock().unwrap();
             let attempt = attempts.entry(id).or_default();
             *attempt += 1;
-            use get_pane_git_probe_response::Result::{Error, Pending, Probe};
-            let result = match (id, *attempt) {
-                (10, 1) => Pending(true),
-                (11, 1) => Error("fixture remote probe failure".into()),
+            Some(match (id, *attempt) {
+                (10, 1) => json_reply(()),
+                (11, 1) => Err("fixture remote probe failure".into()),
                 _ => {
                     let repository = format!("/checkout/{id}");
-                    Probe(ProtobufPaneGitProbe {
-                        host: format!("builder-{id}"),
-                        cwd: cwd.clone(),
-                        exit_code: Some(0),
-                        metadata: format!(
-                            "{repository}\n{repository}/.git\n{repository}/.git\nmain\n"
-                        )
-                        .into_bytes(),
-                        config: vec![],
-                    })
+                    probe_reply(
+                        &format!("builder-{id}"),
+                        cwd,
+                        &format!("{repository}\n{repository}/.git\n{repository}/.git\nmain\n"),
+                    )
                 },
-            };
-            Some(
-                ProtobufGetPaneGitProbeResponse {
-                    result: Some(result),
-                }
-                .encode_to_vec(),
-            )
+            })
         },
         _ => host(command),
     });
@@ -1683,4 +1598,10 @@ fn ordinary_remote_probe_batches_retry_and_publish_locations() {
             assert_eq!(location["root"], format!("/checkout/{id}"));
         }
     }
+}
+
+fn probe_reply(host: &str, cwd: &str, metadata: &str) -> super::runtime_parity::Reply {
+    json_reply(json!({"host":host,"cwd":cwd,"exit_code":0,
+        "metadata":yinz_steel::binary::encode(metadata.as_bytes()).unwrap(),
+        "config":yinz_steel::binary::encode(&[]).unwrap()}))
 }

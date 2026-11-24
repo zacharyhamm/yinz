@@ -2,11 +2,10 @@
 
 use super::layouts::ensure_layout_info_permissions;
 use super::pane_creation::translate_plugin_path;
-use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
 use anyhow::ensure;
-use prost::Message;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -16,19 +15,10 @@ use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::ServerInstruction;
 use yinz_ipc::consts::ipc_connect;
 use yinz_ipc::ipc::{ClientToServerMsg, IpcSenderWithContext};
-use yinz_plugin_api::plugin_command::{
-    dump_session_layout_response, save_session_response, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufGetSessionListResponse, ProtobufKillSessionsResponse,
-    ProtobufListOrphanedPanesResponse, ProtobufSaveSessionResponse, ProtobufWarpPaneResponse,
-};
 use yinz_routing::wait_for_action_completion;
 use yinz_runtime::consts::{YINZ_SESSION_INFO_CACHE_DIR, YINZ_SOCK_DIR};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::data::{
-    DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse, KillSessionsResponse, LayoutInfo,
-    ListOrphanedPanesResponse, OrphanedPane, SessionConnection, WarpPaneResponse, WarpPlacement,
-};
+use yinz_types::data::{LayoutInfo, OrphanedPane, SessionConnection, WarpPlacement};
 use yinz_types::input::actions::Action;
 use yinz_types::internal_ids::{SessionName, SupervisorId, TabId, TabNumber, TabPosition};
 
@@ -202,7 +192,10 @@ pub(super) fn kill_sessions(session_names: Vec<SessionName>) {
 // concurrently so killing many sessions does not multiply the wait.
 const KILL_WEDGE_TIMEOUT: Duration = Duration::from_millis(500);
 
-pub(super) fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<SessionName>) {
+pub(super) fn kill_sessions_and_reply(
+    _env: &mut PluginEnv,
+    session_names: Vec<SessionName>,
+) -> Result<DecodedResponse> {
     use tokio::task::JoinSet;
     let runtime = get_tokio_runtime();
     let result: Result<(), String> = runtime.block_on(async {
@@ -243,14 +236,8 @@ pub(super) fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<Se
             },
         }
     });
-    let response = match result {
-        Ok(()) => KillSessionsResponse::Ok,
-        Err(e) => KillSessionsResponse::Err(e),
-    };
-    let protobuf_response = ProtobufKillSessionsResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| "failed to write kill_sessions response".to_string())
-        .non_fatal();
+    result.map_err(crate::response::guest_error)?;
+    value(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +260,8 @@ pub(super) fn warp_pane_to_session(
     pane_id: PaneId,
     to_session: SessionName,
     placement: WarpPlacement,
-) {
-    let (result, hold) = yinz_bus::warp::warp_pane_to_session(
+) -> Result<DecodedResponse> {
+    let (result, _hold) = yinz_bus::warp::warp_pane_to_session(
         &env.senders,
         env.client_id,
         // Always explicit, never "whichever pane is focused": a plugin is acting
@@ -286,9 +273,7 @@ pub(super) fn warp_pane_to_session(
         placement,
         yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
     );
-    write_warp_response(env, result);
-    // As in the CLI path: the session stays open until the answer is written.
-    drop(hold);
+    value(result.map_err(crate::response::guest_error)?)
 }
 
 pub(super) fn warp_pane_from_session(
@@ -296,7 +281,7 @@ pub(super) fn warp_pane_from_session(
     pane_id: PaneId,
     from_session: SessionName,
     placement: WarpPlacement,
-) {
+) -> Result<DecodedResponse> {
     let result = yinz_bus::warp::warp_pane_from_session(
         &env.server_session.current(),
         &from_session,
@@ -304,10 +289,14 @@ pub(super) fn warp_pane_from_session(
         placement,
         yinz_bus::warp::WARP_PULL_TIMEOUT,
     );
-    write_warp_response(env, result);
+    value(result.map_err(crate::response::guest_error)?)
 }
 
-pub(super) fn warp_tab_to_session(env: &mut PluginEnv, tab_id: TabId, to_session: SessionName) {
+pub(super) fn warp_tab_to_session(
+    env: &mut PluginEnv,
+    tab_id: TabId,
+    to_session: SessionName,
+) -> Result<DecodedResponse> {
     let result = yinz_bus::warp::warp_tab_to_session(
         &env.senders,
         env.client_id,
@@ -318,17 +307,21 @@ pub(super) fn warp_tab_to_session(env: &mut PluginEnv, tab_id: TabId, to_session
         &to_session,
         yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
     );
-    write_warp_response(env, result);
+    value(result.map_err(crate::response::guest_error)?)
 }
 
-pub(super) fn warp_tab_from_session(env: &mut PluginEnv, tab_id: TabId, from_session: SessionName) {
+pub(super) fn warp_tab_from_session(
+    env: &mut PluginEnv,
+    tab_id: TabId,
+    from_session: SessionName,
+) -> Result<DecodedResponse> {
     let result = yinz_bus::warp::warp_tab_from_session(
         &env.server_session.current(),
         &from_session,
         tab_id,
         yinz_bus::warp::WARP_PULL_TIMEOUT,
     );
-    write_warp_response(env, result);
+    value(result.map_err(crate::response::guest_error)?)
 }
 
 #[cfg(unix)]
@@ -336,7 +329,7 @@ pub(super) fn adopt_orphaned_pane(
     env: &mut PluginEnv,
     host_id: SupervisorId,
     placement: WarpPlacement,
-) {
+) -> Result<DecodedResponse> {
     let result = crate::pty_host::cli::adopt_payload(host_id.as_str())
         .map_err(|e| format!("{e:#}"))
         .and_then(|payload| {
@@ -349,7 +342,7 @@ pub(super) fn adopt_orphaned_pane(
                 yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
             )
         });
-    write_warp_response(env, result);
+    value(result.map_err(crate::response::guest_error)?)
 }
 
 #[cfg(not(unix))]
@@ -357,14 +350,14 @@ pub(super) fn adopt_orphaned_pane(
     env: &PluginEnv,
     _host_id: SupervisorId,
     _placement: WarpPlacement,
-) {
-    write_warp_response(env, Err(NO_DETACHABLE_PANES.to_owned()));
+) -> Result<DecodedResponse> {
+    Err(anyhow!(NO_DETACHABLE_PANES))
 }
 
 #[cfg(unix)]
-pub(super) fn list_orphaned_panes(env: &mut PluginEnv) {
-    let response = match crate::pty_host::cli::statuses() {
-        Ok(statuses) => ListOrphanedPanesResponse::Ok(
+pub(super) fn list_orphaned_panes(_env: &mut PluginEnv) -> Result<DecodedResponse> {
+    match crate::pty_host::cli::statuses() {
+        Ok(statuses) => value(
             statuses
                 .iter()
                 // An attached supervisor is just a normal pane in some session,
@@ -375,66 +368,40 @@ pub(super) fn list_orphaned_panes(env: &mut PluginEnv) {
                     host_id: status.host_id.clone(),
                     session_name: status.session_name.clone(),
                     command: status.command.clone(),
-                    cwd: status.cwd.clone(),
+                    cwd: status
+                        .cwd
+                        .as_ref()
+                        .map(|path| path.display().to_string().into()),
                     child_pid: status.child_pid,
                     started_at_unix: status.started_at_unix,
                     exit_status: status.child_exit_status,
                     buffered_bytes: status.buffered_bytes as u64,
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         ),
-        Err(e) => ListOrphanedPanesResponse::Err(format!("{e:#}")),
-    };
-    write_orphaned_pane_list(env, response);
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(not(unix))]
-pub(super) fn list_orphaned_panes(env: &PluginEnv) {
+pub(super) fn list_orphaned_panes(env: &PluginEnv) -> Result<DecodedResponse> {
     // Deliberately an error and not an empty list: an empty list says "there is
     // nothing to recover", which is a different claim and a false one.
-    write_orphaned_pane_list(
-        env,
-        ListOrphanedPanesResponse::Err(NO_DETACHABLE_PANES.to_owned()),
-    );
+    Err(anyhow!(NO_DETACHABLE_PANES))
 }
 
 #[cfg(not(unix))]
 const NO_DETACHABLE_PANES: &str = "detachable panes are not supported on this platform";
 
-fn write_warp_response(env: &mut PluginEnv, result: Result<String, String>) {
-    let response = match result {
-        Ok(message) => WarpPaneResponse::Ok(message),
-        Err(message) => WarpPaneResponse::Err(message),
-    };
-    write_response(
-        env,
-        &ProtobufWarpPaneResponse::from(response).encode_to_vec(),
-    )
-    .with_context(|| "failed to write the warp response".to_string())
-    .non_fatal();
+pub(super) fn delete_dead_session_and_reply(
+    _env: &mut PluginEnv,
+    session_name: SessionName,
+) -> Result<DecodedResponse> {
+    delete_dead_session(&session_name)?;
+    value(true)
 }
 
-fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResponse) {
-    write_response(
-        env,
-        &ProtobufListOrphanedPanesResponse::from(response).encode_to_vec(),
-    )
-    .with_context(|| "failed to write the orphaned pane list".to_string())
-    .non_fatal();
-}
-
-pub(super) fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: SessionName) {
-    let response = match delete_dead_session(&session_name) {
-        Ok(()) => DeleteDeadSessionResponse::Ok,
-        Err(e) => DeleteDeadSessionResponse::Err(format!("{e:#}")),
-    };
-    let protobuf_response = ProtobufDeleteDeadSessionResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| "failed to write delete_dead_session response".to_string())
-        .non_fatal();
-}
-
-pub(super) fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
+pub(super) fn delete_all_dead_sessions_and_reply(_env: &mut PluginEnv) -> Result<DecodedResponse> {
     // Same budget as kill-all so the UX of "y to confirm" is consistent: the
     // host-side fs work for many dead sessions is bounded in wall time.
     let runtime = get_tokio_runtime();
@@ -447,18 +414,15 @@ pub(super) fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
             Err(_) => Err("Timed out deleting dead sessions".to_string()),
         }
     });
-    let response = match result {
-        Ok(()) => DeleteAllDeadSessionsResponse::Ok,
-        Err(e) => DeleteAllDeadSessionsResponse::Err(e),
-    };
-    let protobuf_response = ProtobufDeleteAllDeadSessionsResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| "failed to write delete_all_dead_sessions response".to_string())
-        .non_fatal();
+    result.map_err(crate::response::guest_error)?;
+    value(true)
 }
 
 // note this removes the requesting plugin
-pub(super) fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
+pub(super) fn dump_session_layout(
+    env: &mut PluginEnv,
+    tab_index: Option<TabId>,
+) -> Result<DecodedResponse> {
     use crate::DumpSessionLayoutResponse;
     let trace = yinz_bus::plugins::LayoutQueryTrace::default();
     trace.mark("screen queued");
@@ -476,73 +440,24 @@ pub(super) fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>)
             trace: trace.clone(),
         });
 
-    if let Err(e) = send_result {
-        let error_response = ProtobufDumpSessionLayoutResponse {
-            result: Some(dump_session_layout_response::Result::Error(format!(
-                "Failed to send dump layout request: {}",
-                e
-            ))),
-            metadata: None,
-        };
-        let _ = write_response(env, &error_response.encode_to_vec());
-        return;
-    }
-
-    // Wait for response with 1 second timeout
-    let response: DumpSessionLayoutResponse =
-        match response_receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(resp) => resp,
-            Err(e) => {
-                log::error!(
-                    "layout query timeout: pid={} plugin={} generation={:?} {trace:?}",
-                    std::process::id(),
-                    env.plugin_id,
-                    env.generation
-                );
-                let error_response = ProtobufDumpSessionLayoutResponse {
-                    result: Some(dump_session_layout_response::Result::Error(format!(
-                        "Timeout waiting for session layout: {}",
-                        e
-                    ))),
-                    metadata: None,
-                };
-                let _ = write_response(env, &error_response.encode_to_vec());
-                return;
-            },
-        };
-
-    // Convert LayoutMetadata to protobuf
-    let protobuf_metadata = response
-        .metadata
-        .and_then(|metadata| match metadata.try_into() {
-            Ok(pb) => Some(pb),
-            Err(e) => {
-                log::error!("Failed to convert LayoutMetadata to protobuf: {}", e);
-                None
-            },
-        });
-
-    // Build protobuf response
-    let protobuf_response = match response.layout_result {
-        Ok(layout_content) => ProtobufDumpSessionLayoutResponse {
-            result: Some(dump_session_layout_response::Result::LayoutContent(
-                layout_content,
-            )),
-            metadata: protobuf_metadata,
-        },
-        Err(error) => ProtobufDumpSessionLayoutResponse {
-            result: Some(dump_session_layout_response::Result::Error(error)),
-            metadata: None,
-        },
-    };
-
-    // Return the response to the plugin dispatcher
-    let _ = write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| format!("failed to send session layout to plugin {}", env.name()));
+    send_result.map_err(|e| anyhow!("Failed to send dump layout request: {e}"))?;
+    let response: DumpSessionLayoutResponse = response_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| {
+            log::error!(
+                "layout query timeout: pid={} plugin={} generation={:?} {trace:?}",
+                std::process::id(),
+                env.plugin_id,
+                env.generation
+            );
+            anyhow!("Timeout waiting for session layout: {e}")
+        })?;
+    value(
+        serde_json::json!({"layout":response.layout_result.map_err(crate::response::guest_error)?, "metadata":response.metadata}),
+    )
 }
 
-pub(super) fn save_session(env: &mut PluginEnv) {
-    use save_session_response::Result as SaveSessionResult;
+pub(super) fn save_session(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (completion_tx, completion_rx) = oneshot::channel();
 
     let send_result = env.senders.send_to_screen(ScreenInstruction::SaveSession(
@@ -550,27 +465,12 @@ pub(super) fn save_session(env: &mut PluginEnv) {
         Some(NotificationEnd::new(completion_tx)),
     ));
 
-    let response = if let Err(e) = send_result {
-        ProtobufSaveSessionResponse {
-            result: Some(SaveSessionResult::Error(format!(
-                "Failed to send save request: {}",
-                e
-            ))),
-        }
-    } else {
-        let wait_forever = false;
-        let _result = wait_for_action_completion(completion_rx, "save_session", wait_forever);
-        ProtobufSaveSessionResponse {
-            result: Some(SaveSessionResult::Success(true)),
-        }
-    };
-
-    let _ = write_response(env, &response.encode_to_vec());
+    send_result.map_err(|e| anyhow!("Failed to send save request: {e}"))?;
+    wait_for_action_completion(completion_rx, "save_session", false);
+    value(true)
 }
 
-pub(super) fn current_session_last_saved_time(env: &mut PluginEnv) {
-    use yinz_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse;
-
+pub(super) fn current_session_last_saved_time(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (response_tx, response_rx) = crossbeam::channel::bounded(1);
     let send_result = env
         .senders
@@ -595,8 +495,7 @@ pub(super) fn current_session_last_saved_time(env: &mut PluginEnv) {
         now.saturating_sub(saved_time)
     });
 
-    let response = ProtobufCurrentSessionLastSavedTimeResponse { timestamp_millis };
-    let _ = write_response(env, &response.encode_to_vec());
+    value(timestamp_millis)
 }
 
 /// What this plugin wants said, and decided, when the session is about to end.
@@ -612,8 +511,7 @@ pub(super) fn set_quit_notice(env: &PluginEnv, notice: Option<String>, guard: bo
     ));
 }
 
-pub(super) fn get_disconnect_targets(env: &mut PluginEnv) {
-    use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
+pub(super) fn get_disconnect_targets(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (sender, receiver) = crossbeam::channel::bounded(1);
     let result = env
         .senders
@@ -627,19 +525,7 @@ pub(super) fn get_disconnect_targets(env: &mut PluginEnv) {
                 .recv_timeout(std::time::Duration::from_millis(100))
                 .context("receive disconnect targets")
         });
-    let response = match result {
-        Ok(targets) => ProtobufGetDisconnectTargetsResponse {
-            client_ids: targets.into_iter().map(|id| id.get()).collect(),
-            error: None,
-        },
-        Err(error) => ProtobufGetDisconnectTargetsResponse {
-            client_ids: vec![],
-            error: Some(format!("{error:#}")),
-        },
-    };
-    write_response(env, &response.encode_to_vec())
-        .context("write disconnect-target response")
-        .non_fatal();
+    value(result?)
 }
 
 pub(crate) fn session_list_snapshot(
@@ -691,13 +577,41 @@ pub(crate) fn session_list_snapshot(
     }
 }
 
-pub(super) fn get_session_list(env: &mut PluginEnv) {
-    let response = match session_list_snapshot(env) {
-        Ok(snapshot) => yinz_types::data::GetSessionListResponse::Ok(snapshot),
-        Err(error) => yinz_types::data::GetSessionListResponse::Err(format!("{error:#}")),
-    };
-    let protobuf_response = ProtobufGetSessionListResponse::from(response);
-    write_response(env, &protobuf_response.encode_to_vec())
-        .with_context(|| "failed to write get_session_list response".to_string())
-        .non_fatal();
+pub(super) fn get_session_list(env: &mut PluginEnv) -> Result<DecodedResponse> {
+    session_list_reply(session_list_snapshot(env)?)
 }
+
+/// Plugin snapshots expose whole-second ages and 32-bit tab positions and IDs.
+fn session_list_reply(
+    mut snapshot: yinz_types::data::SessionListSnapshot,
+) -> Result<DecodedResponse> {
+    snapshot.live_sessions.retain_mut(|session| {
+        session.creation_time = Duration::from_secs(session.creation_time.as_secs());
+        session.connected_clients = session.connected_clients as u32 as usize;
+        session.tabs.iter_mut().all(super::queries::project_tab)
+            && session
+                .panes
+                .panes
+                .values_mut()
+                .flatten()
+                .all(super::queries::project_pane)
+            && session
+                .tab_history
+                .values()
+                .flatten()
+                .all(|id| u32::try_from(id.get()).is_ok())
+            && session
+                .panes
+                .panes
+                .keys()
+                .all(|position| u32::try_from(position.get()).is_ok())
+    });
+    for (_, age) in &mut snapshot.resurrectable_sessions {
+        *age = Duration::from_secs(age.as_secs());
+    }
+    value(snapshot)
+}
+
+#[cfg(test)]
+#[path = "unit/session_list.rs"]
+mod session_list_tests;

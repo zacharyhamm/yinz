@@ -32,9 +32,8 @@ fn shared_plugin_identity_tracks_rename_without_changing_incarnation() {
 
 #[test]
 fn session_environment_response_uses_current_identity_and_preserves_config() {
-    use prost::Message;
     use std::collections::{BTreeMap, HashSet};
-    use yinz_plugin_api::plugin_command::ProtobufGetSessionEnvironmentVariablesResponse;
+
     use yinz_types::data::{PermissionType, PluginCommand};
 
     let inherited_name = std::env::var_os("YINZ_SESSION_NAME");
@@ -51,16 +50,10 @@ fn session_environment_response_uses_current_identity_and_preserves_config() {
     ]));
     for current in ["original-session", "renamed-session"] {
         state.set(current.into());
-        super::run_plugin_command(&mut env, PluginCommand::GetSessionEnvironmentVariables).unwrap();
-        let response = ProtobufGetSessionEnvironmentVariablesResponse::decode(
-            env.response_sink.take().unwrap().as_slice(),
-        )
-        .unwrap();
-        let vars: BTreeMap<_, _> = response
-            .env_vars
-            .into_iter()
-            .map(|entry| (entry.name, entry.value))
-            .collect();
+        let vars =
+            super::run_plugin_command(&mut env, PluginCommand::GetSessionEnvironmentVariables)
+                .unwrap()
+                .expect_json();
         assert_eq!(vars["YINZ"], "0");
         assert_eq!(vars["YINZ_SESSION_NAME"], current);
         assert_eq!(vars["CUSTOM_SETTING"], "configured-value");

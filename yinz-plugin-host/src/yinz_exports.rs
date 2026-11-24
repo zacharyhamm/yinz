@@ -67,6 +67,8 @@ pub(crate) mod web_agents;
 
 use crate::plugin_map::PluginEnv;
 use crate::plugin_panes::Surface;
+use crate::response::guest_error;
+use crate::response::{value, DecodedResponse};
 use crate::PluginInstruction;
 pub(crate) use agent_control::agent_event_projects;
 pub use agent_control::control_agent;
@@ -142,9 +144,8 @@ use plugins::{
     post_message_to_plugin, project_config, read_plugin_log, rebind_keys, reconfigure,
     register_default_keybindings, reload_plugin, reload_plugin_by_url, report_panic,
     set_selectable, show_cursor, start_or_reload_plugin, subscribe, unblock_cli_pipe_input,
-    unsubscribe, write_agent_providers_response, write_project_response,
+    unsubscribe,
 };
-use prost::Message;
 use queries::{
     get_focused_pane_info, get_pane_cwd, get_pane_git_probe, get_pane_info, get_pane_pid,
     get_pane_running_command, get_pane_scrollback, get_tab_info, list_clients, list_notifications,
@@ -162,10 +163,6 @@ use sessions::{
 use std::sync::atomic;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::screen::ScreenInstruction;
-use yinz_plugin_api::plugin_command::{
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufKillSessionsResponse,
-};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{CommandType, Event, PermissionStatus, PluginCommand};
 use yinz_types::internal_ids::TabNumber;
@@ -179,9 +176,7 @@ pub const PLUGINS_FS_ROOT: &str = "/plugins";
 ///
 /// This is the complete host capability surface. The runtime decodes a typed command,
 /// then this dispatcher checks permissions before invoking its handler.
-pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
-    let plugin_command = env.name();
-    let err_context = || format!("failed to run plugin command {}", plugin_command);
+pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<DecodedResponse> {
     let permission = check_command_permission(env, &command);
     if permission.0 == PermissionStatus::Granted
         && env.surface == Surface::Headless
@@ -295,45 +290,43 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 if result.is_ok() {
                     broadcast_project_providers(&env.senders);
                 }
-                write_project_response(
-                    env,
-                    result.map(|()| serde_json::json!(yinz_types::project_provider::providers())),
-                )?;
+                return value(
+                    result
+                        .map(|()| yinz_types::project_provider::providers())
+                        .map_err(guest_error)?,
+                );
             },
             PluginCommand::ResolveProject { directory } => {
-                let result = agent_control::projects(&env.data_access)
-                    .and_then(|rows| {
-                        crate::project_provider::resolve_directory(
-                            &env.plugin_cwd.join(directory),
-                            &project_data::projects::from_rows(&rows),
-                            crate::project_provider::snapshot(),
-                        )
-                    })
-                    .and_then(|project| {
-                        serde_json::to_value(project).map_err(|error| error.to_string())
-                    });
-                write_project_response(env, result)?;
+                let result = agent_control::projects(&env.data_access).and_then(|rows| {
+                    crate::project_provider::resolve_directory(
+                        &env.plugin_cwd.join(directory),
+                        &project_data::projects::from_rows(&rows),
+                        crate::project_provider::snapshot(),
+                    )
+                });
+                return value(result.map_err(guest_error)?);
             },
             PluginCommand::GetProjectProviders => {
-                write_project_response(
-                    env,
-                    Ok(serde_json::json!(yinz_types::project_provider::providers())),
-                )?;
+                return value(yinz_types::project_provider::providers());
             },
-            PluginCommand::ValidateProjectMatch(value) => {
+            PluginCommand::ValidateProjectMatch(request) => {
                 let result = crate::project_provider::service(env)
-                    .and_then(|_| crate::project_provider::validate(value));
-                write_project_response(env, result)?;
+                    .and_then(|_| crate::project_provider::validate(request));
+                return value(result.map_err(guest_error)?);
             },
-            PluginCommand::PublishProjectLocations(value) => {
+            PluginCommand::PublishProjectLocations(request) => {
                 let result = crate::project_provider::service(env)
-                    .and_then(|generation| crate::project_provider::publish(generation, value));
+                    .and_then(|generation| crate::project_provider::publish(generation, request));
                 if matches!(result, Ok(true)) {
                     env.senders
                         .send_to_screen(ScreenInstruction::InvalidateAgentEventProjects)
                         .context("invalidate project memberships")?;
                 }
-                write_project_response(env, result.map(|_| serde_json::Value::Null))?;
+                return value(
+                    result
+                        .map(|_| serde_json::Value::Null)
+                        .map_err(guest_error)?,
+                );
             },
             PluginCommand::RegisterAgentProvider(provider) => {
                 let supported_source = env.plugin_config.is_builtin()
@@ -358,13 +351,14 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 if result.is_ok() {
                     broadcast_agent_providers(&env.senders);
                 }
-                write_agent_providers_response(
-                    env,
-                    result.map(|()| yinz_types::agent::provider::providers()),
-                )?;
+                return value(
+                    result
+                        .map(|()| yinz_types::agent::provider::providers())
+                        .map_err(guest_error)?,
+                );
             },
             PluginCommand::GetAgentProviders => {
-                write_agent_providers_response(env, Ok(yinz_types::agent::provider::providers()))?;
+                return value(yinz_types::agent::provider::providers());
             },
             PluginCommand::AgentControl { id, request } => {
                 let mut request: yinz_types::agent::control::AgentRequest =
@@ -489,15 +483,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     })
                     .context("failed to send pane tabs command")?;
                 let result = receive.recv().context("pane tabs response disconnected")?;
-                let response = yinz_plugin_api::plugin_command::ProtobufPaneTabsResponse {
-                    json: serde_json::to_string(&result)
-                        .context("failed to encode pane tabs response")?,
-                };
-                write_response(env, &response.encode_to_vec())?;
+                return value(result.map_err(guest_error)?);
             },
             command @ (PluginCommand::CreateMultipane(_)
             | PluginCommand::UpdateMultipane(_)
-            | PluginCommand::ReplaceMultipaneChild(_)) => multipanes::dispatch(env, command)?,
+            | PluginCommand::ReplaceMultipaneChild(_)) => {
+                return multipanes::dispatch(env, command).map_err(guest_error)
+            },
             PluginCommand::SubscribePaneOutput(context) => {
                 if context.as_ref().is_some_and(|c| c.is_empty()) {
                     return Err(anyhow!(
@@ -516,15 +508,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
             PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
             PluginCommand::ShowCursor(cursor_position) => show_cursor(env, cursor_position),
-            PluginCommand::GetCellPixelSize => get_cell_pixel_size(env)?,
+            PluginCommand::GetCellPixelSize => return get_cell_pixel_size(env),
             PluginCommand::GetClientTimezone { client_id } => {
-                plugins::get_client_timezone(env, client_id)?
+                return plugins::get_client_timezone(env, client_id)
             },
-            PluginCommand::GetPluginIds => get_plugin_ids(env),
-            PluginCommand::GetYinzVersion => get_yinz_version(env),
-            PluginCommand::GenerateRandomName => generate_random_name(env),
-            PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
-            PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
+            PluginCommand::GetPluginIds => return get_plugin_ids(env),
+            PluginCommand::GetYinzVersion => return get_yinz_version(),
+            PluginCommand::GenerateRandomName => return generate_random_name(),
+            PluginCommand::DumpLayout(layout_name) => {
+                return dump_layout(env, layout_name).map_err(guest_error)
+            },
+            PluginCommand::ParseLayout(layout_string) => {
+                return parse_layout(layout_string).map_err(guest_error)
+            },
             PluginCommand::TestPlugin {
                 name,
                 options,
@@ -534,7 +530,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::CancelPluginTest(id) => crate::testing::cancel(env, &id),
             PluginCommand::CheckPlugin { name, source, mode } => {
-                check_plugin(env, name, source, mode)
+                return check_plugin(env, name, source, mode).map_err(guest_error)
             },
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
             PluginCommand::SetPaneAgentActivity {
@@ -559,31 +555,43 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 context,
 
                 start_suppressed,
-            } => spawn_agent(
-                env,
-                spec,
-                source_directory,
-                cwd,
-                name,
-                context,
-                start_suppressed,
-            ),
+            } => {
+                return spawn_agent(
+                    env,
+                    spec,
+                    source_directory,
+                    cwd,
+                    name,
+                    context,
+                    start_suppressed,
+                )
+            },
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
-            PluginCommand::Pick(command) => crate::plugin_bridge::picker::dispatch(env, command)?,
-            PluginCommand::GetPluginInfo(id) => get_plugin_info(env, id)?,
-            PluginCommand::GetPluginIdsForUrl(url) => get_plugin_ids_for_url(env, url, None)?,
+            PluginCommand::Pick(command) => {
+                return crate::plugin_bridge::picker::dispatch(env, command).map_err(guest_error)
+            },
+            PluginCommand::GetPluginInfo(id) => return get_plugin_info(env, id),
+            PluginCommand::GetPluginIdsForUrl(url) => {
+                return get_plugin_ids_for_url(env, url, None).map_err(guest_error)
+            },
             PluginCommand::GetPluginIdsForUrlWithConfiguration { url, configuration } => {
-                get_plugin_ids_for_url(env, url, Some(configuration))?
+                return get_plugin_ids_for_url(env, url, Some(configuration)).map_err(guest_error)
             },
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
-            PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
-            PluginCommand::GetLayoutDir => get_layout_dir(env),
-            PluginCommand::GetUserPluginDir => get_user_plugin_dir(env),
-            PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
-            PluginCommand::SaveSession => save_session(env),
-            PluginCommand::CurrentSessionLastSavedTime => current_session_last_saved_time(env),
-            PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
-            PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
+            PluginCommand::ReadPluginLog { name, lines } => {
+                return read_plugin_log(env, name, lines).map_err(guest_error)
+            },
+            PluginCommand::GetLayoutDir => return get_layout_dir(env),
+            PluginCommand::GetUserPluginDir => return get_user_plugin_dir(env),
+            PluginCommand::GetFocusedPaneInfo => {
+                return get_focused_pane_info(env).map_err(guest_error)
+            },
+            PluginCommand::SaveSession => return save_session(env).map_err(guest_error),
+            PluginCommand::CurrentSessionLastSavedTime => {
+                return current_session_last_saved_time(env)
+            },
+            PluginCommand::GetPaneInfo(pane_id) => return get_pane_info(env, pane_id),
+            PluginCommand::GetTabInfo(tab_id) => return get_tab_info(env, tab_id),
             PluginCommand::ResolveNotification { id, decision } => {
                 env.senders
                     .send_to_screen(ScreenInstruction::ResolveNotification {
@@ -595,55 +603,70 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .context("resolve notification")
                     .non_fatal();
             },
-            PluginCommand::ListNotifications => list_notifications(env),
-            PluginCommand::OpenFile(file_to_open, context) => open_file(env, file_to_open, context),
-            PluginCommand::OpenFileFloating(file_to_open, floating_pane_coordinates, context) => {
-                open_file_floating(env, file_to_open, floating_pane_coordinates, context)
+            PluginCommand::ListNotifications => {
+                return list_notifications(env).map_err(guest_error)
             },
-            PluginCommand::OpenTerminal(cwd) => open_terminal(env, cwd.path),
-            PluginCommand::OpenTerminalNearPlugin(cwd) => open_terminal_near_plugin(env, cwd.path),
+            PluginCommand::OpenFile(file_to_open, context) => {
+                return open_file(env, file_to_open, context)
+            },
+            PluginCommand::OpenFileFloating(file_to_open, floating_pane_coordinates, context) => {
+                return open_file_floating(env, file_to_open, floating_pane_coordinates, context)
+            },
+            PluginCommand::OpenTerminal(cwd) => return open_terminal(env, cwd.path),
+            PluginCommand::OpenTerminalNearPlugin(cwd) => {
+                return open_terminal_near_plugin(env, cwd.path)
+            },
             PluginCommand::OpenTerminalFloating(cwd, floating_pane_coordinates) => {
-                open_terminal_floating(env, cwd.path, floating_pane_coordinates)
+                return open_terminal_floating(env, cwd.path, floating_pane_coordinates)
             },
             PluginCommand::OpenTerminalFloatingNearPlugin(cwd, floating_pane_coordinates) => {
-                open_terminal_floating_near_plugin(env, cwd.path, floating_pane_coordinates)
+                return open_terminal_floating_near_plugin(env, cwd.path, floating_pane_coordinates)
             },
             PluginCommand::OpenCommandPane(command_to_run, context) => {
-                open_command_pane(env, command_to_run, context)
+                return open_command_pane(env, command_to_run, context)
             },
             PluginCommand::OpenCommandPaneNearPlugin(command_to_run, context) => {
-                open_command_pane_near_plugin(env, command_to_run, context)
+                return open_command_pane_near_plugin(env, command_to_run, context)
             },
             PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
                 command_to_run,
                 source_directory,
                 checkout,
-            ) => open_command_pane_in_git_checkout_near_plugin(
-                env,
-                command_to_run,
-                source_directory,
-                checkout,
-            ),
+            ) => {
+                return open_command_pane_in_git_checkout_near_plugin(
+                    env,
+                    command_to_run,
+                    source_directory,
+                    checkout,
+                )
+            },
             PluginCommand::OpenCommandPaneFloating(
                 command_to_run,
                 floating_pane_coordinates,
                 context,
             ) => {
-                open_command_pane_floating(env, command_to_run, floating_pane_coordinates, context)
+                return open_command_pane_floating(
+                    env,
+                    command_to_run,
+                    floating_pane_coordinates,
+                    context,
+                )
             },
             PluginCommand::OpenCommandPaneOverlay(command_to_run, placement, context) => {
-                open_command_pane_overlay(env, command_to_run, placement, context)
+                return open_command_pane_overlay(env, command_to_run, placement, context)
             },
             PluginCommand::OpenCommandPaneFloatingNearPlugin(
                 command_to_run,
                 floating_pane_coordinates,
                 context,
-            ) => open_command_pane_floating_near_plugin(
-                env,
-                command_to_run,
-                floating_pane_coordinates,
-                context,
-            ),
+            ) => {
+                return open_command_pane_floating_near_plugin(
+                    env,
+                    command_to_run,
+                    floating_pane_coordinates,
+                    context,
+                )
+            },
             PluginCommand::SwitchTabTo(tab_index) => switch_tab_to(env, tab_index),
             PluginCommand::SetTimeout(seconds) => set_timeout(env, seconds),
             PluginCommand::ExecCmd(command_line) => exec_cmd(env, command_line),
@@ -676,9 +699,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 show_self(env, should_float_if_hidden)
             },
             PluginCommand::SwitchToMode(input_mode) => switch_to_mode(env, input_mode),
-            PluginCommand::NewTabsWithLayout(raw_layout) => new_tabs_with_layout(env, &raw_layout)?,
+            PluginCommand::NewTabsWithLayout(raw_layout) => {
+                return new_tabs_with_layout(env, &raw_layout)
+            },
             PluginCommand::NewTabsWithLayoutInfo(layout_info) => {
-                new_tabs_with_layout_info(env, layout_info)?
+                return new_tabs_with_layout_info(env, layout_info)
             },
             PluginCommand::OverrideLayout(
                 layout_info,
@@ -698,19 +723,25 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 layout_name,
                 layout_kdl,
                 overwrite,
-            } => save_layout(env, layout_name, layout_kdl, overwrite),
-            PluginCommand::DeleteLayout { layout_name } => delete_layout(env, layout_name),
+            } => return save_layout(env, layout_name, layout_kdl, overwrite).map_err(guest_error),
+            PluginCommand::DeleteLayout { layout_name } => {
+                return delete_layout(env, layout_name).map_err(guest_error)
+            },
             PluginCommand::RenameLayout {
                 old_layout_name,
                 new_layout_name,
-            } => rename_layout(env, old_layout_name, new_layout_name),
+            } => return rename_layout(env, old_layout_name, new_layout_name).map_err(guest_error),
             PluginCommand::EditLayout {
                 layout_name,
                 context,
-            } => edit_layout(env, layout_name, context),
-            PluginCommand::NewTab { name, cwd } => new_tab(env, name, cwd),
-            PluginCommand::NewTabUnfocused { name, cwd } => new_tab_unfocused(env, name, cwd),
-            PluginCommand::NewTiledPaneInTab { tab_id } => new_tiled_pane_in_tab(env, tab_id),
+            } => return edit_layout(env, layout_name, context).map_err(guest_error),
+            PluginCommand::NewTab { name, cwd } => return new_tab(env, name, cwd),
+            PluginCommand::NewTabUnfocused { name, cwd } => {
+                return new_tab_unfocused(env, name, cwd)
+            },
+            PluginCommand::NewTiledPaneInTab { tab_id } => {
+                return new_tiled_pane_in_tab(env, tab_id)
+            },
             PluginCommand::ToggleFloatingPanes { tab_id } => toggle_floating_panes(env, tab_id),
             PluginCommand::NewPane => new_pane(env),
             PluginCommand::GoToNextTab => go_to_next_tab(env),
@@ -758,7 +789,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::PreviousSwapLayout => previous_swap_layout(env),
             PluginCommand::NextSwapLayout => next_swap_layout(env),
             PluginCommand::GoToTabName(tab_name) => go_to_tab_name(env, tab_name),
-            PluginCommand::FocusOrCreateTab(tab_name) => focus_or_create_tab(env, tab_name),
+            PluginCommand::FocusOrCreateTab(tab_name) => return focus_or_create_tab(env, tab_name),
             PluginCommand::GoToTab(tab_index) => go_to_tab(
                 env,
                 TabNumber::try_from(tab_index).map_err(anyhow::Error::msg)?,
@@ -828,25 +859,29 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DeleteDeadSession(session_name) => delete_dead_session(&session_name)?,
             PluginCommand::DeleteAllDeadSessions => delete_all_dead_sessions()?,
             PluginCommand::OpenFileInPlace(file_to_open, context) => {
-                open_file_in_place(env, file_to_open, context)
+                return open_file_in_place(env, file_to_open, context)
             },
-            PluginCommand::OpenTerminalInPlace(cwd) => open_terminal_in_place(env, cwd.path),
+            PluginCommand::OpenTerminalInPlace(cwd) => {
+                return open_terminal_in_place(env, cwd.path)
+            },
             PluginCommand::OpenTerminalInPlaceOfPlugin(cwd, close_plugin_after_replace) => {
-                open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)?
+                return open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)
             },
             PluginCommand::OpenCommandPaneInPlace(command_to_run, context) => {
-                open_command_pane_in_place(env, command_to_run, context)
+                return open_command_pane_in_place(env, command_to_run, context)
             },
             PluginCommand::OpenCommandPaneInPlaceOfPlugin(
                 command_to_run,
                 close_plugin_after_replace,
                 context,
-            ) => open_command_pane_in_place_of_plugin(
-                env,
-                command_to_run,
-                close_plugin_after_replace,
-                context,
-            )?,
+            ) => {
+                return open_command_pane_in_place_of_plugin(
+                    env,
+                    command_to_run,
+                    close_plugin_after_replace,
+                    context,
+                )
+            },
             PluginCommand::RenameSession(new_session_name) => rename_session(env, new_session_name),
             PluginCommand::Notify(text, pane_id, click) => notify(env, text, pane_id, click),
             PluginCommand::UnblockCliPipeInput(pipe_name) => unblock_cli_pipe_input(env, pipe_name),
@@ -858,84 +893,118 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DisconnectOtherClients => disconnect_other_clients(env),
             PluginCommand::KillSessions(session_list) => kill_sessions(session_list),
             PluginCommand::KillSessionsAndReply(session_list) => {
-                kill_sessions_and_reply(env, session_list)
+                return kill_sessions_and_reply(env, session_list).map_err(guest_error)
             },
             PluginCommand::DeleteDeadSessionAndReply(session_name) => {
-                delete_dead_session_and_reply(env, session_name)
+                return delete_dead_session_and_reply(env, session_name).map_err(guest_error)
             },
-            PluginCommand::DeleteAllDeadSessionsAndReply => delete_all_dead_sessions_and_reply(env),
+            PluginCommand::DeleteAllDeadSessionsAndReply => {
+                return delete_all_dead_sessions_and_reply(env).map_err(guest_error)
+            },
             PluginCommand::WarpPaneToSession {
                 pane_id,
                 to_session,
                 placement,
-            } => warp_pane_to_session(env, pane_id, to_session, placement),
+            } => return warp_pane_to_session(env, pane_id, to_session, placement),
             PluginCommand::WarpPaneFromSession {
                 pane_id,
                 from_session,
                 placement,
-            } => warp_pane_from_session(env, pane_id, from_session, placement),
-            PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
+            } => return warp_pane_from_session(env, pane_id, from_session, placement),
+            PluginCommand::ListOrphanedPanes => {
+                return list_orphaned_panes(env).map_err(guest_error)
+            },
             PluginCommand::WarpTabToSession { tab_id, to_session } => {
-                warp_tab_to_session(env, tab_id, to_session)
+                return warp_tab_to_session(env, tab_id, to_session)
             },
             PluginCommand::WarpTabFromSession {
                 tab_id,
                 from_session,
-            } => warp_tab_from_session(env, tab_id, from_session),
+            } => return warp_tab_from_session(env, tab_id, from_session),
             PluginCommand::AdoptOrphanedPane { host_id, placement } => {
-                adopt_orphaned_pane(env, host_id, placement)
+                return adopt_orphaned_pane(env, host_id, placement)
             },
             PluginCommand::DataDefineEntity {
                 namespace,
                 def,
                 allow_destructive,
-            } => data_define_entity(env, namespace, def, allow_destructive),
+            } => {
+                return data_define_entity(env, namespace, def, allow_destructive)
+                    .map_err(guest_error)
+            },
             PluginCommand::DataApply {
                 namespace,
                 mutations,
-            } => data_apply(env, namespace, mutations),
-            PluginCommand::DataFetch { request } => data_fetch(env, request),
-            PluginCommand::DataCount { request } => data_count(env, request),
-            PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
-            PluginCommand::DataCatalog { namespace } => data_catalog(env, namespace),
+            } => return data_apply(env, namespace, mutations).map_err(guest_error),
+            PluginCommand::DataFetch { request } => {
+                return data_fetch(env, request).map_err(guest_error)
+            },
+            PluginCommand::DataCount { request } => {
+                return data_count(env, request).map_err(guest_error)
+            },
+            PluginCommand::DataWatch { request, mode } => {
+                return data_watch(env, request, mode).map_err(guest_error)
+            },
+            PluginCommand::DataCatalog { namespace } => {
+                return data_catalog(env, namespace).map_err(guest_error)
+            },
             PluginCommand::GetLocalUtcOffset {
                 epoch_ms,
                 client_id,
                 timezone,
-            } => get_local_utc_offset(env, epoch_ms, client_id, timezone)?,
-            PluginCommand::GetLocalTime { epoch_ms } => get_local_time(env, epoch_ms),
-            PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
+            } => return get_local_utc_offset(env, epoch_ms, client_id, timezone),
+            PluginCommand::GetLocalTime { epoch_ms } => return get_local_time(epoch_ms),
+            PluginCommand::DataUnwatch { watch_id } => {
+                return data_unwatch(env, watch_id).map_err(guest_error)
+            },
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
-            PluginCommand::InspectConfiguration(theme) => configuration_editor(env, None, theme),
-            PluginCommand::EditConfiguration(edit) => configuration_editor(env, Some(edit), None),
-            PluginCommand::ProjectConfigRead { directory } => project_config(env, directory, None),
+            PluginCommand::InspectConfiguration(theme) => {
+                return configuration_editor(env, None, theme).map_err(guest_error)
+            },
+            PluginCommand::EditConfiguration(edit) => {
+                return configuration_editor(env, Some(edit), None).map_err(guest_error)
+            },
+            PluginCommand::ProjectConfigRead { directory } => {
+                return project_config(env, directory, None).map_err(guest_error)
+            },
             PluginCommand::ProjectConfigWrite {
                 directory,
                 source,
                 expected,
-            } => project_config(env, directory, Some((source, expected))),
+            } => {
+                return project_config(env, directory, Some((source, expected)))
+                    .map_err(guest_error)
+            },
             PluginCommand::FsRead {
                 path,
                 max_bytes,
                 offset,
-            } => fs_read(env, path, max_bytes, offset),
-            PluginCommand::FsList { path } => fs_list(env, path),
+            } => return fs_read(env, path, max_bytes, offset).map_err(guest_error),
+            PluginCommand::FsList { path } => return fs_list(env, path).map_err(guest_error),
             PluginCommand::FsMetadata {
                 path,
                 follow_symlinks,
-            } => fs_metadata(env, path, follow_symlinks),
+            } => return fs_metadata(env, path, follow_symlinks).map_err(guest_error),
             PluginCommand::FsWrite {
                 path,
                 contents,
                 append,
                 create_dirs,
-            } => fs_write(env, path, contents, append, create_dirs),
-            PluginCommand::FsRemove { path, recursive } => fs_remove(env, path, recursive),
-            PluginCommand::FsCreateDir { path, all } => fs_create_dir(env, path, all),
-            PluginCommand::FsRename { from, to } => fs_rename(env, from, to),
+            } => return fs_write(env, path, contents, append, create_dirs).map_err(guest_error),
+            PluginCommand::FsRemove { path, recursive } => {
+                return fs_remove(env, path, recursive).map_err(guest_error)
+            },
+            PluginCommand::FsCreateDir { path, all } => {
+                return fs_create_dir(env, path, all).map_err(guest_error)
+            },
+            PluginCommand::FsRename { from, to } => {
+                return fs_rename(env, from, to).map_err(guest_error)
+            },
             PluginCommand::WatchFilesystem => env.watch_filesystem(),
-            PluginCommand::GetDisconnectTargets => get_disconnect_targets(env),
-            PluginCommand::GetSessionList => get_session_list(env),
+            PluginCommand::GetDisconnectTargets => {
+                return get_disconnect_targets(env).map_err(guest_error)
+            },
+            PluginCommand::GetSessionList => return get_session_list(env).map_err(guest_error),
             PluginCommand::UpdateYinz => {
                 env.senders
                     .send_to_server(
@@ -973,12 +1042,14 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .context("show session update status")?;
             },
             PluginCommand::GetSessionInventory(id) => {
-                crate::session_destinations::inventory(env, id)?
+                return crate::session_destinations::inventory(env, id).map_err(guest_error)
             },
             PluginCommand::SwitchSessionDestination(request) => {
-                crate::session_destinations::switch(env, request)?
+                return crate::session_destinations::switch(env, request).map_err(guest_error)
             },
-            PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
+            PluginCommand::DumpSessionLayout { tab_index } => {
+                return dump_session_layout(env, tab_index).map_err(guest_error)
+            },
             PluginCommand::CloseSelf => close_self(env),
             PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
                 reconfigure(env, new_config, write_config_to_disk)?
@@ -988,7 +1059,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 show_pane_with_id(env, pane_id, should_float_if_hidden, should_focus_pane)
             },
             PluginCommand::OpenCommandPaneBackground(command_to_run, context) => {
-                open_command_pane_background(env, command_to_run, context)
+                return open_command_pane_background(env, command_to_run, context)
             },
             PluginCommand::RerunCommandPane(terminal_pane_id) => {
                 rerun_command_pane(env, terminal_pane_id)
@@ -1016,11 +1087,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 let result = receive
                     .recv_timeout(std::time::Duration::from_secs(30))
                     .context("agent restart outcome unknown; inspect the pane before retrying")?;
-                let response = yinz_plugin_api::plugin_command::ProtobufRestartAgentPaneResponse {
-                    json: serde_json::to_string(&result)
-                        .context("encode agent restart response")?,
-                };
-                write_response(env, &response.encode_to_vec())?;
+                return value(result.map_err(guest_error)?);
             },
             PluginCommand::RunCommandInPane {
                 pane_id,
@@ -1037,23 +1104,29 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GetPaneScrollback {
                 pane_id,
                 get_full_scrollback,
-            } => get_pane_scrollback(env, pane_id, get_full_scrollback),
+            } => {
+                return get_pane_scrollback(env, pane_id, get_full_scrollback).map_err(guest_error)
+            },
             PluginCommand::WriteToPaneId(bytes, pane_id) => write_to_pane_id(env, bytes, pane_id),
             PluginCommand::WriteCharsToPaneId(chars, pane_id) => {
                 write_chars_to_pane_id(env, chars, pane_id)
             },
             PluginCommand::SendSigintToPaneId(pane_id) => send_sigint_to_pane_id(env, pane_id),
             PluginCommand::SendSigkillToPaneId(pane_id) => send_sigkill_to_pane_id(env, pane_id),
-            PluginCommand::GetPanePid { pane_id } => get_pane_pid(env, pane_id),
-            PluginCommand::GetPaneRunningCommand { pane_id } => {
-                get_pane_running_command(env, pane_id)
+            PluginCommand::GetPanePid { pane_id } => {
+                return get_pane_pid(env, pane_id).map_err(guest_error)
             },
-            PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id),
+            PluginCommand::GetPaneRunningCommand { pane_id } => {
+                return get_pane_running_command(env, pane_id).map_err(guest_error)
+            },
+            PluginCommand::GetPaneCwd { pane_id } => {
+                return get_pane_cwd(env, pane_id).map_err(guest_error)
+            },
             PluginCommand::GetPaneGitProbe {
                 pane_id,
                 cwd,
                 refresh_token,
-            } => get_pane_git_probe(env, pane_id, cwd, refresh_token),
+            } => return get_pane_git_probe(env, pane_id, cwd, refresh_token).map_err(guest_error),
             PluginCommand::MovePaneWithPaneId(pane_id) => move_pane_with_pane_id(env, pane_id),
             PluginCommand::MovePaneWithPaneIdInDirection(pane_id, direction) => {
                 move_pane_with_pane_id_in_direction(env, pane_id, direction)
@@ -1080,22 +1153,26 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 pane_ids,
                 new_tab_name,
                 should_change_focus_to_new_tab,
-            ) => break_panes_to_new_tab(
-                env,
-                pane_ids.into_iter().collect(),
-                new_tab_name,
-                should_change_focus_to_new_tab,
-            ),
+            ) => {
+                return break_panes_to_new_tab(
+                    env,
+                    pane_ids.into_iter().collect(),
+                    new_tab_name,
+                    should_change_focus_to_new_tab,
+                )
+            },
             PluginCommand::BreakPanesToTabWithIndex(
                 pane_ids,
                 should_change_focus_to_new_tab,
                 tab_index,
-            ) => break_panes_to_tab_with_index(
-                env,
-                pane_ids.into_iter().collect(),
-                tab_index,
-                should_change_focus_to_new_tab,
-            ),
+            ) => {
+                return break_panes_to_tab_with_index(
+                    env,
+                    pane_ids.into_iter().collect(),
+                    tab_index,
+                    should_change_focus_to_new_tab,
+                )
+            },
             PluginCommand::SwitchTabToId(tab_id) => switch_tab_to_id(env, tab_id),
             PluginCommand::GoToTabWithId(tab_id) => go_to_tab_with_id(env, tab_id),
             PluginCommand::CloseTabWithId(tab_id) => close_tab_with_id(env, tab_id),
@@ -1112,7 +1189,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::SetTabProjects(tab_projects) => set_tab_projects(env, tab_projects),
             PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
-                break_panes_to_tab_with_id(
+                return break_panes_to_tab_with_id(
                     env,
                     pane_ids.into_iter().collect(),
                     should_change_focus,
@@ -1155,28 +1232,32 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::SetPaneColor(pane_id, fg, bg) => set_pane_color(env, pane_id, fg, bg),
             PluginCommand::OpenFileNearPlugin(file_to_open, context) => {
-                open_file_near_plugin(env, file_to_open, context)
+                return open_file_near_plugin(env, file_to_open, context)
             },
             PluginCommand::OpenFileFloatingNearPlugin(
                 file_to_open,
                 floating_pane_coordinates,
                 context,
-            ) => open_file_floating_near_plugin(
-                env,
-                file_to_open,
-                floating_pane_coordinates,
-                context,
-            ),
+            ) => {
+                return open_file_floating_near_plugin(
+                    env,
+                    file_to_open,
+                    floating_pane_coordinates,
+                    context,
+                )
+            },
             PluginCommand::OpenFileInPlaceOfPlugin(
                 file_to_open,
                 close_plugin_after_replace,
                 context,
-            ) => open_file_in_place_of_plugin(
-                env,
-                file_to_open,
-                close_plugin_after_replace,
-                context,
-            )?,
+            ) => {
+                return open_file_in_place_of_plugin(
+                    env,
+                    file_to_open,
+                    close_plugin_after_replace,
+                    context,
+                )
+            },
             PluginCommand::GroupAndUngroupPanes(
                 panes_to_group,
                 panes_to_ungroup,
@@ -1224,20 +1305,20 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             )?,
             PluginCommand::RunAction(action, context) => run_action(env, action, context),
             PluginCommand::GetSessionEnvironmentVariables => {
-                get_session_environment_variables(env);
+                return get_session_environment_variables(env);
             },
             PluginCommand::GetPluginAliasConfiguration(alias) => {
-                get_plugin_alias_configuration(env, alias);
+                return get_plugin_alias_configuration(env, alias);
             },
             PluginCommand::OpenCommandPaneInNewTab(command_to_run, context) => {
-                open_command_pane_in_new_tab(env, command_to_run, context);
+                return open_command_pane_in_new_tab(env, command_to_run, context);
             },
             PluginCommand::OpenPluginPaneInNewTab {
                 plugin_url,
                 configuration,
                 context,
             } => {
-                open_plugin_pane_in_new_tab(env, plugin_url, configuration, context);
+                return open_plugin_pane_in_new_tab(env, plugin_url, configuration, context);
             },
             PluginCommand::OpenPluginPaneFloating {
                 plugin_url,
@@ -1245,7 +1326,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 floating_pane_coordinates,
                 context,
             } => {
-                open_plugin_pane_floating(
+                return open_plugin_pane_floating(
                     env,
                     plugin_url,
                     configuration,
@@ -1254,49 +1335,64 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 );
             },
             PluginCommand::OpenEditorPaneInNewTab(file_to_open, context) => {
-                open_editor_pane_in_new_tab(env, file_to_open, context);
+                return open_editor_pane_in_new_tab(env, file_to_open, context);
             },
             PluginCommand::OpenCommandPaneInPlaceOfPaneId(
                 pane_id,
                 command_to_run,
                 close_replaced_pane,
                 context,
-            ) => open_command_pane_in_place_of_pane_id(
-                env,
-                pane_id,
-                command_to_run,
-                close_replaced_pane,
-                context,
-            )?,
+            ) => {
+                return open_command_pane_in_place_of_pane_id(
+                    env,
+                    pane_id,
+                    command_to_run,
+                    close_replaced_pane,
+                    context,
+                )
+            },
             PluginCommand::OpenTerminalPaneInPlaceOfPaneId(pane_id, cwd, close_replaced_pane) => {
-                open_terminal_pane_in_place_of_pane_id(env, pane_id, cwd, close_replaced_pane)?
+                return open_terminal_pane_in_place_of_pane_id(
+                    env,
+                    pane_id,
+                    cwd,
+                    close_replaced_pane,
+                )
             },
             PluginCommand::OpenEditPaneInPlaceOfPaneId(
                 pane_id,
                 file_to_open,
                 close_replaced_pane,
                 context,
-            ) => open_edit_pane_in_place_of_pane_id(
-                env,
-                pane_id,
-                file_to_open,
-                close_replaced_pane,
-                context,
-            )?,
+            ) => {
+                return open_edit_pane_in_place_of_pane_id(
+                    env,
+                    pane_id,
+                    file_to_open,
+                    close_replaced_pane,
+                    context,
+                )
+            },
             PluginCommand::OpenPluginPaneInPlaceOfPaneId {
                 pane_id,
                 plugin_url,
                 configuration,
                 context,
-            } => open_plugin_pane_in_place_of_pane_id(
-                env,
-                pane_id,
-                plugin_url,
-                configuration,
-                context,
-            )?,
-            PluginCommand::ShowFloatingPanes { tab_id } => show_floating_panes(env, tab_id),
-            PluginCommand::HideFloatingPanes { tab_id } => hide_floating_panes(env, tab_id),
+            } => {
+                return open_plugin_pane_in_place_of_pane_id(
+                    env,
+                    pane_id,
+                    plugin_url,
+                    configuration,
+                    context,
+                )
+            },
+            PluginCommand::ShowFloatingPanes { tab_id } => {
+                return show_floating_panes(env, tab_id).map_err(guest_error)
+            },
+            PluginCommand::HideFloatingPanes { tab_id } => {
+                return hide_floating_panes(env, tab_id).map_err(guest_error)
+            },
             PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
                 set_pane_regex_highlights(env, pane_id, highlights)
             },
@@ -1322,59 +1418,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             ),
         },
         (PermissionStatus::Denied, permission) => {
-            if matches!(
-                command,
-                PluginCommand::RegisterProjectProvider(_)
-                    | PluginCommand::GetProjectProviders
-                    | PluginCommand::ResolveProject { .. }
-                    | PluginCommand::ValidateProjectMatch(_)
-                    | PluginCommand::PublishProjectLocations(_)
-            ) {
-                return write_project_response(
-                    env,
-                    Err(format!("Permission denied: {permission:?}")),
-                );
-            }
-
-            if matches!(
-                command,
-                PluginCommand::RegisterAgentProvider(_) | PluginCommand::GetAgentProviders
-            ) {
-                return write_agent_providers_response(
-                    env,
-                    Err(format!("Permission denied: {permission:?}")),
-                );
-            }
-            if matches!(command, PluginCommand::RestartAgentPane { .. }) {
-                let result: Result<yinz_types::agent::control::RestartedAgent, String> =
-                    Err(format!("Permission denied: {permission:?}"));
-                let response = yinz_plugin_api::plugin_command::ProtobufRestartAgentPaneResponse {
-                    json: serde_json::to_string(&result).context("encode agent restart denial")?,
-                };
-                return write_response(env, &response.encode_to_vec());
-            }
-            if matches!(command, PluginCommand::PaneTabs(_)) {
-                let result: yinz_types::pane_tabs::PaneTabsResponse =
-                    Err(format!("Permission denied: {permission:?}"));
-                let response = yinz_plugin_api::plugin_command::ProtobufPaneTabsResponse {
-                    json: serde_json::to_string(&result)
-                        .context("failed to encode pane tabs denial")?,
-                };
-                return write_response(env, &response.encode_to_vec());
-            }
-            if matches!(
-                command,
-                PluginCommand::CreateMultipane(_)
-                    | PluginCommand::UpdateMultipane(_)
-                    | PluginCommand::ReplaceMultipaneChild(_)
-            ) {
-                let result: yinz_types::multipane::MultipaneResponse =
-                    Err(format!("Permission denied: {permission:?}"));
-                let response = yinz_plugin_api::plugin_command::ProtobufMultipaneResponse {
-                    json: serde_json::to_string(&result)?,
-                };
-                return write_response(env, &response.encode_to_vec());
-            }
             let kind = CommandType::from(&command);
             log::error!(
                 "Plugin '{}' permission '{}' denied - Command '{:?}' denied",
@@ -1384,52 +1427,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .unwrap_or("UNKNOWN".to_owned()),
                 kind
             );
-            // Session mutation replies use a missing error to mean success, so denial must
-            // carry an error. Other reply-bearing commands retain their empty protobuf reply
-            // for compatibility with guests that unwrap decoding it.
-            if crate::response::decode_response(kind, &[]).is_some() {
-                let response = match kind {
-                    CommandType::GetPluginIdsForUrl
-                    | CommandType::GetPluginIdsForUrlWithConfiguration => {
-                        yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
-                            plugin_ids: vec![],
-                            error: Some("Permission denied: ReadApplicationState".to_owned()),
-                        }
-                        .encode_to_vec()
-                    },
-                    CommandType::GetDisconnectTargets => {
-                        yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse {
-                            client_ids: vec![],
-                            error: Some("Permission denied: ReadApplicationState".to_owned()),
-                        }
-                        .encode_to_vec()
-                    },
-                    CommandType::KillSessionsAndReply => ProtobufKillSessionsResponse {
-                        error: Some("Permission denied: ChangeApplicationState".to_owned()),
-                    }
-                    .encode_to_vec(),
-                    CommandType::DeleteDeadSessionAndReply => ProtobufDeleteDeadSessionResponse {
-                        error: Some("Permission denied: ChangeApplicationState".to_owned()),
-                    }
-                    .encode_to_vec(),
-                    CommandType::DeleteAllDeadSessionsAndReply => {
-                        ProtobufDeleteAllDeadSessionsResponse {
-                            error: Some("Permission denied: ChangeApplicationState".to_owned()),
-                        }
-                        .encode_to_vec()
-                    },
-                    _ => Vec::new(),
-                };
-                write_response(env, &response).with_context(err_context)?;
-            }
+            return crate::response::denied(kind, permission);
         },
     };
-    Ok(())
-}
-
-// Helper Functions ---------------------------------------------------------------------------------------------------
-
-pub fn write_response(plugin_env: &mut PluginEnv, bytes: &[u8]) -> Result<()> {
-    plugin_env.response_sink = Some(bytes.to_vec());
-    Ok(())
+    value(())
 }

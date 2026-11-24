@@ -218,7 +218,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-config",
             "yinz-steel-builtins",
             "yinz-steel",
-            "yinz-plugin-api",
             "yinz-plugin-authoring",
             "yinz-ipc",
             "yinz-session",
@@ -280,9 +279,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("project-data", &["yinz-tile", "yinz-storage"]),
 ];
 
-/// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and
-/// the CLI cross-check their wire formats against the plugin API in tests, but must not wait on its
-/// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
+/// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The screen's tests drive it with parsed CLI actions and the pty's tests
 /// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
 /// thread names those crates otherwise.
 /// The PTY tests construct snapshots and exercise the injected real terminal validator.
@@ -400,15 +397,6 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
                 .as_str()
                 .context("Missing dependency name")?;
             let name = package["name"].as_str().context("Missing package name")?;
-            if matches!(name, "yinz-cli" | "yinz-ipc")
-                && target == "yinz-types"
-                && dependency["kind"] != "dev"
-                && dependency["features"].as_array().is_some_and(|features| {
-                    features.iter().any(|feature| feature == "test-support")
-                })
-            {
-                anyhow::bail!("{name} may enable yinz-types/test-support only for tests");
-            }
             let excepted =
                 dependency["kind"] == "dev" && ROOT_ONLY_DEV_EXCEPTIONS.contains(&(name, target));
             if ROOT_ONLY_DEPENDENCIES.contains(&target) && !excepted {

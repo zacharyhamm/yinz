@@ -2,39 +2,27 @@
 
 use super::pane_creation::{run_action, translate_plugin_path};
 use super::permissions::{ensure_plugin_permissions, LAYOUT_FILE_PERMISSIONS};
-use super::write_response;
 use crate::plugin_map::PluginEnv;
 use crate::plugin_panes::Surface;
+use crate::response::{value, DecodedResponse};
 use kdl::KdlDocument;
-use prost::Message;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use yinz_config::config::ConfigError;
-use yinz_plugin_api::event::layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType;
-use yinz_plugin_api::event::{ProtobufLayoutParsingError, ProtobufSyntaxError};
-use yinz_plugin_api::plugin_command::{
-    dump_layout_response, parse_layout_response, ProtobufDeleteLayoutResponse,
-    ProtobufDumpLayoutResponse, ProtobufEditLayoutResponse, ProtobufGetLayoutDirResponse,
-    ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
-    ProtobufNewTiledPaneInTabResponse, ProtobufParseLayoutResponse, ProtobufRenameLayoutResponse,
-    ProtobufSaveLayoutResponse,
-};
 use yinz_routing::route_action;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::home::default_layout_dir;
 use yinz_types::data::{
-    DeleteLayoutResponse, EditLayoutResponse, FileToOpen, LayoutInfo, LayoutMetadata,
-    LayoutParsingError, NewPanePlacement, NewTabResponse, NewTabUnfocusedResponse,
-    NewTiledPaneInTabResponse, PermissionType, RenameLayoutResponse, SaveLayoutResponse,
-    TabMetadata,
+    FileToOpen, LayoutInfo, LayoutMetadata, LayoutParsingError, NewPanePlacement, NewTabResponse,
+    NewTabUnfocusedResponse, NewTiledPaneInTabResponse, PermissionType, TabMetadata,
 };
 use yinz_types::input::actions::Action;
 use yinz_types::input::command::{OpenFilePayload, RunCommand, RunCommandAction, TerminalAction};
 use yinz_types::input::layout::{Layout, Run, TabLayoutInfo};
 use yinz_types::internal_ids::{TabId, TabPosition};
 
-pub(super) fn dump_layout(env: &mut PluginEnv, layout_name: String) {
+pub(super) fn dump_layout(env: &mut PluginEnv, layout_name: String) -> Result<DecodedResponse> {
     let layout_path = PathBuf::from(&layout_name);
 
     let layout_dir = env.layout_dir.clone().or_else(default_layout_dir);
@@ -44,21 +32,10 @@ pub(super) fn dump_layout(env: &mut PluginEnv, layout_name: String) {
             yinz_config::layout::stringified_from_dir(&layout_path, layout_dir.as_ref())
                 .map_err(|e| e.to_string())
         });
-    let response = match result {
-        Ok((_, layout_content, _)) => ProtobufDumpLayoutResponse {
-            result: Some(dump_layout_response::Result::LayoutContent(layout_content)),
-        },
-        Err(e) => ProtobufDumpLayoutResponse {
-            result: Some(dump_layout_response::Result::Error(e.to_string())),
-        },
-    };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send layout dump to plugin {}", env.name()))
-        .non_fatal();
+    value(result.map_err(anyhow::Error::msg)?.1)
 }
 
-pub(super) fn get_layout_dir(env: &mut PluginEnv) {
+pub(super) fn get_layout_dir(env: &mut PluginEnv) -> Result<DecodedResponse> {
     // Get layout dir from env or fall back to default
     let layout_dir = env.layout_dir.clone().or_else(default_layout_dir);
 
@@ -67,16 +44,10 @@ pub(super) fn get_layout_dir(env: &mut PluginEnv) {
         .and_then(|path| path.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| String::from(""));
 
-    let response = ProtobufGetLayoutDirResponse {
-        layout_dir: layout_dir_string,
-    };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send layout dir to plugin {}", env.name()))
-        .non_fatal();
+    value(layout_dir_string)
 }
 
-pub(super) fn parse_layout(env: &mut PluginEnv, layout_string: String) {
+pub(super) fn parse_layout(layout_string: String) -> Result<DecodedResponse> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Parse the KDL layout - same parameters as list_available_layouts in layout.rs:1260
@@ -87,7 +58,7 @@ pub(super) fn parse_layout(env: &mut PluginEnv, layout_string: String) {
         None,                                 // no cwd
     );
 
-    let response = match parse_result {
+    match parse_result {
         Ok(layout) => {
             // Extract tabs from layout
             // This logic matches LayoutMetadata::from in data.rs:1762-1772
@@ -121,25 +92,7 @@ pub(super) fn parse_layout(env: &mut PluginEnv, layout_string: String) {
                 update_time: current_time,
             };
 
-            // Convert LayoutMetadata to protobuf
-            match layout_metadata.try_into() {
-                Ok(protobuf_metadata) => ProtobufParseLayoutResponse {
-                    result: Some(parse_layout_response::Result::Metadata(protobuf_metadata)),
-                },
-                Err(e) => {
-                    log::error!("Failed to convert metadata to protobuf: {}", e);
-                    // Fallback to SyntaxError if conversion fails
-                    let error = LayoutParsingError::SyntaxError;
-                    let protobuf_error = error.try_into().unwrap_or(ProtobufLayoutParsingError {
-                        error_type: Some(ProtobufLayoutParsingErrorType::SyntaxError(
-                            ProtobufSyntaxError {},
-                        )),
-                    });
-                    ProtobufParseLayoutResponse {
-                        result: Some(parse_layout_response::Result::Error(protobuf_error)),
-                    }
-                },
-            }
+            value(layout_metadata)
         },
         Err(config_error) => {
             // Build LayoutParsingError following list_available_layouts pattern
@@ -156,31 +109,9 @@ pub(super) fn parse_layout(env: &mut PluginEnv, layout_string: String) {
                 _ => LayoutParsingError::SyntaxError,
             };
 
-            // Convert LayoutParsingError to protobuf
-            // TryFrom is implemented in yinz-plugin-api/src/event.rs
-            let protobuf_error = error.try_into().unwrap_or_else(|e| {
-                log::error!("Failed to convert error to protobuf: {}", e);
-                ProtobufLayoutParsingError {
-                    error_type: Some(ProtobufLayoutParsingErrorType::SyntaxError(
-                        ProtobufSyntaxError {},
-                    )),
-                }
-            });
-
-            ProtobufParseLayoutResponse {
-                result: Some(parse_layout_response::Result::Error(protobuf_error)),
-            }
+            Err(crate::response::layout_parsing_error(error))
         },
-    };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send parse layout response to plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+    }
 }
 
 pub(super) fn layout_run_permissions(layout: &Layout) -> BTreeSet<PermissionType> {
@@ -302,7 +233,10 @@ fn layout_from_plugin_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result<L
         .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))
 }
 
-pub(super) fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
+pub(super) fn new_tabs_with_layout(
+    env: &mut PluginEnv,
+    raw_layout: &str,
+) -> Result<DecodedResponse> {
     let layout = yinz_config::layout::from_str(
         raw_layout,
         format!("Layout from plugin: {}", env.name()),
@@ -311,20 +245,18 @@ pub(super) fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Res
     )
     .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
     ensure_plugin_permissions(env, layout_run_permissions(&layout))?;
-    apply_layout(env, layout);
-    Ok(())
+    apply_layout(env, layout)
 }
 
 pub(super) fn new_tabs_with_layout_info(
     env: &mut PluginEnv,
     layout_info: LayoutInfo,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let layout = layout_from_plugin_info(env, layout_info)?;
-    apply_layout(env, layout);
-    Ok(())
+    apply_layout(env, layout)
 }
 
-fn apply_layout(env: &mut PluginEnv, layout: Layout) {
+fn apply_layout(env: &mut PluginEnv, layout: Layout) -> Result<DecodedResponse> {
     let mut tabs_to_open = vec![];
     let tabs = layout.tabs();
     // KDL already embeds layout/tab/pane cwds in the runs. Leave the tab override
@@ -382,13 +314,14 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
     }
 
     // Write response
-    let response = ProtobufNewTabsResponse::from(tab_ids);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write layout tabs response".to_string())
-        .non_fatal();
+    value(tab_ids)
 }
 
-pub(super) fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
+pub(super) fn new_tab(
+    env: &mut PluginEnv,
+    name: Option<String>,
+    cwd: Option<String>,
+) -> Result<DecodedResponse> {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
         layout_source: None,
@@ -409,13 +342,14 @@ pub(super) fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<Str
     let tab_id: NewTabResponse = result.and_then(|r| r.affected_tab_id);
 
     // Write response to plugin
-    let response = ProtobufNewTabResponse::from(tab_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write new_tab response".to_string())
-        .non_fatal();
+    value(tab_id)
 }
 
-pub(super) fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
+pub(super) fn new_tab_unfocused(
+    env: &mut PluginEnv,
+    name: Option<String>,
+    cwd: Option<String>,
+) -> Result<DecodedResponse> {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
         layout_source: None,
@@ -434,13 +368,10 @@ pub(super) fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: 
 
     let tab_id: NewTabUnfocusedResponse = result.and_then(|r| r.affected_tab_id);
 
-    let response = ProtobufNewTabUnfocusedResponse::from(tab_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write new_tab_unfocused response".to_string())
-        .non_fatal();
+    value(tab_id)
 }
 
-pub(super) fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) {
+pub(super) fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to open new tiled pane in tab {}", tab_id);
     let default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -466,10 +397,7 @@ pub(super) fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) {
 
     let pane_id: NewTiledPaneInTabResponse = result.and_then(|r| r.affected_pane_id);
 
-    let response = ProtobufNewTiledPaneInTabResponse::from(pane_id);
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| "failed to write new_tiled_pane_in_tab response".to_string())
-        .non_fatal();
+    value(pane_id)
 }
 
 pub(super) fn save_layout(
@@ -477,19 +405,9 @@ pub(super) fn save_layout(
     layout_name: String,
     layout_kdl: String,
     overwrite: bool,
-) {
-    let err_context = || format!("Failed to save layout '{}'", layout_name);
-
-    let response = try_save_layout(env, &layout_name, &layout_kdl, overwrite)
-        .map(|_| SaveLayoutResponse::Ok(()))
-        .unwrap_or_else(SaveLayoutResponse::Err);
-
-    // Serialize and send response back to plugin
-    let protobuf_response = ProtobufSaveLayoutResponse::from(response);
-    let serialized = protobuf_response.encode_to_vec();
-    write_response(env, &serialized)
-        .with_context(err_context)
-        .non_fatal();
+) -> Result<DecodedResponse> {
+    try_save_layout(env, &layout_name, &layout_kdl, overwrite).map_err(anyhow::Error::msg)?;
+    value(true)
 }
 
 pub(super) fn try_save_layout(
@@ -551,37 +469,18 @@ pub(super) fn try_save_layout(
     Ok(())
 }
 
-pub(super) fn delete_layout(env: &mut PluginEnv, layout_name: String) {
-    let err_context = || format!("Failed to delete layout '{}'", layout_name);
-
-    let response = try_delete_layout(env, &layout_name)
-        .map(|_| DeleteLayoutResponse::Ok(()))
-        .unwrap_or_else(DeleteLayoutResponse::Err);
-
-    let protobuf_response: ProtobufDeleteLayoutResponse = response.into();
-    let serialized = protobuf_response.encode_to_vec();
-    write_response(env, &serialized)
-        .with_context(err_context)
-        .non_fatal();
+pub(super) fn delete_layout(env: &mut PluginEnv, layout_name: String) -> Result<DecodedResponse> {
+    try_delete_layout(env, &layout_name).map_err(anyhow::Error::msg)?;
+    value(true)
 }
 
-pub(super) fn rename_layout(env: &mut PluginEnv, old_layout_name: String, new_layout_name: String) {
-    let err_context = || {
-        format!(
-            "Failed to rename layout '{}' to '{}'",
-            old_layout_name, new_layout_name
-        )
-    };
-
-    let response = try_rename_layout(env, &old_layout_name, &new_layout_name)
-        .map(|_| RenameLayoutResponse::Ok(()))
-        .unwrap_or_else(RenameLayoutResponse::Err);
-
-    let protobuf_response: ProtobufRenameLayoutResponse = response.into();
-    let serialized = protobuf_response.encode_to_vec();
-    write_response(env, &serialized)
-        .with_context(err_context)
-        .non_fatal();
+pub(super) fn rename_layout(
+    env: &mut PluginEnv,
+    old_layout_name: String,
+    new_layout_name: String,
+) -> Result<DecodedResponse> {
+    try_rename_layout(env, &old_layout_name, &new_layout_name).map_err(anyhow::Error::msg)?;
+    value(true)
 }
 
 fn try_delete_layout(env: &PluginEnv, layout_name: &str) -> Result<(), String> {
@@ -697,18 +596,9 @@ pub(super) fn edit_layout(
     env: &mut PluginEnv,
     layout_name: String,
     context: BTreeMap<String, String>,
-) {
-    let err_context = || format!("Failed to edit layout '{}'", layout_name);
-
-    let response = try_edit_layout(env, &layout_name, context)
-        .map(|_| EditLayoutResponse::Ok(()))
-        .unwrap_or_else(EditLayoutResponse::Err);
-
-    let protobuf_response: ProtobufEditLayoutResponse = response.into();
-    let serialized = protobuf_response.encode_to_vec();
-    write_response(env, &serialized)
-        .with_context(err_context)
-        .non_fatal();
+) -> Result<DecodedResponse> {
+    try_edit_layout(env, &layout_name, context).map_err(anyhow::Error::msg)?;
+    value(true)
 }
 
 pub(super) fn try_edit_layout(

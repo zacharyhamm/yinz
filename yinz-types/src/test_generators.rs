@@ -1,67 +1,28 @@
 //! Generators shared by Action contract tests.
-use crate::agent::AgentInfo;
-use crate::agent::AgentSource;
-use crate::agent::AgentState;
+use crate::agent::{AgentInfo, AgentSource, AgentState};
 use crate::command::PaneTarget;
-use crate::data::CommandOrPlugin;
-use crate::data::FileToOpen;
-use crate::data::InputMode;
-use crate::data::LayoutInfo;
-use crate::data::LayoutMetadata;
-use crate::data::NewPanePlacement;
-use crate::data::OriginatingPlugin;
-use crate::data::OverlayKind;
-use crate::data::OverlayPlacement;
-use crate::data::PaneId;
-use crate::data::PaneMetadata;
-use crate::data::PluginTag;
-use crate::data::RemotePaneHandoff;
-use crate::data::TabMetadata;
-use crate::data::UnblockCondition;
-use crate::data::WarpPlacement;
-use crate::data::WarpedPane;
-use crate::data::WarpedTab;
-use crate::geometry::Direction;
-use crate::geometry::FloatingPaneCoordinates;
-use crate::geometry::PercentOrFixed;
-use crate::geometry::Resize;
-use crate::geometry::SplitDirection;
-use crate::geometry::SplitSize;
-use crate::input::actions::Action;
-use crate::input::actions::ActionKind;
-use crate::input::actions::SearchDirection;
-use crate::input::actions::SearchOption;
-use crate::input::command::OpenFilePayload;
-use crate::input::command::RunCommand;
-use crate::input::command::RunCommandAction;
-use crate::input::layout::FloatingPaneLayout;
-use crate::input::layout::LayoutConstraint;
-use crate::input::layout::PluginAlias;
-use crate::input::layout::PluginUserConfiguration;
-use crate::input::layout::Run;
-use crate::input::layout::RunPlugin;
-use crate::input::layout::RunPluginLocation;
-use crate::input::layout::RunPluginOrAlias;
-use crate::input::layout::SwapFloatingLayout;
-use crate::input::layout::SwapTiledLayout;
-use crate::input::layout::TabLayoutInfo;
-use crate::input::layout::TiledPaneLayout;
+use crate::data::{
+    CommandOrPlugin, FileToOpen, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
+    OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId, PaneMetadata, PluginTag,
+    RemotePaneHandoff, TabMetadata, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
+};
+use crate::geometry::{
+    Direction, FloatingPaneCoordinates, PercentOrFixed, Resize, SplitDirection, SplitSize,
+};
+use crate::input::actions::{Action, ActionKind, SearchDirection, SearchOption};
+use crate::input::command::{OpenFilePayload, RunCommand, RunCommandAction};
+use crate::input::layout::{
+    FloatingPaneLayout, LayoutConstraint, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
+    RunPluginLocation, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
+    TiledPaneLayout,
+};
 use crate::input::options::PaneFrameStyle;
-use crate::internal_ids::SupervisorId;
-use crate::internal_ids::TabId;
-use crate::internal_ids::TabNumber;
-use crate::internal_ids::TabPosition;
-use crate::keys::BareKey;
-use crate::keys::KeyModifier;
-use crate::keys::KeyWithModifier;
-use crate::mouse::MouseEvent;
-use crate::mouse::MouseEventType;
-use crate::position::Column;
-use crate::position::Line;
-use crate::position::Position;
+use crate::internal_ids::{SupervisorId, TabId, TabNumber, TabPosition};
+use crate::keys::{BareKey, KeyModifier, KeyWithModifier};
+use crate::mouse::{MouseEvent, MouseEventType};
+use crate::position::{Column, Line, Position};
 use hegel::generators;
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use strum::IntoEnumIterator;
 

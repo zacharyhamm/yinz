@@ -1,23 +1,22 @@
+use super::runtime_parity::json_reply;
 use super::{
     data_parity::DataHost,
     runtime_parity::{default_reply, Responder, SteelReference, WasmReference},
 };
 use agent_proto::{agents, projects, store};
-use prost::Message;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::Path,
     sync::{atomic::AtomicU64, Arc},
 };
-use yinz_plugin_api::plugin_command::*;
 use yinz_types::data::*;
 use yinz_types::internal_ids::{HostId, PluginId};
 use yinz_types::plugin_data::REV_ABSENT;
 
 const AGENT_SERVICE: u32 = 9;
 
-fn session_list() -> Vec<u8> {
+fn session_list() -> super::runtime_parity::Reply {
     let mut session = SessionInfo::new("main".into());
     session.is_current_session = true;
     for (id, location) in [(7, "yinz:agents"), (8, "file:/untrusted.scm")] {
@@ -29,42 +28,32 @@ fn session_list() -> Vec<u8> {
             },
         );
     }
-    ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(SessionListSnapshot {
+    json_reply(SessionListSnapshot {
         live_sessions: vec![session],
         resurrectable_sessions: vec![],
-    }))
-    .encode_to_vec()
+    })
 }
 fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
     let root = root.to_owned();
     data.responder(Arc::new(move |command| match command {
-        PluginCommand::GetAgentProviders => Some(
-            ProtobufAgentProvidersResponse {
-                json: "{\"Ok\":[]}".into(),
-            }
-            .encode_to_vec(),
-        ),
+        PluginCommand::GetAgentProviders => Some(json_reply(serde_json::json!([]))),
         PluginCommand::GetSessionList => Some(session_list()),
         PluginCommand::FsRead {
             path,
             offset,
             max_bytes,
         } => Some(
-            ProtobufFsReadResponse {
-                result: Some(
-                    match std::fs::read(root.join(path.strip_prefix("/cache").unwrap())) {
-                        Ok(bytes) => fs_read_response::Result::Contents(
-                            bytes
-                                .into_iter()
-                                .skip(offset.unwrap_or(0) as usize)
-                                .take(max_bytes.unwrap_or(4194304))
-                                .collect(),
-                        ),
-                        Err(error) => fs_read_response::Result::Error(error.to_string()),
-                    },
-                ),
-            }
-            .encode_to_vec(),
+            std::fs::read(root.join(path.strip_prefix("/cache").unwrap()))
+                .map(|bytes| {
+                    crate::response::DecodedResponse::Bytes(
+                        bytes
+                            .into_iter()
+                            .skip(offset.unwrap_or(0) as usize)
+                            .take(max_bytes.unwrap_or(4194304))
+                            .collect(),
+                    )
+                })
+                .map_err(|e| e.to_string()),
         ),
         _ => default_reply(command),
     }))
@@ -72,13 +61,9 @@ fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
 /// Scheme accepts snapshots only from the session's agent service, so its host runs one.
 fn with_agent_service(responder: Responder) -> Responder {
     Arc::new(move |command| match command {
-        PluginCommand::GetPluginIdsForUrl(url) if url == "yinz:agent-service" => Some(
-            ProtobufGetPluginIdsForUrlResponse {
-                plugin_ids: vec![AGENT_SERVICE],
-                error: None,
-            }
-            .encode_to_vec(),
-        ),
+        PluginCommand::GetPluginIdsForUrl(url) if url == "yinz:agent-service" => {
+            Some(json_reply(vec![AGENT_SERVICE]))
+        },
         _ => responder(command),
     })
 }
@@ -706,12 +691,7 @@ fn project_store_actual_runtimes_retry_failed_discovery_without_clearing_context
             if matches!(command,PluginCommand::DataFetch {request} if request.entity == "project")
                 && fail.load(Ordering::SeqCst)
             {
-                Some(
-                    ProtobufDataFetchResponse::from(DataFetchResponse::Err(
-                        "fixture busy database".into(),
-                    ))
-                    .encode_to_vec(),
-                )
+                Some(Err("fixture busy database".into()))
             } else {
                 responder(command)
             }

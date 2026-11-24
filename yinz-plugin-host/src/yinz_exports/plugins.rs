@@ -1,12 +1,11 @@
 //! Plugin lifecycle, messaging, metadata, and configuration commands.
 
 use super::permissions::has_permission;
-use super::write_response;
 use crate::plugin_bridge::handle_plugin_crash;
 use crate::plugin_map::PluginEnv;
 use crate::plugin_panes::Surface;
+use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
-use prost::Message;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -14,14 +13,6 @@ use std::time::Duration;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::ServerInstruction;
-use yinz_plugin_api::plugin_command::{
-    fs_read_response, read_plugin_log_response, ProtobufFsReadResponse,
-    ProtobufGenerateRandomNameResponse, ProtobufGetLocalTimeResponse,
-    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPluginAliasConfigurationResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetUserPluginDirResponse,
-    ProtobufReadPluginLogResponse,
-};
-use yinz_plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufYinzVersion};
 use yinz_runtime::consts::{VERSION, YINZ_SOCK_DIR};
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::home::{absolute_lexical, default_user_plugin_dir};
@@ -35,16 +26,6 @@ use yinz_types::input::options::Options;
 use yinz_types::internal_ids::{PluginId, ProcessId};
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::units::SignedUnixMillis;
-
-pub(super) fn write_project_response(
-    env: &mut PluginEnv,
-    result: Result<serde_json::Value, String>,
-) -> Result<()> {
-    let response = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse {
-        json: serde_json::to_string(&result).context("serialize project provider response")?,
-    };
-    write_response(env, &response.encode_to_vec())
-}
 
 pub(crate) fn broadcast_project_providers(senders: &ThreadSenders) {
     crate::project_provider::invalidate();
@@ -60,16 +41,6 @@ pub(crate) fn broadcast_project_providers(senders: &ThreadSenders) {
         )]))
         .context("broadcast project providers")
         .non_fatal();
-}
-
-pub(super) fn write_agent_providers_response(
-    env: &mut PluginEnv,
-    result: Result<Vec<yinz_types::agent::provider::AgentProvider>, String>,
-) -> Result<()> {
-    let response = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse {
-        json: serde_json::to_string(&result).context("serialize agent provider response")?,
-    };
-    write_response(env, &response.encode_to_vec())
 }
 
 pub(crate) fn broadcast_agent_providers(senders: &ThreadSenders) {
@@ -211,7 +182,7 @@ pub(super) fn show_cursor(env: &PluginEnv, cursor_position: Option<(usize, usize
         .non_fatal();
 }
 
-pub(super) fn get_cell_pixel_size(env: &mut PluginEnv) -> Result<()> {
+pub(super) fn get_cell_pixel_size(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (response_channel, receiver) = crossbeam::channel::bounded(1);
     env.senders
         .send_to_screen(ScreenInstruction::GetCellPixelSize {
@@ -222,38 +193,28 @@ pub(super) fn get_cell_pixel_size(env: &mut PluginEnv) -> Result<()> {
     let size = receiver
         .recv_timeout(Duration::from_secs(5))
         .context("wait for acting client's cell pixel size")?;
-    let response = yinz_plugin_api::plugin_command::ProtobufGetCellPixelSizeResponse {
-        size: size
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(|error| anyhow!("{error}"))?,
-    };
-    write_response(env, &response.encode_to_vec()).context("write cell pixel size response")
+    if let Some(size) = &size {
+        anyhow::ensure!(
+            size.width != 0 && size.height != 0,
+            "Cell pixel dimensions must be nonzero"
+        );
+        u32::try_from(size.width).map_err(|_| anyhow!("Cell width is too large"))?;
+        u32::try_from(size.height).map_err(|_| anyhow!("Cell height is too large"))?;
+    }
+    value(size)
 }
 
-pub(super) fn get_plugin_ids(env: &mut PluginEnv) {
+pub(super) fn get_plugin_ids(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let ids = PluginIds {
         plugin_id: env.plugin_id,
         yinz_pid: ProcessId::new(process::id()),
-        initial_cwd: env.plugin_cwd.clone(),
+        initial_cwd: env.plugin_cwd.display().to_string().into(),
         client_id: env.client_id,
         hostname: yinz_runtime::host_identity::host_display_name(),
         host_id: yinz_runtime::host_identity::host_id(),
         max_session_name_bytes: Some(max_session_name_bytes(&YINZ_SOCK_DIR)),
     };
-    ProtobufPluginIds::try_from(ids)
-        .map_err(|e| anyhow!("Failed to serialized plugin ids: {}", e))
-        .and_then(|serialized| {
-            write_response(env, &serialized.encode_to_vec())?;
-            Ok(())
-        })
-        .with_context(|| {
-            format!(
-                "failed to query plugin IDs from host for plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+    value(ids)
 }
 
 pub(super) fn max_session_name_bytes(socket_dir: &Path) -> usize {
@@ -262,31 +223,12 @@ pub(super) fn max_session_name_bytes(socket_dir: &Path) -> usize {
         .saturating_sub(socket_dir.join("x").as_os_str().len())
 }
 
-pub(super) fn get_yinz_version(env: &mut PluginEnv) {
-    let protobuf_yinz_version = ProtobufYinzVersion {
-        version: VERSION.to_owned(),
-    };
-    write_response(env, &protobuf_yinz_version.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to request yinz version from host for plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+pub(super) fn get_yinz_version() -> Result<DecodedResponse> {
+    value(VERSION)
 }
 
-pub(super) fn generate_random_name(env: &mut PluginEnv) {
-    let name = generate_random_name_impl();
-    let response = ProtobufGenerateRandomNameResponse { name };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send generated random name to plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+pub(super) fn generate_random_name() -> Result<DecodedResponse> {
+    value(generate_random_name_impl())
 }
 
 /// Answer with the folder holding the user's own plugins.
@@ -294,7 +236,7 @@ pub(super) fn generate_random_name(env: &mut PluginEnv) {
 /// An empty string means the folder could not be resolved at all, which is the same convention
 /// `get_layout_dir` uses - a plugin that cannot be told where to write says so rather than
 /// guessing at a path.
-pub(super) fn get_user_plugin_dir(env: &mut PluginEnv) {
+pub(super) fn get_user_plugin_dir(env: &mut PluginEnv) -> Result<DecodedResponse> {
     // Absolutized here as well as in `home.rs`, because this is the one place the folder crosses
     // into a plugin: a plugin has no cwd to join a relative path onto, so whatever route the
     // value took to `PluginEnv` it must arrive absolute or not at all.
@@ -308,40 +250,15 @@ pub(super) fn get_user_plugin_dir(env: &mut PluginEnv) {
         .and_then(|path| path.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| String::from(""));
 
-    let response = ProtobufGetUserPluginDirResponse {
-        user_plugin_dir: user_plugin_dir_string,
-    };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send user plugin dir to plugin {}", env.name()))
-        .non_fatal();
+    value(user_plugin_dir_string)
 }
 
-pub(super) fn get_session_environment_variables(env: &mut PluginEnv) {
-    use yinz_plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
-
+pub(super) fn get_session_environment_variables(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let mut session_env_vars = env.session_env_vars.clone();
     session_env_vars.extend(yinz_runtime::envs::child_session_env(
         &env.server_session.current(),
     ));
-    let env_vars: Vec<ProtobufEnvVariable> = session_env_vars
-        .iter()
-        .map(|(name, value)| ProtobufEnvVariable {
-            name: name.clone(),
-            value: value.clone(),
-        })
-        .collect();
-
-    let response = ProtobufGetSessionEnvironmentVariablesResponse { env_vars };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send session environment variables to plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+    value(session_env_vars)
 }
 
 /// Answer with the KDL configuration declared for one plugin alias.
@@ -349,7 +266,10 @@ pub(super) fn get_session_environment_variables(env: &mut PluginEnv) {
 /// An alias nobody declared answers with an empty map rather than an error: a plugin has
 /// nothing different to do with "no such alias" than with "that alias configures nothing",
 /// and this command must always write *something* back — the caller is blocked on a read.
-pub(super) fn get_plugin_alias_configuration(env: &mut PluginEnv, alias: String) {
+pub(super) fn get_plugin_alias_configuration(
+    env: &mut PluginEnv,
+    alias: String,
+) -> Result<DecodedResponse> {
     let configuration = env
         .plugin_aliases
         .lock()
@@ -359,18 +279,7 @@ pub(super) fn get_plugin_alias_configuration(env: &mut PluginEnv, alias: String)
         .map(|run_plugin| run_plugin.configuration.inner().clone())
         .unwrap_or_default();
 
-    let response = ProtobufGetPluginAliasConfigurationResponse {
-        configuration: configuration.into_iter().collect(),
-    };
-
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send the configuration of plugin alias {alias} to plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
+    value(configuration)
 }
 
 pub(super) fn check_plugin(
@@ -378,34 +287,22 @@ pub(super) fn check_plugin(
     name: String,
     source: String,
     mode: yinz_types::authoring::PluginCheckMode,
-) {
-    use yinz_plugin_api::plugin_command::{check_plugin_response, ProtobufCheckPluginResponse};
-    let result = (|| -> Result<String> {
-        let dir = env
-            .user_plugin_dir
-            .clone()
-            .or_else(default_user_plugin_dir)
-            .context("no plugin folder is configured; set user_plugin_dir")?;
-        let path = yinz_plugin_authoring::authoring::resolve_plugin_file(&dir, &name)
-            .map_err(|e| anyhow!(e))?;
-        // Semantic checks may read imports. Refuse symlinks in either authoring component.
-        if path.is_symlink() || path.parent().is_some_and(std::path::Path::is_symlink) {
-            return Err(anyhow!(
-                "plugin file or folder is a symlink; refusing to check"
-            ));
-        }
-        let report = crate::plugin_authoring::check_source(&path, &source, mode);
-        serde_json::to_string(&report).context("serialize plugin check report")
-    })();
-    let response = ProtobufCheckPluginResponse {
-        result: Some(match result {
-            Ok(report) => check_plugin_response::Result::ReportJson(report),
-            Err(error) => check_plugin_response::Result::Error(format!("{error:#}")),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .context("send plugin check report")
-        .non_fatal();
+) -> Result<DecodedResponse> {
+    let dir = env
+        .user_plugin_dir
+        .clone()
+        .or_else(default_user_plugin_dir)
+        .context("no plugin folder is configured; set user_plugin_dir")?;
+    let path = yinz_plugin_authoring::authoring::resolve_plugin_file(&dir, &name)
+        .map_err(|e| anyhow!(e))?;
+    // Semantic checks may read imports. Refuse symlinks in either authoring component.
+    if path.is_symlink() || path.parent().is_some_and(std::path::Path::is_symlink) {
+        return Err(anyhow!(
+            "plugin file or folder is a symlink; refusing to check"
+        ));
+    }
+    let report = crate::plugin_authoring::check_source(&path, &source, mode);
+    value(report)
 }
 
 /// Read Screen's authoritative snapshot for a selected client.
@@ -428,7 +325,7 @@ fn client_timezone(
 pub(super) fn get_client_timezone(
     env: &mut PluginEnv,
     client_id: Option<yinz_types::internal_ids::ClientId>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let timezone = client_timezone(
         env,
         match client_id {
@@ -440,10 +337,7 @@ pub(super) fn get_client_timezone(
             None => env.client_id,
         },
     )?;
-    let response = yinz_plugin_api::plugin_command::ProtobufGetClientTimezoneResponse {
-        timezone: timezone.report().map(str::to_owned),
-    };
-    write_response(env, &response.encode_to_vec()).context("write client timezone response")
+    value(timezone.report())
 }
 
 pub(super) fn get_local_utc_offset(
@@ -451,7 +345,7 @@ pub(super) fn get_local_utc_offset(
     epoch_ms: SignedUnixMillis,
     client_id: Option<yinz_types::internal_ids::ClientId>,
     timezone: Option<String>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     use chrono::{Local, Offset, TimeZone};
     let offset = match (client_id, timezone) {
         (Some(_), Some(_)) => return Err(anyhow!("client_id and timezone are mutually exclusive")),
@@ -474,11 +368,7 @@ pub(super) fn get_local_utc_offset(
                 .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc()),
         ),
     };
-    let response = ProtobufGetLocalUtcOffsetResponse {
-        offset_seconds: offset.unwrap_or_default(),
-        unavailable: offset.is_none(),
-    };
-    write_response(env, &response.encode_to_vec()).context("write UTC offset response")
+    value(offset)
 }
 
 pub(super) fn plugin_log_lines(
@@ -498,17 +388,13 @@ pub(super) fn plugin_log_lines(
 }
 
 /// Read a name, configured alias, or explicit source path using the caller's cwd.
-pub(super) fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
+pub(super) fn read_plugin_log(
+    env: &mut PluginEnv,
+    name: String,
+    lines: usize,
+) -> Result<DecodedResponse> {
     let result = plugin_log_lines(env, &name, lines, &yinz_runtime::consts::YINZ_TMP_LOG_FILE);
-    let response = ProtobufReadPluginLogResponse {
-        result: Some(match result {
-            Ok(lines) => read_plugin_log_response::Result::Lines(lines),
-            Err(e) => read_plugin_log_response::Result::Error(format!("{:#}", e)),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send log lines to plugin {}", env.name()))
-        .non_fatal();
+    value(result?)
 }
 
 pub(super) fn post_message_to(env: &PluginEnv, plugin_message: PluginMessage) -> Result<()> {
@@ -644,7 +530,10 @@ pub(super) fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn get_plugin_info(env: &mut PluginEnv, id: Option<PluginId>) -> Result<()> {
+pub(super) fn get_plugin_info(
+    env: &mut PluginEnv,
+    id: Option<PluginId>,
+) -> Result<DecodedResponse> {
     let plugin_id = id.unwrap_or(env.plugin_id);
     let info = if plugin_id == env.plugin_id {
         Some((env.background, Some(env.surface == Surface::Pane)))
@@ -659,17 +548,14 @@ pub(super) fn get_plugin_info(env: &mut PluginEnv, id: Option<PluginId>) -> Resu
         background,
         pane,
     });
-    let response = yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse {
-        json: serde_json::to_string(&info).context("encode plugin info")?,
-    };
-    write_response(env, &response.encode_to_vec()).context("write plugin info")
+    value(info)
 }
 
 pub(super) fn get_plugin_ids_for_url(
     env: &mut PluginEnv,
     url: String,
     configuration: Option<BTreeMap<String, String>>,
-) -> Result<()> {
+) -> Result<DecodedResponse> {
     let (response_channel, response) = crossbeam::channel::bounded(1);
     let result = env
         .senders
@@ -686,17 +572,7 @@ pub(super) fn get_plugin_ids_for_url(
         })
         .map_err(|error| format!("{error:#}"))
         .and_then(|result| result);
-    let response = match result {
-        Ok(ids) => yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
-            plugin_ids: ids.into_iter().map(|id| id.get()).collect(),
-            error: None,
-        },
-        Err(error) => yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
-            plugin_ids: vec![],
-            error: Some(error),
-        },
-    };
-    write_response(env, &response.encode_to_vec()).context("write plugin identity response")
+    value(result.map_err(anyhow::Error::msg)?)
 }
 
 pub(super) fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
@@ -713,67 +589,45 @@ pub(super) fn configuration_editor(
     env: &mut PluginEnv,
     edit: Option<yinz_types::configuration::Edit>,
     theme: Option<String>,
-) {
+) -> Result<DecodedResponse> {
     let (reply, receiver) = crossbeam::channel::bounded(1);
-    let result = (|| -> Result<Vec<u8>> {
-        env.senders
-            .send_to_server(ServerInstruction::ConfigurationEditor { edit, theme, reply })
-            .context("requesting configuration editor")?;
-        let snapshot = receiver
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .context("configuration editor did not reply")?
-            .map_err(|e| anyhow!("{e}"))?;
-        serde_json::to_vec(&snapshot).context("encoding configuration snapshot")
-    })();
-    let response = ProtobufFsReadResponse {
-        result: Some(match result {
-            Ok(contents) => fs_read_response::Result::Contents(contents),
-            Err(error) => fs_read_response::Result::Error(format!("{error:#}")),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .context("replying to configuration editor")
-        .non_fatal();
+    env.senders
+        .send_to_server(ServerInstruction::ConfigurationEditor { edit, theme, reply })
+        .context("requesting configuration editor")?;
+    let snapshot = receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .context("configuration editor did not reply")?
+        .map_err(|e| anyhow!("{e}"))?;
+    value(snapshot)
 }
 
 pub(super) fn project_config(
     env: &mut PluginEnv,
     directory: PathBuf,
     write: Option<(String, Option<String>)>,
-) {
-    let result = (|| -> Result<Vec<u8>> {
-        let directory = if directory.is_absolute() {
-            directory
-        } else {
-            env.plugin_cwd.join(directory)
-        };
-        let root = yinz_config::project_config::root(&directory).map_err(|e| anyhow!(e))?;
-        let own = env
-            .plugin_cwd
-            .canonicalize()
-            .context("cannot resolve plugin directory")?;
-        if !root.starts_with(&own) && !has_permission(env, PermissionType::FullHdAccess) {
-            return Err(anyhow!(
-                "project configuration outside the plugin directory requires FullHdAccess"
-            ));
-        }
-        let snapshot = if let Some((source, expected)) = write {
-            yinz_config::project_config::access_root(&root, Some((&source, expected.as_deref())))
-                .map_err(|e| anyhow!(e))?
-        } else {
-            yinz_config::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?
-        };
-        serde_json::to_vec(&snapshot).context("could not serialize project configuration")
-    })();
-    let response = ProtobufFsReadResponse {
-        result: Some(match result {
-            Ok(contents) => fs_read_response::Result::Contents(contents),
-            Err(e) => fs_read_response::Result::Error(format!("{e:#}")),
-        }),
+) -> Result<DecodedResponse> {
+    let directory = if directory.is_absolute() {
+        directory
+    } else {
+        env.plugin_cwd.join(directory)
     };
-    write_response(env, &response.encode_to_vec())
-        .context("could not send project configuration")
-        .non_fatal();
+    let root = yinz_config::project_config::root(&directory).map_err(|e| anyhow!(e))?;
+    let own = env
+        .plugin_cwd
+        .canonicalize()
+        .context("cannot resolve plugin directory")?;
+    if !root.starts_with(&own) && !has_permission(env, PermissionType::FullHdAccess) {
+        return Err(anyhow!(
+            "project configuration outside the plugin directory requires FullHdAccess"
+        ));
+    }
+    let snapshot = if let Some((source, expected)) = write {
+        yinz_config::project_config::access_root(&root, Some((&source, expected.as_deref())))
+            .map_err(|e| anyhow!(e))?
+    } else {
+        yinz_config::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?
+    };
+    value(snapshot)
 }
 
 pub(super) fn reload_plugin(env: &PluginEnv, plugin_id: PluginId) {
@@ -913,18 +767,15 @@ fn local_time(epoch_ms: SignedUnixMillis) -> Result<String> {
         .join(" "))
 }
 
-pub(super) fn get_local_time(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
-    let response = ProtobufGetLocalTimeResponse {
-        text: local_time(epoch_ms)
+pub(super) fn get_local_time(epoch_ms: SignedUnixMillis) -> Result<DecodedResponse> {
+    value(
+        local_time(epoch_ms)
             .context("formatting local date")
             .unwrap_or_else(|error| {
                 Err::<(), _>(error).non_fatal();
                 "Date unavailable".into()
             }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .context("sending local date response")
-        .non_fatal();
+    )
 }
 
 #[cfg(test)]

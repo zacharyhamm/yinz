@@ -1,10 +1,9 @@
 //! Runtime-neutral multipane commands. Held terminals reserve launch slots without spawning
 //! a process; the existing launch paths then replace or start those slots in place.
 use super::pane_creation::{run_command_action, run_command_in_pane};
-use super::write_response;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
-use prost::Message;
 use std::collections::BTreeMap;
 use tokio::sync::oneshot;
 use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
@@ -190,7 +189,7 @@ fn create(env: &PluginEnv, request: CreateMultipane) -> Result<Option<MultipaneI
     }
     screen(env, MultipaneOperation::Get(info.id))
 }
-pub(super) fn dispatch(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
+pub(super) fn dispatch(env: &mut PluginEnv, command: PluginCommand) -> Result<DecodedResponse> {
     let result = match command {
         PluginCommand::CreateMultipane(request) => create(env, request),
         PluginCommand::UpdateMultipane(request) => screen(env, MultipaneOperation::Update(request)),
@@ -219,8 +218,5 @@ pub(super) fn dispatch(env: &mut PluginEnv, command: PluginCommand) -> Result<()
         _ => return Err(anyhow!("not a multipane command")),
     }
     .map_err(|error| error.to_string());
-    let response = yinz_plugin_api::plugin_command::ProtobufMultipaneResponse {
-        json: serde_json::to_string(&result)?,
-    };
-    write_response(env, &response.encode_to_vec())
+    value(result.map_err(anyhow::Error::msg)?)
 }

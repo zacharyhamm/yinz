@@ -1,22 +1,17 @@
 //! Plugin filesystem mounts, path confinement, and file operations.
 
 use super::permissions::has_permission;
-use super::{write_response, PLUGINS_FS_ROOT};
+use super::PLUGINS_FS_ROOT;
 use crate::plugin_map::PluginEnv;
+use crate::response::{value, DecodedResponse};
 use crate::PluginInstruction;
 use anyhow::ensure;
-use prost::Message;
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::{fs, thread};
-use yinz_plugin_api::plugin_command::{
-    fs_list_response, fs_metadata_response, fs_mutate_response, fs_read_response, ProtobufFsEntry,
-    ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse,
-};
 use yinz_runtime::consts::{
     YINZ_CONFIG_DIR_ENV, YINZ_CONFIG_FILE_ENV, YINZ_PLUGIN_PERMISSIONS_CACHE, YINZ_PLUGIN_TMP_DIR,
     YINZ_TMP_LOG_DIR,
@@ -629,7 +624,7 @@ pub(super) fn fs_read(
     path: PathBuf,
     max_bytes: Option<usize>,
     offset: Option<u64>,
-) {
+) -> Result<DecodedResponse> {
     let cap = max_bytes
         .unwrap_or(MAX_FS_READ_BYTES)
         .min(MAX_FS_READ_BYTES);
@@ -682,18 +677,16 @@ pub(super) fn fs_read(
         Ok(contents)
     });
 
-    let response = ProtobufFsReadResponse {
-        result: Some(match result {
-            Ok(contents) => fs_read_response::Result::Contents(contents),
-            Err(e) => fs_read_response::Result::Error(format!("{:#}", e)),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send a file to plugin {}", env.name()))
-        .non_fatal();
+    result.map(DecodedResponse::Bytes)
 }
 
-pub(super) fn fs_list(env: &mut PluginEnv, path: PathBuf) {
+#[derive(serde::Serialize)]
+struct FsEntry {
+    path: String,
+    metadata: Option<FileMetadata>,
+}
+
+pub(super) fn fs_list(env: &mut PluginEnv, path: PathBuf) -> Result<DecodedResponse> {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
@@ -706,31 +699,25 @@ pub(super) fn fs_list(env: &mut PluginEnv, path: PathBuf) {
         let mut listed = vec![];
         for entry in entries.flatten() {
             let metadata: Option<FileMetadata> = entry.metadata().ok().map(|m| m.into());
-            listed.push(ProtobufFsEntry {
+            listed.push(FsEntry {
                 path: virtual_path(env, &entry.path(), &path)
                     .display()
                     .to_string(),
-                // `ProtobufFileMetadata` converts from the `Option`, carrying "unread" in its
-                // own `metadata_is_set` flag rather than in the absence of the message.
-                metadata: Some(metadata.into()),
+                metadata,
             });
         }
         listed.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(listed)
     });
 
-    let response = ProtobufFsListResponse {
-        result: Some(match result {
-            Ok(entries) => fs_list_response::Result::Entries(ProtobufFsEntryList { entries }),
-            Err(e) => fs_list_response::Result::Error(format!("{:#}", e)),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send a listing to plugin {}", env.name()))
-        .non_fatal();
+    value(result?)
 }
 
-pub(super) fn fs_metadata(env: &mut PluginEnv, path: PathBuf, follow_symlinks: bool) {
+pub(super) fn fs_metadata(
+    env: &mut PluginEnv,
+    path: PathBuf,
+    follow_symlinks: bool,
+) -> Result<DecodedResponse> {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
@@ -743,16 +730,7 @@ pub(super) fn fs_metadata(env: &mut PluginEnv, path: PathBuf, follow_symlinks: b
     )
     .map(|real| fs::symlink_metadata(&real).ok().map(FileMetadata::from));
 
-    let response = ProtobufFsMetadataResponse {
-        result: Some(match result {
-            Ok(Some(metadata)) => fs_metadata_response::Result::Metadata(Some(metadata).into()),
-            Ok(None) => fs_metadata_response::Result::NotFound(true),
-            Err(e) => fs_metadata_response::Result::Error(format!("{:#}", e)),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to send metadata to plugin {}", env.name()))
-        .non_fatal();
+    value(result?)
 }
 
 pub(super) fn fs_write(
@@ -761,7 +739,7 @@ pub(super) fn fs_write(
     contents: Vec<u8>,
     append: bool,
     create_dirs: bool,
-) {
+) -> Result<DecodedResponse> {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
@@ -797,10 +775,15 @@ pub(super) fn fs_write(
         file.write_all(&contents)
             .with_context(|| format!("failed to write '{}'", path.display()))
     });
-    write_fs_mutate_response(env, result);
+    result?;
+    value(true)
 }
 
-pub(super) fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
+pub(super) fn fs_remove(
+    env: &mut PluginEnv,
+    path: PathBuf,
+    recursive: bool,
+) -> Result<DecodedResponse> {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
@@ -821,10 +804,15 @@ pub(super) fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
         }
         .with_context(|| format!("failed to remove '{}'", path.display()))
     });
-    write_fs_mutate_response(env, result);
+    result?;
+    value(true)
 }
 
-pub(super) fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
+pub(super) fn fs_create_dir(
+    env: &mut PluginEnv,
+    path: PathBuf,
+    all: bool,
+) -> Result<DecodedResponse> {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
@@ -839,10 +827,15 @@ pub(super) fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
         }
         .with_context(|| format!("failed to create '{}'", path.display()))
     });
-    write_fs_mutate_response(env, result);
+    result?;
+    value(true)
 }
 
-pub(super) fn fs_rename(env: &mut PluginEnv, from: PathBuf, to: PathBuf) {
+pub(super) fn fs_rename(
+    env: &mut PluginEnv,
+    from: PathBuf,
+    to: PathBuf,
+) -> Result<DecodedResponse> {
     // Both endpoints are resolved independently: renaming *out* of the plugin's folders is as
     // much of an escape as reading outside them.
     let result = resolve_fs_path_with_permission(
@@ -866,19 +859,8 @@ pub(super) fn fs_rename(env: &mut PluginEnv, from: PathBuf, to: PathBuf) {
             )
         })
     });
-    write_fs_mutate_response(env, result);
-}
-
-fn write_fs_mutate_response(env: &mut PluginEnv, result: Result<()>) {
-    let response = ProtobufFsMutateResponse {
-        result: Some(match result {
-            Ok(()) => fs_mutate_response::Result::Success(true),
-            Err(e) => fs_mutate_response::Result::Error(format!("{:#}", e)),
-        }),
-    };
-    write_response(env, &response.encode_to_vec())
-        .with_context(|| format!("failed to answer a filesystem command for {}", env.name()))
-        .non_fatal();
+    result?;
+    value(true)
 }
 
 pub(super) fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {

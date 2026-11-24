@@ -1,12 +1,11 @@
+use super::runtime_parity::json_reply;
 use super::runtime_parity::{default_reply, Responder, SteelReference, WasmReference};
-use prost::Message;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
     sync::Arc,
 };
-use yinz_plugin_api::plugin_command::*;
 use yinz_types::{
     data::{Event, FileMetadata, PaneInfo, PaneManifest, PluginCommand},
     internal_ids::{TabPosition, TerminalId},
@@ -18,47 +17,21 @@ fn host(root: &Path) -> Responder {
     Arc::new(move |command| {
         Some(match command {
             PluginCommand::GetSessionEnvironmentVariables => {
-                ProtobufGetSessionEnvironmentVariablesResponse {
-                    env_vars: vec![
-                        EnvVariable {
-                            name: "HOME".into(),
-                            value: "/work".into(),
-                        },
-                        EnvVariable {
-                            name: "PROJECT".into(),
-                            value: "/work".into(),
-                        },
-                    ],
-                }
-                .encode_to_vec()
+                json_reply(json!({"HOME":"/work","PROJECT":"/work"}))
             },
-            PluginCommand::GetPaneCwd { pane_id } => ProtobufGetPaneCwdResponse {
-                result: Some(if *pane_id == PaneId::Terminal(TerminalId::new(99)) {
-                    get_pane_cwd_response::Result::Error("unavailable".into())
+            PluginCommand::GetPaneCwd { pane_id } => {
+                if *pane_id == PaneId::Terminal(TerminalId::new(99)) {
+                    Err("unavailable".into())
                 } else {
-                    get_pane_cwd_response::Result::Cwd("/work".into())
-                }),
-            }
-            .encode_to_vec(),
+                    json_reply("/work")
+                }
+            },
             PluginCommand::FsList { path } => {
                 let real = root.join(path.strip_prefix("/host").unwrap());
-                ProtobufFsListResponse {
-                    result: Some(match std::fs::read_dir(real) {
-                        Ok(entries) => fs_list_response::Result::Entries(ProtobufFsEntryList {
-                            entries: entries
-                                .flatten()
-                                .map(|entry| ProtobufFsEntry {
-                                    path: path.join(entry.file_name()).to_str().unwrap().into(),
-                                    metadata: Some(
-                                        entry.metadata().ok().map(FileMetadata::from).into(),
-                                    ),
-                                })
-                                .collect(),
-                        }),
-                        Err(error) => fs_list_response::Result::Error(error.to_string()),
-                    }),
-                }
-                .encode_to_vec()
+                match std::fs::read_dir(real) {
+                Ok(entries) => json_reply(entries.flatten().map(|entry| serde_json::json!({"path":path.join(entry.file_name()),"metadata":entry.metadata().ok().map(FileMetadata::from)})).collect::<Vec<_>>()),
+                Err(error) => Err(error.to_string()),
+            }
             },
             PluginCommand::FsMetadata {
                 path,
@@ -69,19 +42,9 @@ fn host(root: &Path) -> Responder {
                     "link must follow targets as the original std::fs::metadata did"
                 );
                 let real = root.join(path.strip_prefix("/host").unwrap());
-                ProtobufFsMetadataResponse {
-                    result: Some(match std::fs::metadata(real) {
-                        Ok(metadata) => fs_metadata_response::Result::Metadata(
-                            Some(FileMetadata::from(metadata)).into(),
-                        ),
-                        Err(_) => fs_metadata_response::Result::NotFound(true),
-                    }),
-                }
-                .encode_to_vec()
+                json_reply(std::fs::metadata(real).ok().map(FileMetadata::from))
             },
-            PluginCommand::OpenFileFloating(..) => {
-                ProtobufOpenFileFloatingResponse::default().encode_to_vec()
-            },
+            PluginCommand::OpenFileFloating(..) => json_reply(()),
             _ => return default_reply(command),
         })
     })

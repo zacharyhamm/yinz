@@ -962,7 +962,6 @@ fn launch_transaction_automation_rejects_opening_prompts_before_allocating_resou
 
 #[test]
 fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
-    use prost::Message;
     let (root, data, request) = repository();
     let host = Host::new(false, true, false);
     let mut env = crate::test_env::test_env();
@@ -973,7 +972,7 @@ fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
     *env.permissions.lock().unwrap() = Some(std::collections::HashSet::from([
         yinz_types::data::PermissionType::RunCommands,
     ]));
-    for (prompt, reuse_prompt, reuse, expected_prompt) in [
+    for (terminal, (prompt, reuse_prompt, reuse, expected_prompt)) in [
         ("", None, false, None),
         (
             "opening task",
@@ -987,13 +986,15 @@ fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
             true,
             Some("reused task"),
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut spec = request.spec.clone();
         spec.prompt = Some(prompt.into());
         spec.reuse_prompt = reuse_prompt.map(str::to_owned);
         spec.reuse = Some(reuse);
-        env.response_sink = Some(Vec::new());
-        super::super::run_plugin_command(
+        let reply = super::super::run_plugin_command(
             &mut env,
             yinz_types::data::PluginCommand::SpawnAgent {
                 spec,
@@ -1008,17 +1009,13 @@ fn launch_transaction_plugin_spawn_preserves_origin_and_legacy_response() {
             },
         )
         .unwrap();
-        let wire = yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse::decode(
-            env.response_sink.take().unwrap().as_slice(),
-        )
-        .unwrap();
-        let spawned = yinz_types::data::SpawnAgentResponse::try_from(wire)
-            .unwrap()
-            .unwrap();
-        assert!(spawned.cwd.unwrap().join(".git").exists());
-        if reuse {
-            assert_eq!(spawned.branch.as_deref(), Some("review"));
-        }
+        let branch = if terminal == 1 { "review-2" } else { "review" };
+        let cwd = root.path().join(".worktrees").join(branch);
+        assert!(cwd.join(".git").exists());
+        assert_eq!(
+            reply.expect_json(),
+            serde_json::json!({"pane_id":{"Terminal":terminal}, "branch":branch, "cwd":cwd.display().to_string()})
+        );
         let commands = host.commands.lock();
         let command = commands.last().unwrap();
         assert!(!command.args.iter().any(String::is_empty));

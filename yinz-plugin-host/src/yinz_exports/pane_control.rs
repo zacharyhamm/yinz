@@ -1,23 +1,16 @@
 //! Pane and tab controls routed through the existing action bus.
 
 use super::pane_creation::in_place_pane_id;
-use super::write_response;
 use crate::plugin_map::PluginEnv;
 use crate::plugin_panes::Surface;
+use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
-use prost::Message;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 use yinz_bus::pty::PtyInstruction;
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::{NotificationClick, ScreenInstruction};
-use yinz_plugin_api::plugin_command::{
-    hide_floating_panes_response, show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
-    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufHideFloatingPanesResponse,
-    ProtobufShowFloatingPanesResponse,
-};
 use yinz_routing::wait_for_action_completion;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::AgentInfo;
@@ -387,7 +380,10 @@ pub(super) fn go_to_tab_name(env: &PluginEnv, tab_name: String) {
     apply_action!(action, error_msg, env);
 }
 
-pub(super) fn focus_or_create_tab(env: &mut PluginEnv, tab_name: String) {
+pub(super) fn focus_or_create_tab(
+    env: &mut PluginEnv,
+    tab_name: String,
+) -> Result<DecodedResponse> {
     let error_msg = || format!("failed to change or create tab in plugin {}", env.name());
     let create = true;
     let action = Action::GoToTabName {
@@ -399,8 +395,7 @@ pub(super) fn focus_or_create_tab(env: &mut PluginEnv, tab_name: String) {
     // Return Some(tab_id) if tab was created or focused, None on error
     let tab_id: FocusOrCreateTabResponse = result.and_then(|r| r.affected_tab_id);
 
-    let response = ProtobufFocusOrCreateTabResponse::from(tab_id);
-    write_response(env, &response.encode_to_vec()).non_fatal();
+    value(tab_id)
 }
 
 pub(super) fn go_to_tab(env: &PluginEnv, tab_index: TabNumber) {
@@ -522,8 +517,10 @@ pub(super) fn notify(
         .non_fatal();
 }
 
-pub(super) fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
-    use show_floating_panes_response::Result as ShowResult;
+pub(super) fn show_floating_panes(
+    env: &mut PluginEnv,
+    tab_id: Option<TabId>,
+) -> Result<DecodedResponse> {
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
         .senders
@@ -532,29 +529,18 @@ pub(super) fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
             tab_id,
             completion: Some(NotificationEnd::new(completion_tx)),
         });
-    let response = if let Err(e) = send_result {
-        ProtobufShowFloatingPanesResponse {
-            result: Some(ShowResult::Error(format!("{}", e))),
-        }
-    } else {
-        let result = wait_for_action_completion(completion_rx, "show_floating_panes", false);
-        match result.exit_status {
-            Some(0) => ProtobufShowFloatingPanesResponse {
-                result: Some(ShowResult::Success(true)),
-            },
-            Some(2) => ProtobufShowFloatingPanesResponse {
-                result: Some(ShowResult::Success(false)),
-            },
-            _ => ProtobufShowFloatingPanesResponse {
-                result: Some(ShowResult::Error("Tab not found".to_string())),
-            },
-        }
-    };
-    let _ = write_response(env, &response.encode_to_vec());
+    send_result.map_err(|error| anyhow!("{error}"))?;
+    match wait_for_action_completion(completion_rx, "show_floating_panes", false).exit_status {
+        Some(0) => value(true),
+        Some(2) => value(false),
+        _ => Err(anyhow!("Tab not found")),
+    }
 }
 
-pub(super) fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
-    use hide_floating_panes_response::Result as HideResult;
+pub(super) fn hide_floating_panes(
+    env: &mut PluginEnv,
+    tab_id: Option<TabId>,
+) -> Result<DecodedResponse> {
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
         .senders
@@ -563,25 +549,12 @@ pub(super) fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
             tab_id,
             completion: Some(NotificationEnd::new(completion_tx)),
         });
-    let response = if let Err(e) = send_result {
-        ProtobufHideFloatingPanesResponse {
-            result: Some(HideResult::Error(format!("{}", e))),
-        }
-    } else {
-        let result = wait_for_action_completion(completion_rx, "hide_floating_panes", false);
-        match result.exit_status {
-            Some(0) => ProtobufHideFloatingPanesResponse {
-                result: Some(HideResult::Success(true)),
-            },
-            Some(2) => ProtobufHideFloatingPanesResponse {
-                result: Some(HideResult::Success(false)),
-            },
-            _ => ProtobufHideFloatingPanesResponse {
-                result: Some(HideResult::Error("Tab not found".to_string())),
-            },
-        }
-    };
-    let _ = write_response(env, &response.encode_to_vec());
+    send_result.map_err(|error| anyhow!("{error}"))?;
+    match wait_for_action_completion(completion_rx, "hide_floating_panes", false).exit_status {
+        Some(0) => value(true),
+        Some(2) => value(false),
+        _ => Err(anyhow!("Tab not found")),
+    }
 }
 
 pub(super) fn set_pane_regex_highlights(
@@ -869,7 +842,7 @@ pub(super) fn break_panes_to_new_tab(
     pane_ids: Vec<PaneId>,
     new_tab_name: Option<String>,
     should_change_focus_to_new_tab: bool,
-) {
+) -> Result<DecodedResponse> {
     let default_shell = env.default_shell.clone().or_else(|| {
         Some(TerminalAction::RunCommand(RunCommand {
             command: env.path_to_default_shell.clone(),
@@ -899,8 +872,7 @@ pub(super) fn break_panes_to_new_tab(
         None
     };
 
-    let response = ProtobufBreakPanesToNewTabResponse::from(tab_id);
-    write_response(env, &response.encode_to_vec()).non_fatal();
+    value(tab_id)
 }
 
 pub(super) fn break_panes_to_tab_with_index(
@@ -908,7 +880,7 @@ pub(super) fn break_panes_to_tab_with_index(
     pane_ids: Vec<PaneId>,
     should_change_focus_to_new_tab: bool,
     tab_index: TabPosition,
-) {
+) -> Result<DecodedResponse> {
     // Create completion channel to receive tab ID
     let (tx, rx) = tokio::sync::oneshot::channel();
     let completion_tx = Some(NotificationEnd::new(tx));
@@ -929,8 +901,7 @@ pub(super) fn break_panes_to_tab_with_index(
         None
     };
 
-    let response = ProtobufBreakPanesToTabWithIndexResponse::from(tab_id);
-    write_response(env, &response.encode_to_vec()).non_fatal();
+    value(tab_id)
 }
 
 pub(super) fn switch_tab_to_id(env: &PluginEnv, tab_id: TabId) {
@@ -988,7 +959,7 @@ pub(super) fn break_panes_to_tab_with_id(
     pane_ids: Vec<PaneId>,
     should_change_focus_to_target_tab: bool,
     tab_id: TabId,
-) {
+) -> Result<DecodedResponse> {
     // Create completion channel to receive tab ID
     let (tx, rx) = tokio::sync::oneshot::channel();
     let completion_tx = Some(NotificationEnd::new(tx));
@@ -1009,8 +980,7 @@ pub(super) fn break_panes_to_tab_with_id(
         None
     };
 
-    let response = ProtobufBreakPanesToTabWithIdResponse::from(result_tab_id);
-    write_response(env, &response.encode_to_vec()).non_fatal();
+    value(result_tab_id)
 }
 
 pub(super) fn group_and_ungroup_panes(

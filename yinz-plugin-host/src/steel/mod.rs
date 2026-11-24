@@ -22,7 +22,7 @@ use yinz_steel::InterruptHandle;
 use yinz_types::data::{CommandType, Event, PermissionStatus, PipeMessage, PluginCommand};
 
 use crate::plugin_map::{PluginEnv, CANCELLED_BY_HOST};
-use crate::response::{decode_response, DecodedResponse};
+use crate::response::DecodedResponse;
 use crate::yinz_exports::{
     check_command_permission, permission_answer_pending, run_plugin_command,
 };
@@ -708,7 +708,6 @@ fn dispatch_command(
         }
         bail!("'{command_type}' requires '{permission}'; request it with RequestPluginPermissions");
     }
-    let previous_sink = env.response_sink.take();
     let started = Instant::now();
     let result = run_plugin_command(env, command);
     let elapsed = started.elapsed();
@@ -718,16 +717,15 @@ fn dispatch_command(
             env.log_identity()
         );
     }
-    let captured = env.response_sink.take();
-    env.response_sink = previous_sink;
-    result.context("yinz command failed")?;
-    match captured {
-        None => Ok(Value::Null),
-        Some(bytes) => match decode_response(command_type, &bytes).transpose()? {
-            Some(DecodedResponse::Json(value)) => Ok(value),
-            Some(DecodedResponse::Bytes(bytes)) => yinz_steel::binary::encode(&bytes),
-            None => Ok(serde_json::to_value(bytes)?),
-        },
+    match result.map_err(|error| {
+        if error.is::<crate::response::GuestError>() {
+            error
+        } else {
+            error.context("yinz command failed")
+        }
+    })? {
+        DecodedResponse::Json(value) => Ok(value),
+        DecodedResponse::Bytes(bytes) => yinz_steel::binary::encode(&bytes),
     }
 }
 

@@ -1,6 +1,6 @@
 //! Independent real SQLite backends for runtime comparisons, with explicit watch delivery.
+use super::runtime_parity::json_reply;
 use super::runtime_parity::Responder;
-use prost::Message;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -8,7 +8,6 @@ use std::{
         Arc, Mutex,
     },
 };
-use yinz_plugin_api::plugin_command::*;
 use yinz_storage::plugin_data_store::{PluginDataStore, SqlitePluginDataBackend};
 use yinz_types::data::*;
 use yinz_types::internal_ids::DataWatchId;
@@ -71,7 +70,7 @@ impl DataHost {
             })
             .collect()
     }
-    fn respond(&self, command: &PluginCommand) -> Option<Vec<u8>> {
+    fn respond(&self, command: &PluginCommand) -> Option<super::runtime_parity::Reply> {
         Some(match command {
             PluginCommand::DataDefineEntity {
                 namespace,
@@ -84,31 +83,30 @@ impl DataHost {
                     def,
                     *allow_destructive,
                 );
-                ProtobufDataDefineResponse::from(match result {
-                    Ok(info) => DataDefineResponse::Ok(info),
-                    Err(error) => DataDefineResponse::Err(error.to_string()),
-                })
-                .encode_to_vec()
+                match result {
+                    Ok(info) => json_reply(info),
+                    Err(error) => Err(error.to_string()),
+                }
             },
             PluginCommand::DataFetch { request } => {
                 let result = self
                     .store
                     .fetch(&self.namespace(request.namespace.as_deref()), request);
-                ProtobufDataFetchResponse::from(match result {
-                    Ok(rows) => DataFetchResponse::Ok(rows),
-                    Err(error) => DataFetchResponse::Err(error.to_string()),
-                })
-                .encode_to_vec()
+                match result {
+                    Ok(rows) => crate::binary_data::rows(&rows)
+                        .map(crate::response::DecodedResponse::Json)
+                        .map_err(|e| e.to_string()),
+                    Err(error) => Err(error.to_string()),
+                }
             },
             PluginCommand::DataCount { request } => {
                 let result = self
                     .store
                     .count(&self.namespace(request.namespace.as_deref()), request);
-                ProtobufDataCountResponse::from(match result {
-                    Ok(count) => DataCountResponse::Ok(count),
-                    Err(error) => DataCountResponse::Err(error.to_string()),
-                })
-                .encode_to_vec()
+                match result {
+                    Ok(count) => json_reply(count),
+                    Err(error) => Err(error.to_string()),
+                }
             },
             PluginCommand::DataApply {
                 namespace,
@@ -117,12 +115,11 @@ impl DataHost {
                 let result = self
                     .store
                     .apply(&self.namespace(namespace.as_deref()), mutations);
-                ProtobufDataApplyResponse::from(match result {
-                    Ok(outcome) => DataApplyResponse::Ok(outcome.report),
-                    Err(DataError::Conflict(error)) => DataApplyResponse::Conflict(error),
-                    Err(error) => DataApplyResponse::Err(error.to_string()),
-                })
-                .encode_to_vec()
+                match result {
+                    Ok(outcome) => json_reply(outcome.report),
+                    Err(DataError::Conflict(error)) => Err(format!("data conflict: {error}")),
+                    Err(error) => Err(error.to_string()),
+                }
             },
             PluginCommand::DataWatch { request, .. } => {
                 let mut watches = self.watches.lock().unwrap();
@@ -131,18 +128,19 @@ impl DataHost {
                 let result = self
                     .store
                     .fetch(&self.namespace(request.namespace.as_deref()), request);
-                ProtobufDataWatchResponse::from(match result {
+                match result {
                     Ok(rows) => {
                         watches.insert(watch_id, (request.clone(), rows.clone()));
-                        DataWatchResponse::Ok(DataWatchHandle { watch_id, rows })
+                        json_reply(
+                            serde_json::json!({"watch_id":watch_id,"rows":crate::binary_data::rows(&rows).unwrap()}),
+                        )
                     },
-                    Err(error) => DataWatchResponse::Err(error.to_string()),
-                })
-                .encode_to_vec()
+                    Err(error) => Err(error.to_string()),
+                }
             },
             PluginCommand::DataUnwatch { watch_id } => {
                 self.watches.lock().unwrap().remove(watch_id);
-                ProtobufDataUnwatchResponse::from(DataUnwatchResponse::Ok).encode_to_vec()
+                json_reply(true)
             },
             _ => return None,
         })

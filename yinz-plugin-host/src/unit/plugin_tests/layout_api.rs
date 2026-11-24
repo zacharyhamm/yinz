@@ -188,11 +188,8 @@ pub fn dump_layout_success_plugin_command() {
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
 
-/// The data store round trip across the wasm boundary: declare an entity, write to it, read it
-/// back, full-text search it, count it and watch it.
-///
-/// The engine itself is covered by unit tests in `yinz-config`; what this covers is the hop those
-/// cannot reach — protobuf encode, the JSON-wrapped pipe, dispatch, and decode back in the guest.
+/// Exercise the guest data API through host dispatch by declaring an entity, writing rows,
+/// searching, counting and watching them.
 #[test]
 #[serial(plugin_tests)]
 pub fn data_store_plugin_commands() {

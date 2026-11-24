@@ -1,8 +1,7 @@
+use super::runtime_parity::json_reply;
 use super::runtime_parity::{default_reply, Responder, SteelReference, WasmReference};
-use prost::Message;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
-use yinz_plugin_api::plugin_command::*;
 use yinz_types::{
     data::{Event, PaneId, PluginCommand},
     internal_ids::TerminalId,
@@ -12,74 +11,25 @@ fn host(root: &Path) -> Responder {
     let root = root.to_owned();
     Arc::new(move |command| {
         Some(match command {
-            PluginCommand::GetFocusedPaneInfo => ProtobufGetFocusedPaneInfoResponse {
-                result: Some(get_focused_pane_info_response::Result::FocusedPaneInfo(
-                    FocusedPaneInfo {
-                        focused_tab_id: 1,
-                        focused_pane_id: Some(ProtobufPaneId {
-                            pane_type: 0,
-                            id: 7,
-                        }),
-                    },
-                )),
-            }
-            .encode_to_vec(),
-            PluginCommand::GetPaneCwd { .. } => ProtobufGetPaneCwdResponse {
-                result: Some(get_pane_cwd_response::Result::Cwd(
-                    "/work/project/src".into(),
-                )),
-            }
-            .encode_to_vec(),
-            PluginCommand::Pick(_) => ProtobufPickResponse {
-                json: r#"{"Ok":null}"#.into(),
-            }
-            .encode_to_vec(),
-            PluginCommand::OpenCommandPaneOverlay(..) => ProtobufOpenCommandPaneOverlayResponse {
-                pane_id: Some(ProtobufPaneId {
-                    pane_type: 0,
-                    id: 10,
-                }),
-            }
-            .encode_to_vec(),
-            PluginCommand::OpenEditPaneInPlaceOfPaneId(..) => {
-                ProtobufOpenEditPaneInPlaceOfPaneIdResponse {
-                    pane_id: Some(ProtobufPaneId {
-                        pane_type: 0,
-                        id: 11,
-                    }),
-                }
-                .encode_to_vec()
+            PluginCommand::GetFocusedPaneInfo => {
+                json_reply(json!({"tab_id":1,"pane_id":{"Terminal":7}}))
             },
-            PluginCommand::OpenCommandPaneInPlaceOfPaneId(..) => {
-                ProtobufOpenCommandPaneInPlaceOfPaneIdResponse {
-                    pane_id: Some(ProtobufPaneId {
-                        pane_type: 0,
-                        id: 12,
-                    }),
-                }
-                .encode_to_vec()
-            },
-            PluginCommand::FsMetadata { .. } => ProtobufFsMetadataResponse {
-                result: Some(fs_metadata_response::Result::NotFound(true)),
-            }
-            .encode_to_vec(),
+            PluginCommand::GetPaneCwd { .. } => json_reply("/work/project/src"),
+            PluginCommand::Pick(_) => json_reply(()),
+            PluginCommand::OpenCommandPaneOverlay(..) => json_reply(json!({"Terminal":10})),
+            PluginCommand::OpenEditPaneInPlaceOfPaneId(..) => json_reply(json!({"Terminal":11})),
+            PluginCommand::OpenCommandPaneInPlaceOfPaneId(..) => json_reply(json!({"Terminal":12})),
+            PluginCommand::FsMetadata { .. } => json_reply(()),
             PluginCommand::FsRead { path, .. } => {
                 let path = root.join(path.strip_prefix("/host").unwrap());
-                ProtobufFsReadResponse {
-                    result: Some(match std::fs::read(path) {
-                        Ok(bytes) => fs_read_response::Result::Contents(bytes),
-                        Err(error) => fs_read_response::Result::Error(error.to_string()),
-                    }),
-                }
-                .encode_to_vec()
+                std::fs::read(path)
+                    .map(crate::response::DecodedResponse::Bytes)
+                    .map_err(|e| e.to_string())
             },
             PluginCommand::FsRemove { path, .. } => {
                 let path = root.join(path.strip_prefix("/host").unwrap());
                 let _ = std::fs::remove_file(path);
-                ProtobufFsMutateResponse {
-                    result: Some(fs_mutate_response::Result::Success(true)),
-                }
-                .encode_to_vec()
+                json_reply(true)
             },
             _ => return default_reply(command),
         })
@@ -189,9 +139,7 @@ fn file_finder_actual_runtimes_match_picker_success_cancel_errors_and_mount_fail
         let base = host(root.path());
         let responder: Responder = Arc::new(move |command| {
             match command {
-            PluginCommand::Pick(yinz_types::pick::PickCommand::Request) => Some(ProtobufPickResponse {
-                json: json!({"Ok":{"options":{"kind":"file","roots":null,"extensions":null,"hidden":false,"timeoutMs":null},"cwd":"/work"}}).to_string(),
-            }.encode_to_vec()),
+            PluginCommand::Pick(yinz_types::pick::PickCommand::Request) => Some(json_reply(serde_json::from_value::<yinz_types::pick::PickRequest>(json!({"options":{"kind":"file","roots":null,"extensions":null,"hidden":false,"timeoutMs":null},"cwd":"/work"})).unwrap())),
             _ => base(command),
         }
         });
@@ -235,25 +183,12 @@ fn file_finder_actual_runtimes_match_reader_reuse_launch_message_and_missing_rea
         let responder: Responder = Arc::new(move |command| {
             Some(match command {
                 PluginCommand::GetPluginIdsForUrlWithConfiguration { .. } => {
-                    ProtobufGetPluginIdsForUrlResponse {
-                        plugin_ids: ids.clone(),
-                        error: None,
-                    }
-                    .encode_to_vec()
+                    json_reply(ids.clone())
                 },
-                PluginCommand::GetPluginInfo(..) => ProtobufGetPluginInfoResponse {
-                    json: json!({"pluginId":3,"background":background}).to_string(),
-                }
-                .encode_to_vec(),
-                PluginCommand::OpenPluginPaneFloating { .. } => {
-                    ProtobufOpenPluginPaneFloatingResponse {
-                        pane_id: Some(ProtobufPaneId {
-                            pane_type: 1,
-                            id: 9,
-                        }),
-                    }
-                    .encode_to_vec()
+                PluginCommand::GetPluginInfo(..) => {
+                    json_reply(json!({"pluginId":3,"background":background}))
                 },
+                PluginCommand::OpenPluginPaneFloating { .. } => json_reply(json!({"Plugin":9})),
                 _ => return base(command),
             })
         });
@@ -289,12 +224,8 @@ fn file_finder_actual_runtimes_match_failed_overlay_and_editor_open() {
         std::fs::create_dir_all(root.path().join("tmp")).unwrap();
         let base = host(root.path());
         let responder: Responder = Arc::new(move |command| match command {
-            PluginCommand::OpenCommandPaneOverlay(..) if fail_overlay => {
-                Some(ProtobufOpenCommandPaneOverlayResponse::default().encode_to_vec())
-            },
-            PluginCommand::OpenEditPaneInPlaceOfPaneId(..) if !fail_overlay => {
-                Some(ProtobufOpenEditPaneInPlaceOfPaneIdResponse::default().encode_to_vec())
-            },
+            PluginCommand::OpenCommandPaneOverlay(..) if fail_overlay => Some(json_reply(())),
+            PluginCommand::OpenEditPaneInPlaceOfPaneId(..) if !fail_overlay => Some(json_reply(())),
             _ => base(command),
         });
         let mut wasm = WasmReference::new(
