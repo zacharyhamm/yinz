@@ -945,12 +945,29 @@ selected rules and out-of-range instants return null. Omitting both selectors in
 the raw command retains its server-local behavior, as does `GetLocalTime`.
 Timezone queries and `ClientTimezoneChanged` require no permission.
 
+`json-null` means the selected client is attached but has no usable report. With
+no argument, `yinz-client-timezone` also returns `json-null` after the acting
+client detaches. An explicit client ID that no current attachment holds, such as
+one retained after its client disconnected, raises the Scheme error
+`timezone client has disconnected` instead. `yinz-client-utc-offset` always
+selects a client, so it raises in both cases. Catch the error where a retained
+ID may be stale; this handler treats every failure as an unknown zone:
+
+```scheme
+(define (zone-or-unknown client-id)
+  (with-handler (lambda (_) json-null)
+    (yinz-client-timezone client-id)))
+```
+
 Subscribe to `ClientTimezoneChanged` for an attachment snapshot and live changes:
 `(hash "ClientTimezoneChanged" (hash "client_id" 2 "timezone" "Asia/Kolkata"))`.
-Null denotes an unknown zone or disconnect. Events describe every subject client,
-including clients other than the instance owner. The subject does not become the
-callback actor: pass its ID explicitly to query its offset. Cache presentation
-per client, invalidate on events, and accept duplicate subscription snapshots.
+Null denotes an unknown zone or disconnect, and the payload does not say which.
+Events describe every subject client, including clients other than the instance
+owner. The subject does not become the callback actor: pass its ID explicitly to
+query its offset. Cache presentation per client, invalidate on events, and accept
+duplicate subscription snapshots. On null, clear the subject's cached zone and
+offset and show it as unknown; do not query the subject in response, because the
+query raises after a disconnect.
 Each new attachment publishes even if its report matches an earlier attachment.
 Long-running and headless plugins receive the same subscription snapshots.
 

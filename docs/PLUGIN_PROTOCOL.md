@@ -1159,15 +1159,21 @@ Store the returned identity rather than deriving a key from `name` or `root`.
 
 `GetClientTimezone {client_id?}` defaults to the acting client. Its nullable string
 is the validated report: an IANA name, POSIX rules, a fixed UTC offset, or `tzif:`
-followed by base64 TZif data. Missing, invalid, disconnected and unknown reports
-return null. Explicit rules are parsed as rules, never as filesystem paths.
+followed by base64 TZif data. It returns null for an attached client that has
+not reported a zone or whose report is missing or invalid, and when the selector
+is omitted and the acting client has since detached. An explicit `client_id`
+that no current attachment holds, such as an ID retained after its client
+disconnected, raises the error `timezone client has disconnected` instead.
+Explicit rules are parsed as rules, never as filesystem paths.
 
 `GetLocalUtcOffset {epoch_ms, client_id?, timezone?}` returns seconds east of UTC
 at the requested instant, including DST and historical transitions. Select either
 a client or an explicit rule string; supplying both is an error. Missing/invalid
 selected rules or an out-of-range selected timestamp return null, with no
-server-zone fallback. Omitted selectors preserve the server-local behavior and
-its fallback to the current server offset for out-of-range timestamps.
+server-zone fallback. A `client_id` with no current attachment raises the same
+disconnect error as `GetClientTimezone`. Omitted selectors preserve the
+server-local behavior and its fallback to the current server offset for
+out-of-range timestamps.
 `GetLocalTime` also remains server-local. These queries require no permission;
 `ListClients` still requires `ReadApplicationState`.
 
@@ -1183,6 +1189,13 @@ and its runtime generation. The payload's `client_id` is the subject, while the
 callback retains the recipient's normal actor. Select the subject explicitly
 when resolving its offset.
 
+A null payload does not distinguish a disconnect from an attached client without
+a report. Treat it as invalidating that subject's cached zone and offset, and
+present the zone as unknown without querying the subject in response: after a
+disconnect, the explicit query raises. A later attachment publishes the subject's
+value again. Handle the disconnect error wherever a retained ID is queried
+outside an event, such as on a timer or in a deferred continuation.
+
 `ListClients` captures each client's `timezone` with the listing snapshot, before
 asynchronous process enrichment. Palette discovery, source refresh and execution
 contexts carry `timezone: string | null` for the requesting client at the time of
@@ -1196,7 +1209,10 @@ An offset of zero is valid at UTC. Steel callers can distinguish the integer
 The WASM-era `yinz-plugin-api` crate and its protobuf reply format have been
 retired. Code that decoded those messages must migrate its plugin calls to the
 Steel SDK and consume the values documented above. For example,
-`GetClientTimezone` returns a string or null directly. The client/server IPC
+`GetClientTimezone` returns a string or null directly. Null means the selected
+attached client has no usable report. A retained explicit `client_id` whose client
+has disconnected raises an error rather than returning null; handle it wherever
+migrated code maps a missing zone to unknown. The client/server IPC
 schema continues to serve Yinz clients and servers.
 
 ## Authenticated HTTP transport
