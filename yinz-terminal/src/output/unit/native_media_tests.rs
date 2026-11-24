@@ -926,6 +926,60 @@ mod budget {
     const PORTABLE_FRAME_MEDIA_BYTES_TEST: usize = 2 * IMAGE;
 
     #[test]
+    fn render_negotiation_shared_and_portable_viewers_keep_their_own_media_and_budgets() {
+        let mut scene = Scene::new();
+        let (local, remote) = (ClientId::new(1), ClientId::new(2));
+        let budgets = [local, remote].map(|_| MediaBudget::new(32, IMAGE));
+        scene.viewer(local, budgets[0].clone());
+        scene.portable(remote, budgets[1].clone(), PORTABLE_FRAME_MEDIA_BYTES_TEST);
+        let mut image = scene.store(256, 1);
+        let frames = scene.render(pane(1), &[(image, 1, 256)]);
+        let [file] = frames[&local].shared.as_slice() else {
+            panic!("expected one shared file")
+        };
+        let file = file.clone();
+        assert!(frames[&local].chunks.is_empty() && frames[&local].transfers.is_empty());
+        assert!(frames[&remote].shared.is_empty());
+        assert_eq!(frames[&remote].transfers, [1]);
+        // Neither viewer's ACK releases the other's media.
+        scene.ack_last(remote);
+        assert_eq!(budgets[1].usage(), MediaUsage::default());
+        assert!(file.is_file());
+        assert_eq!(budgets[0].usage().bytes, IMAGE);
+        scene.ack_last(local);
+        assert!(!file.exists());
+        // The remote viewer stalls; the local one keeps staging from its own budget.
+        for shade in 2..=4u8 {
+            image = scene.replace(image, 256, shade);
+            let frames = scene.render(pane(1), &[(image, 1, 256)]);
+            assert_eq!(frames[&local].shared.len(), 1, "{shade}");
+            scene.ack_last(local);
+            assert_eq!(budgets[0].usage(), MediaUsage::default());
+            assert!(frames[&remote].shared.is_empty());
+            assert_eq!(frames[&remote].transfers.len(), usize::from(shade == 2));
+            assert_eq!(budgets[1].usage().bytes, IMAGE);
+        }
+        // Then the local viewer stalls and the remote one resumes with the latest image.
+        image = scene.replace(image, 256, 5);
+        let frames = scene.render(pane(1), &[(image, 1, 256)]);
+        let [held] = frames[&local].shared.as_slice() else {
+            panic!("expected the held file")
+        };
+        assert!(frames[&remote].transfers.is_empty());
+        assert_eq!(scene.ack_last(remote), BTreeSet::from([pane(1)]));
+        let frames = scene.render(pane(1), &[(image, 1, 256)]);
+        assert!(frames[&remote].shared.is_empty());
+        assert_eq!(frames[&remote].transfers.len(), 1);
+        assert_eq!(scene.wire[&remote].visible(), [5]);
+        scene.ack_last(remote);
+        assert_eq!(budgets[1].usage(), MediaUsage::default());
+        assert!(held.is_file());
+        scene.ack_last(local);
+        assert!(!held.exists());
+        assert_eq!(budgets[0].usage(), MediaUsage::default());
+    }
+
+    #[test]
     fn render_negotiation_portable_viewers_keep_separate_budgets() {
         let mut scene = Scene::new();
         let viewers = [ClientId::new(1), ClientId::new(2)];

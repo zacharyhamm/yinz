@@ -1844,6 +1844,7 @@ impl SharedViewer {
                 assert!(owned && agreement.media & caps::SHARED != 0);
                 self.state.negotiate(agreement, Some(self.root.clone()));
             },
+            Server::NativeRenderResult(other) => panic!("unexpected decision {other:?}"),
             Server::RenderFrame { frame } => {
                 assert!(owned);
                 let view = decode(&frame).unwrap();
@@ -2349,6 +2350,22 @@ impl PortableViewer {
         frames
     }
 
+    /// A rejected duplicate offer is an ordered screen roundtrip after anything sent
+    /// before it on this connection. Returns the frames that arrived first.
+    fn roundtrip(&mut self) -> Vec<Carried> {
+        self.send(Client::NativeRenderRequest(caps::Request::Offer(
+            caps::Offer::reader(None),
+        )));
+        let mut frames = Vec::new();
+        loop {
+            match self.next() {
+                PortableEvent::Frame(frame) => frames.push(frame),
+                PortableEvent::Rejected => return frames,
+                PortableEvent::Withdrawn(high) => panic!("withdrawn at {high}"),
+            }
+        }
+    }
+
     /// Acknowledge every frame until one completes a transfer; returns all of them.
     fn complete(&mut self) -> Vec<Carried> {
         let mut frames = Vec::new();
@@ -2484,4 +2501,332 @@ fn native_media_portable_disconnect_and_withdraw_races() {
     // The session keeps rendering after every race.
     replace(&fixture, &mut text, 2);
     assert!(!fixture.log_text().contains("released twice"));
+}
+
+// Master acceptance: mixed media, stalled portable readers and reconnects whose old
+// attachment keeps sending.
+
+/// An ANSI attachment that never offers native rendering, drained on its own thread. It
+/// fails when native output reaches it.
+struct AnsiViewer {
+    stream: UnixStream,
+    renders: std::sync::mpsc::Receiver<String>,
+    reader: std::thread::JoinHandle<()>,
+}
+
+impl AnsiViewer {
+    fn attach(fixture: &NativeFixture) -> Self {
+        let stream = attach(fixture);
+        let mut reading = stream.try_clone().unwrap();
+        // The thread waits for as long as the attachment lives; `finish` ends it.
+        reading.set_read_timeout(None).unwrap();
+        let (sender, renders) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || loop {
+            let mut prefix = [0; 4];
+            if reading.read_exact(&mut prefix).is_err() {
+                return;
+            }
+            let mut body = vec![0; u32::from_le_bytes(prefix) as usize];
+            if reading.read_exact(&mut body).is_err() {
+                return;
+            }
+            match server_message(&body) {
+                Server::Render { content } => {
+                    let _ = sender.send(content);
+                },
+                Server::RenderFrame { .. } | Server::NativeRenderResult(_) => {
+                    panic!("an ANSI client received native output")
+                },
+                Server::Exit { exit_reason } => panic!("ANSI client ended: {exit_reason:?}"),
+                _ => {},
+            }
+        });
+        Self {
+            stream,
+            renders,
+            reader,
+        }
+    }
+
+    fn wait_render(&self, marker: &str) {
+        let deadline = Instant::now() + BUDGET;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let content = self
+                .renders
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("ANSI client did not render {marker}"));
+            if content.contains(marker) {
+                return;
+            }
+        }
+    }
+
+    /// Close the attachment and propagate any failure seen by the reader.
+    fn finish(self) {
+        self.stream.shutdown(std::net::Shutdown::Both).unwrap();
+        self.reader.join().unwrap();
+    }
+}
+
+#[test]
+fn native_media_shared_portable_and_ansi_viewers_attach_together() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let ansi = AnsiViewer::attach(&fixture);
+    let (mut local, first) = SharedViewer::attach(&fixture);
+    local.ack(first.seq);
+    let (mut remote, first) = PortableViewer::attach(&fixture);
+    remote.ack(first.seq);
+    // One replacement reaches each viewer in its own medium. `Carried` refuses any
+    // server-local file in the portable stream.
+    trigger(&fixture, "replace-1");
+    let files: Vec<_> = local
+        .frames_until("REPLACED-001")
+        .iter()
+        .inspect(|frame| assert_eq!(frame.inline, 0))
+        .flat_map(|frame| frame.shared.clone())
+        .collect();
+    let [file] = files.as_slice() else {
+        panic!("expected one shared file, got {files:?}")
+    };
+    let file = file.clone();
+    let chunks: Vec<_> = remote
+        .frames_until("REPLACED-001")
+        .iter()
+        .flat_map(|frame| frame.chunks.clone())
+        .collect();
+    assert_eq!(chunks, [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)]);
+    ansi.wait_render("REPLACED-001");
+    assert_eq!(
+        staged(&fixture).into_keys().collect::<Vec<_>>(),
+        std::slice::from_ref(&file),
+        "only the local viewer stages files"
+    );
+    // The remote viewer completes its transfer. Its ACKs release none of the local
+    // viewer's media.
+    let frames = remote.complete();
+    assert_eq!(frames.last().unwrap().transfers, [1]);
+    assert_eq!(remote.image_shades(), [1]);
+    remote.ack(remote.last);
+    remote.roundtrip();
+    assert!(file.is_file(), "a remote ACK released a local file");
+    local.ack(local.last);
+    wait_until("local file unlinked", || (!file.exists()).then_some(()));
+    assert_eq!(local.image_shade(), Some(1));
+    // The remote viewer withholds its ACKs while the local viewer keeps consuming
+    // replacements from its own budget.
+    let mut cancels = Vec::new();
+    for n in 2..=4 {
+        let marker = format!("REPLACED-{n:03}");
+        trigger(&fixture, &format!("replace-{n}"));
+        let files: Vec<_> = local
+            .frames_until(&marker)
+            .iter()
+            .flat_map(|frame| frame.shared.clone())
+            .collect();
+        let [file] = files.as_slice() else {
+            panic!("replacement {n}: expected one shared file, got {files:?}")
+        };
+        local.ack(local.last);
+        wait_until("local file unlinked", || (!file.exists()).then_some(()));
+        assert_eq!(local.image_shade(), Some(n as u8));
+        let frames = remote.frames_until(&marker);
+        let chunks: Vec<_> = frames.iter().flat_map(|f| f.chunks.clone()).collect();
+        if n == 2 {
+            assert_eq!(chunks, [(2, 0, PORTABLE_FRAME_MEDIA_BYTES)]);
+        } else {
+            assert!(chunks.is_empty(), "replacement {n} sent without an ACK");
+        }
+        assert!(frames.iter().all(|f| f.transfers.is_empty()));
+        cancels.extend(frames.iter().flat_map(|f| f.cancels.clone()));
+    }
+    assert_eq!(cancels, [2], "only the started transfer is cancelled");
+    // The local viewer now withholds its ACK; the remote viewer resumes with the latest
+    // replacement under a fresh id.
+    trigger(&fixture, "replace-5");
+    let held: Vec<_> = local
+        .frames_until("REPLACED-005")
+        .iter()
+        .flat_map(|frame| frame.shared.clone())
+        .collect();
+    let [held] = held.as_slice() else {
+        panic!("expected one held file, got {held:?}")
+    };
+    let waiting = remote.frames_until("REPLACED-005");
+    assert!(waiting.iter().all(|f| f.chunks.is_empty()));
+    let frames = remote.complete();
+    let started: Vec<_> = frames.iter().flat_map(Carried::first_chunks).collect();
+    assert_eq!(started, [3]);
+    assert_eq!(frames.last().unwrap().transfers, [3]);
+    assert_eq!(remote.image_shades(), [5]);
+    remote.ack(remote.last);
+    remote.roundtrip();
+    assert!(held.is_file(), "a remote ACK released a held local file");
+    local.ack(local.last);
+    wait_until("held file unlinked", || (!held.exists()).then_some(()));
+    assert!(staged(&fixture).is_empty());
+    replace(&fixture, &mut text, 6);
+    ansi.finish();
+}
+
+#[test]
+fn native_media_portable_stalled_reader_replacing_large_images_resumes_in_order() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    let (mut viewer, first) = PortableViewer::attach(&fixture);
+    viewer.ack(first.seq);
+    // The viewer stops reading. The text viewer keeps the tab rendering, so the stalled
+    // viewer's frames back up in its socket and writer queue.
+    for n in 1..=12 {
+        replace(&fixture, &mut text, n);
+    }
+    // On resuming, the production reader applies every queued frame in order.
+    let frames = viewer.frames_until("REPLACED-012");
+    let seqs: Vec<_> = frames.iter().map(|f| f.seq).collect();
+    assert_eq!(seqs.first(), Some(&(first.seq + 1)));
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    // Only the first replacement's opening chunk was sent before an ACK; it was
+    // cancelled and every later replacement waited without a record.
+    let chunks: Vec<_> = frames.iter().flat_map(|f| f.chunks.clone()).collect();
+    assert_eq!(chunks, [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)]);
+    let cancels: Vec<_> = frames.iter().flat_map(|f| f.cancels.clone()).collect();
+    assert_eq!(cancels, [1]);
+    assert!(frames
+        .iter()
+        .all(|f| f.transfers.is_empty() && f.inline == 0));
+    assert!(viewer.image_shades().is_empty());
+    // Its ACK resumes only the latest replacement.
+    let frames = viewer.complete();
+    let started: Vec<_> = frames.iter().flat_map(Carried::first_chunks).collect();
+    assert_eq!(started, [2]);
+    assert_eq!(frames.last().unwrap().transfers, [2]);
+    assert_eq!(viewer.image_shades(), [12]);
+    replace(&fixture, &mut text, 13);
+}
+
+/// Events from the attachment being replaced, carrying its generation on the
+/// replacement's own connection. Each would visibly disturb the replacement if admitted:
+/// the ACKs could release its media or open its transfer window, the resize would change
+/// its grid, the withdrawal would end its native stream and the exit would detach it.
+fn send_foreign_events(stream: &mut UnixStream, old: &[u8], acked: u64) {
+    for message in [
+        Client::RenderFrameAck { seq: acked },
+        Client::RenderFrameAck { seq: u64::MAX },
+        Client::TerminalResize {
+            new_size: Size { rows: 20, cols: 60 },
+        },
+        Client::NativeRenderRequest(caps::Request::Withdraw),
+        Client::ClientExited,
+    ] {
+        send_tagged(stream, old, message);
+    }
+}
+
+fn grid(state: &TerminalState) -> (usize, usize) {
+    let size = state.size();
+    (size.rows, size.cols)
+}
+
+#[test]
+fn native_media_reconnect_mid_transfer_fences_delayed_old_generation_events() {
+    use yinz_runtime::native_media::PORTABLE_FRAME_MEDIA_BYTES;
+    let fixture = start_images("replace");
+    let mut text = text_viewer(&fixture);
+    replace(&fixture, &mut text, 1);
+
+    // Shared: the old attachment still holds its unacknowledged file when the viewer
+    // reconnects.
+    let (mut old, old_first) = SharedViewer::attach(&fixture);
+    let [old_file] = old_first.shared.as_slice() else {
+        panic!("expected the old attachment's file")
+    };
+    let old_file = old_file.clone();
+    let (mut new, new_first) = SharedViewer::attach(&fixture);
+    let [new_file] = new_first.shared.as_slice() else {
+        panic!("expected the replacement's own file")
+    };
+    let new_file = new_file.clone();
+    assert_ne!(old_file, new_file);
+    let size = grid(&new.state);
+    send_foreign_events(&mut new.stream, &old.tag.clone(), new_first.seq);
+    // The replacement's own stale and future ACKs release nothing either.
+    new.ack(new_first.seq - 1);
+    new.ack(u64::MAX);
+    new.roundtrip();
+    assert!(old_file.is_file() && new_file.is_file());
+    // The old connection's delayed ACK, withdrawal and close release only its own media.
+    old.ack(old_first.seq);
+    wait_until("old file unlinked", || (!old_file.exists()).then_some(()));
+    old.send(Client::NativeRenderRequest(caps::Request::Withdraw));
+    drop(old);
+    new.roundtrip();
+    assert!(new.received.iter().all(|path| path.is_file()));
+    assert_eq!(new.received.first(), Some(&new_file));
+    assert_eq!(grid(&new.state), size);
+    new.ack(new.last);
+    wait_until("replacement files unlinked", || {
+        new.received.iter().all(|path| !path.exists()).then_some(())
+    });
+    drop(new);
+
+    // Portable: the old attachment is halfway through its transfer when the viewer
+    // reconnects.
+    let half = [(1, 0, PORTABLE_FRAME_MEDIA_BYTES)];
+    let (mut old, old_first) = PortableViewer::attach(&fixture);
+    assert_eq!(old_first.chunks, half);
+    let (mut new, new_first) = PortableViewer::attach(&fixture);
+    assert_eq!(
+        new_first.chunks, half,
+        "each attachment numbers its own transfers"
+    );
+    let size = grid(&new.state);
+    send_foreign_events(&mut new.stream, &old.tag.clone(), new_first.seq);
+    new.ack(new_first.seq - 1);
+    new.ack(u64::MAX);
+    for frame in new.roundtrip() {
+        assert!(
+            frame.chunks.is_empty() && frame.transfers.is_empty(),
+            "{frame:?}"
+        );
+    }
+    // The old connection's delayed ACK continues only its own transfer. The replacement's
+    // arrival did not clear the old display, which would have restarted it.
+    old.ack(old_first.seq);
+    let continued = loop {
+        let frame = old.frame();
+        assert!(
+            frame.cancels.is_empty() && frame.first_chunks().is_empty(),
+            "the old transfer restarted: {frame:?}"
+        );
+        if !frame.transfers.is_empty() {
+            break frame;
+        }
+    };
+    let rest = (
+        1,
+        PORTABLE_FRAME_MEDIA_BYTES as u32,
+        PORTABLE_FRAME_MEDIA_BYTES,
+    );
+    assert_eq!(continued.chunks, [rest]);
+    assert_eq!(continued.transfers, [1]);
+    assert_eq!(old.image_shades(), [1]);
+    old.send(Client::NativeRenderRequest(caps::Request::Withdraw));
+    drop(old);
+    for frame in new.roundtrip() {
+        assert!(
+            frame.chunks.is_empty() && frame.transfers.is_empty(),
+            "{frame:?}"
+        );
+    }
+    // The replacement's own ACK continues its transfer where its first frame left it.
+    let frames = new.complete();
+    let chunks: Vec<_> = frames.iter().flat_map(|f| f.chunks.clone()).collect();
+    assert_eq!(chunks, [rest]);
+    assert_eq!(frames.last().unwrap().transfers, [1]);
+    assert_eq!(new.image_shades(), [1]);
+    assert_eq!(grid(&new.state), size);
+    replace(&fixture, &mut text, 2);
 }

@@ -897,6 +897,13 @@ switch, the destination confirms its first repaint on its own socket. If the
 destination fails, the source remains available. Peers that omit the optional
 generation continue to use the existing revision-1 exchange.
 
+The server discards a message tagged with another generation before decoding
+it, whatever its kind. A previous attachment's late ACK, resize, withdrawal or
+exit therefore cannot release the replacement's media, open its transfer window,
+change its grid or detach it. Messages on the old connection affect only the old
+attachment: its ACKs release its own media, and closing it releases the rest.
+A replacement starts its own transfers from the first chunk under its own ids.
+
 When an ANSI client switches sessions or recovers its server connection, the
 host terminal may still owe a reply to the previous connection. The client waits for the
 old Primary DA barrier or OSC 52 clipboard reply before sending a new query
@@ -984,6 +991,9 @@ remains available for input and subsequent frames.
 The server selects the highest version it can write that the client can read.
 Today's server writes v4. Native clients read v2, v3 and v4. Only selected
 features and media can appear in a live stream. Unknown offer bits are ignored.
+Each attachment has its own profile. A local shared viewer, a forwarded portable
+viewer and an ANSI client can watch the same pane at once, and each receives
+images in its own medium.
 
 | Feature bit | Meaning and current production behavior |
 |---|---|
@@ -1104,6 +1114,11 @@ session exits. Each file returns its share of the budget only after it is
 unlinked. Transfer leases are released on the same occasions. Turning Kitty
 support off for a viewer, or a frame that clears its images, also abandons its
 pending transfers.
+
+Another client attaching does not clear the displays of existing viewers, so
+their retained images and in-flight transfers continue. A frame that clears
+starts a new baseline and sends the visible images again. Resizes and changes
+to the layout or pane-frame style produce such frames.
 
 Limitations: a crash, `SIGKILL` or panic exit can leave `yinz-native-image-*`
 files in the temporary directory. Budgets are per viewer, so the total grows
