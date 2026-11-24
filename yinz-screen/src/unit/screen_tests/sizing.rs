@@ -2889,3 +2889,45 @@ fn centered_gutters_dismiss_palettes_and_capture_release() {
         assert_eq!(screen.active_pane_id(client), focus);
     }
 }
+
+/// Every attach restates the arriving client's configuration. With the pane frames unchanged
+/// that must not wipe the display of a client already viewing the tab: a native viewer would
+/// discard its images and in-flight transfers with it and receive them all again.
+#[test]
+fn reconfigure_clears_existing_viewers_only_when_pane_frames_change() {
+    let size = Size { cols: 80, rows: 24 };
+    let viewer = ClientId::new(1);
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .core
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"\x1b[5;1HSTABLE-CONTENT".to_vec())
+        .unwrap();
+    // The viewer's own configuration first, so that only the arrival's restatement follows.
+    screen
+        .reconfigure(test_screen_config(), Keybinds::default(), viewer)
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    assert!(client_frame_bytes(&mut screen, &receiver)[&viewer].contains("STABLE-CONTENT"));
+    let arrival = ClientId::new(2);
+    screen.add_client(arrival).unwrap();
+    screen
+        .reconfigure(test_screen_config(), Keybinds::default(), arrival)
+        .unwrap();
+    let streams = client_frame_bytes(&mut screen, &receiver);
+    let bytes = streams.get(&viewer).map(String::as_str).unwrap_or_default();
+    assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+    // A real change still repaints every viewer from a cleared display.
+    let mut framed = test_screen_config();
+    framed.pane_frame_style = PaneFrameStyle::Full;
+    screen
+        .reconfigure(framed, Keybinds::default(), arrival)
+        .unwrap();
+    let streams = client_frame_bytes(&mut screen, &receiver);
+    for client in [viewer, arrival] {
+        assert_eq!(streams[&client].matches("\x1b[2J").count(), 1, "{client}");
+    }
+}

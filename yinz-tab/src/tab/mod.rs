@@ -3281,10 +3281,17 @@ impl Tab {
     }
 
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
+        let changed = self.pane_frame_style != pane_frame_style;
         self.tiled_panes.set_pane_frames(pane_frame_style);
         self.floating_panes.set_pane_frame_style(pane_frame_style);
         self.pane_frame_style = pane_frame_style;
-        self.set_should_clear_display_before_rendering();
+        // An unchanged style leaves every pane where it was. Every attach restates the style
+        // through its reconfigure, so clearing regardless would wipe every viewer's display
+        // whenever a client joined: native viewers would discard their images and in-flight
+        // transfers and receive them all again.
+        if changed {
+            self.set_should_clear_display_before_rendering();
+        }
         self.set_force_render();
     }
     pub fn panes_to_hide_count(&self) -> usize {
