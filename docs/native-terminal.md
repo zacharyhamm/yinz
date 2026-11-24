@@ -1058,7 +1058,11 @@ contents (plain and with ANSI) and session migration include attached text.
 Migration stores the text, not table IDs, in an optional field. The snapshot
 format version does not change. Older snapshots restore without marks, and an
 older server that receives a newer snapshot ignores the marks. Search and
-highlight rules match base characters only.
+highlight rules match base characters only. Search also drops the code points
+the grid would attach (zero width from U+0300 on, and the soft hyphen) from
+the typed or pasted search text, so a copied selection finds the text it was
+copied from, and `cafe` and `cafe` + U+0301 find the same cells. A search
+text made only of such code points matches nothing.
 
 Frames group the cells of one grapheme cluster when serialized. A group is the
 run that Unicode's grapheme rules join, of at most 32 cells or 255 columns. It

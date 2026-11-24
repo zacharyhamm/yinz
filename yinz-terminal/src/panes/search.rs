@@ -1,4 +1,5 @@
 use super::Selection;
+use crate::panes::terminal_character::attaches_to_preceding_cell;
 use crate::panes::terminal_character::TerminalCharacter;
 use crate::panes::{Grid, Row};
 use std::borrow::Cow;
@@ -174,7 +175,17 @@ impl SearchResult {
             return res;
         }
 
-        let needle: Vec<char> = self.needle.chars().collect();
+        // The haystack is each cell's base character, so drop from the needle the code points
+        // the grid attaches to a cell (combining marks, joiners, variation selectors): copied
+        // text then finds the cells it was copied from.
+        let needle: Vec<char> = self
+            .needle
+            .chars()
+            .filter(|c| !attaches_to_preceding_cell(*c))
+            .collect();
+        if needle.is_empty() {
+            return res;
+        }
         let mut tailit = tail.iter();
         let mut source = SearchSource::Main(row); // Where we currently get the haystack-characters from
         let orig_ridx = ridx;

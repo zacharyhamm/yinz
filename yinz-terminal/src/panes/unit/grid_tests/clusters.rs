@@ -129,6 +129,66 @@ fn every_text_path_reads_whole_cells() {
 }
 
 #[test]
+fn a_trailing_space_carrying_marks_is_kept_by_every_text_path() {
+    let grid = create_grid_with_size_and_raw(4, 20, "a \u{301}\r\nb   ".as_bytes());
+    let marked = "a \u{301}";
+    assert_eq!(grid.viewport[0].columns[1].text(), " \u{301}");
+    assert!(grid.dump_screen(true).contains(marked));
+    assert!(
+        grid.dump_screen_with_ansi(true).contains(marked),
+        "{:?}",
+        grid.dump_screen_with_ansi(true)
+    );
+    assert_eq!(
+        grid.pane_contents(false, None).viewport[0].trim_end(),
+        marked
+    );
+    let with_ansi = grid.pane_contents_with_ansi(false, None);
+    assert!(
+        with_ansi.viewport[0].contains(marked),
+        "{:?}",
+        with_ansi.viewport
+    );
+    // Unmarked trailing spaces are still trimmed.
+    assert!(
+        !with_ansi.viewport[1].contains("b "),
+        "{:?}",
+        with_ansi.viewport
+    );
+}
+
+#[test]
+fn copied_text_with_attached_code_points_finds_its_source() {
+    let line = format!("cafe\u{301} \u{26A0}\u{FE0F} warn {FAMILY} end");
+    let mut grid = create_grid_with_size_and_raw(4, 40, line.as_bytes());
+    grid.start_selection(&Position::new(0, 0));
+    grid.end_selection(&Position::new(0, 25));
+    let copied = grid.get_selected_text().unwrap();
+    assert_eq!(copied, line);
+
+    for needle in [
+        copied.as_str(),
+        "cafe\u{301}",
+        "\u{26A0}\u{FE0F} warn",
+        FAMILY,
+        "cafe",
+        "\u{26A0} warn",
+        "\u{1F469}\u{1F467}",
+    ] {
+        grid.set_search_string(needle);
+        assert_eq!(grid.search_results.selections.len(), 1, "{needle:?}");
+    }
+    grid.set_search_string(&copied);
+    let hit = &grid.search_results.selections[0];
+    assert_eq!(hit.start, Position::new(0, 0));
+    assert_eq!(hit.end, Position::new(0, 20));
+
+    // A needle of nothing but attached code points matches nothing.
+    grid.set_search_string("\u{301}\u{200D}");
+    assert!(grid.search_results.selections.is_empty());
+}
+
+#[test]
 fn overwriting_and_erasing_clustered_cells_frees_their_entries() {
     let before = cluster_table::live_entries();
     let mut grid = create_grid_with_size_and_raw(

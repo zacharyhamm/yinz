@@ -219,6 +219,7 @@ use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::hyperlink_tracker::HyperlinkTracker;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::search::SearchResult;
+use crate::panes::terminal_character::attaches_to_preceding_cell;
 use crate::panes::terminal_character::AnsiCode;
 use crate::panes::terminal_character::CharsetIndex;
 use crate::panes::terminal_character::Cursor;
@@ -559,7 +560,8 @@ macro_rules! dump_screen_with_ansi {
                 .columns
                 .iter()
                 .rposition(|tc| {
-                    let space = tc.character == ' ';
+                    // A space carrying marks is text, as the plain variants keep it.
+                    let space = tc.character == ' ' && !tc.has_attached();
                     let styled = !matches!(tc.styles.background, Some(AnsiCode::Reset) | None);
                     !space || styled // it's, something drawable
                 })
@@ -2869,7 +2871,7 @@ impl Grid {
         if self.record_placeholder_diacritic(character) {
             return;
         }
-        if (character as u32) >= 0x300 || character == '\u{AD}' {
+        if attaches_to_preceding_cell(character) {
             self.attach_code_point(character);
         }
     }
@@ -4108,7 +4110,8 @@ impl Grid {
                 .columns
                 .iter()
                 .rposition(|tc| {
-                    let space = tc.character == ' ';
+                    // A space carrying marks is text, as the plain variants keep it.
+                    let space = tc.character == ' ' && !tc.has_attached();
                     let styled = !matches!(tc.styles.background, Some(AnsiCode::Reset) | None);
                     !space || styled
                 })

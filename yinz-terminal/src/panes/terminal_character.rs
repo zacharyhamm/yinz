@@ -31,6 +31,14 @@ const EXTRA_VALUE_MASK: u32 = EXTRA_TAG - 1;
 /// The widest cell the packed width field holds. Real widths are 0..=2.
 pub const MAX_CELL_WIDTH: usize = WIDTH_MASK as usize;
 
+/// Whether the grid attaches `c` to the cell before it instead of giving it a cell: zero width
+/// and from U+0300 on (combining marks, joiners, variation selectors), or the soft hyphen.
+/// Kitty placeholder diacritics match too; the grid records those as image coordinates first.
+#[inline]
+pub fn attaches_to_preceding_cell(c: char) -> bool {
+    ((c as u32) >= 0x300 || c == '\u{AD}') && c.width().unwrap_or(0) == 0
+}
+
 pub const RESET_STYLES: CharacterStyles = CharacterStyles {
     foreground: Some(AnsiCode::Reset),
     background: Some(AnsiCode::Reset),
