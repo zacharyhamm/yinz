@@ -1115,10 +1115,13 @@ unlinked. Transfer leases are released on the same occasions. Turning Kitty
 support off for a viewer, or a frame that clears its images, also abandons its
 pending transfers.
 
-Another client attaching does not clear the displays of existing viewers, so
-their retained images and in-flight transfers continue. A frame that clears
-starts a new baseline and sends the visible images again. Resizes and changes
-to the layout or pane-frame style produce such frames.
+An attach that leaves a tab's size and pane-frame style unchanged does not
+clear the displays of its existing viewers, so their retained images and
+in-flight transfers continue. A frame that clears starts a new baseline and
+sends the visible images again. Resizes and changes to the layout or pane-frame
+style produce such frames. An attach can cause them too: a smaller arriving
+client shrinks the tab it joins, and an arriving client whose configuration
+sets another pane-frame style applies it to every tab.
 
 Limitations: a crash, `SIGKILL` or panic exit can leave `yinz-native-image-*`
 files in the temporary directory. Budgets are per viewer, so the total grows
