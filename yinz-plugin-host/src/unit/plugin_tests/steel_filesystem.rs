@@ -658,6 +658,10 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
         ),
         "hé🙂!"
     );
+    use std::os::unix::ffi::OsStrExt;
+    let directory = roots.host.path().join("files/nested");
+    std::fs::write(directory.join(std::ffi::OsStr::from_bytes(&[0x80])), []).unwrap();
+    std::fs::write(directory.join("é"), []).unwrap();
     let entries = run(
         &roots,
         permissions(),
@@ -670,7 +674,15 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
         .iter()
         .map(|entry| entry["path"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(paths, ["/host/files/nested/a", "/host/files/nested/b"]);
+    assert_eq!(
+        paths,
+        [
+            "/host/files/nested/a",
+            "/host/files/nested/b",
+            "/host/files/nested/é",
+            "/host/files/nested/�"
+        ]
+    );
     assert_eq!(
         run(
             &roots,

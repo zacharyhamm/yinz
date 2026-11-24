@@ -5477,8 +5477,8 @@ fn every_action_survives_the_client_server_round_trip(tc: hegel::TestCase) {
     use crate::client_server_contract::client_server_contract::Action as ProtoAction;
     use prost::Message;
     use strum::IntoEnumIterator;
-    use yinz_plugin_api::test_generators::action_of_kind;
     use yinz_types::input::actions::ActionKind;
+    use yinz_types::test_generators::action_of_kind;
 
     for kind in ActionKind::iter() {
         let action = action_of_kind(&tc, kind);
@@ -5577,9 +5577,8 @@ fn attach_pane_reference_keeps_its_json_object() {
 }
 
 #[test]
-fn override_layout_positions_survive_ipc_and_plugin_action_round_trips() {
+fn override_layout_positions_survive_ipc_round_trip() {
     use crate::client_server_contract::client_server_contract::Action as IpcAction;
-    use yinz_plugin_api::action::ProtobufAction as PluginAction;
     use yinz_types::input::layout::TabLayoutInfo;
     use yinz_types::internal_ids::TabPosition;
 
@@ -5603,27 +5602,20 @@ fn override_layout_positions_survive_ipc_and_plugin_action_round_trips() {
         retain_existing_plugin_panes: true,
         apply_only_to_active_tab: false,
     };
-    let ipc: IpcAction = action.clone().try_into().unwrap();
+    let ipc: IpcAction = action.try_into().unwrap();
     let ipc: Action = IpcAction::decode(ipc.encode_to_vec().as_slice())
         .unwrap()
         .try_into()
         .unwrap();
-    let plugin: PluginAction = action.try_into().unwrap();
-    let plugin: Action = PluginAction::decode(plugin.encode_to_vec().as_slice())
-        .unwrap()
-        .try_into()
-        .unwrap();
-    for decoded in [ipc, plugin] {
-        // Action equality does not compare OverrideLayout's payload.
-        match decoded {
-            Action::OverrideLayout {
-                tabs: decoded_tabs,
-                retain_existing_terminal_panes: true,
-                retain_existing_plugin_panes: true,
-                apply_only_to_active_tab: false,
-            } => assert_eq!(decoded_tabs, tabs),
-            other => panic!("unexpected override action: {other:?}"),
-        }
+    // Action equality does not compare OverrideLayout's payload.
+    match ipc {
+        Action::OverrideLayout {
+            tabs: decoded_tabs,
+            retain_existing_terminal_panes: true,
+            retain_existing_plugin_panes: true,
+            apply_only_to_active_tab: false,
+        } => assert_eq!(decoded_tabs, tabs),
+        other => panic!("unexpected override action: {other:?}"),
     }
     let json = serde_json::to_value(&tabs).unwrap();
     assert_eq!(json[1]["tab_index"], 7);

@@ -386,8 +386,8 @@ pub(super) fn check_plugin(
             .clone()
             .or_else(default_user_plugin_dir)
             .context("no plugin folder is configured; set user_plugin_dir")?;
-        let path =
-            yinz_plugin_api::authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))?;
+        let path = yinz_plugin_authoring::authoring::resolve_plugin_file(&dir, &name)
+            .map_err(|e| anyhow!(e))?;
         // Semantic checks may read imports. Refuse symlinks in either authoring component.
         if path.is_symlink() || path.parent().is_some_and(std::path::Path::is_symlink) {
             return Err(anyhow!(

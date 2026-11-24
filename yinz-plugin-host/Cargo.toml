@@ -20,7 +20,7 @@ yinz-codex = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-key-codec = { workspace = true }
 yinz-plugin-api = { workspace = true }
-yinz-plugin-authoring = { workspace = true }
+yinz-plugin-authoring = { workspace = true, features = ["worker"] }
 yinz-session = { workspace = true }
 yinz-steel = { path = "../yinz-steel" }
 yinz-steel-builtins = { path = "../yinz-steel-builtins" }

@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 yinz-project-config = { workspace = true }
-yinz-plugin-api = { workspace = true }
+yinz-plugin-authoring = { workspace = true }
 yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }

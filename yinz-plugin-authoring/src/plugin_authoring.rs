@@ -3,13 +3,13 @@
 //! a folder of its own, and in this crate rather than the binary's so the integration tests can
 //! run the same code the CLI does.
 
+use crate::authoring::is_script_plugin;
 use anyhow::Context;
 use std::{
     io::Write,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
-use yinz_plugin_api::authoring::is_script_plugin;
 
 /// Check a source file in the supervised compilation worker.
 pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
@@ -124,8 +124,7 @@ pub fn write(
     overwrite: bool,
     check: bool,
 ) -> anyhow::Result<Written> {
-    let path = yinz_plugin_api::authoring::resolve_plugin_file(dir, name)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let path = crate::authoring::resolve_plugin_file(dir, name).map_err(|e| anyhow::anyhow!(e))?;
     if source.trim().is_empty() {
         anyhow::bail!("the plugin source is empty");
     }
@@ -184,13 +183,12 @@ pub fn write(
 pub fn edit(
     dir: &Path,
     name: &str,
-    edits: &[yinz_plugin_api::authoring::edits::EditPair],
+    edits: &[crate::authoring::edits::EditPair],
 ) -> anyhow::Result<Written> {
-    let path =
-        yinz_plugin_api::authoring::resolve_plugin_file(dir, name).map_err(anyhow::Error::msg)?;
+    let path = crate::authoring::resolve_plugin_file(dir, name).map_err(anyhow::Error::msg)?;
     let original = crate::limits::read_source(&path)?;
-    let edited = yinz_plugin_api::authoring::edits::apply_edits(&original, edits)
-        .map_err(anyhow::Error::msg)?;
+    let edited =
+        crate::authoring::edits::apply_edits(&original, edits).map_err(anyhow::Error::msg)?;
     let report = check_source(
         &path,
         &edited.source,

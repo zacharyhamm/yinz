@@ -75,25 +75,26 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "agent-proto",
         ],
     ),
-    ("yinz-plugin-api", &["yinz-types", "yinz-plugin-location"]),
+    (
+        "yinz-plugin-api",
+        &[
+            "yinz-types",
+            "yinz-plugin-location",
+            "yinz-plugin-authoring",
+        ],
+    ),
     (
         "yinz-plugin-authoring",
         &[
             "yinz-config",
             "yinz-types",
             "yinz-runtime",
-            "yinz-plugin-api",
             "yinz-test-support",
         ],
     ),
     (
         "yinz-ipc",
-        &[
-            "yinz-types",
-            "yinz-runtime",
-            "yinz-plugin-api",
-            "yinz-host-protocol",
-        ],
+        &["yinz-types", "yinz-runtime", "yinz-host-protocol"],
     ),
     (
         "yinz-session",
@@ -107,7 +108,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-key-codec",
             "yinz-storage",
             "yinz-config",
-            "yinz-plugin-api",
             "yinz-ipc",
             "yinz-session",
         ],
@@ -297,8 +297,6 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-project-config", &["yinz-test-support"]),
     ("yinz-config", &["yinz-test-support"]),
     ("yinz-plugin-authoring", &["yinz-test-support"]),
-    ("yinz-ipc", &["yinz-plugin-api"]),
-    ("yinz-cli", &["yinz-plugin-api"]),
     ("yinz-screen", &["yinz-cli", "yinz-test-support"]),
     ("yinz-agent-control", &["yinz-test-support"]),
     (
@@ -402,6 +400,15 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
                 .as_str()
                 .context("Missing dependency name")?;
             let name = package["name"].as_str().context("Missing package name")?;
+            if matches!(name, "yinz-cli" | "yinz-ipc")
+                && target == "yinz-types"
+                && dependency["kind"] != "dev"
+                && dependency["features"].as_array().is_some_and(|features| {
+                    features.iter().any(|feature| feature == "test-support")
+                })
+            {
+                anyhow::bail!("{name} may enable yinz-types/test-support only for tests");
+            }
             let excepted =
                 dependency["kind"] == "dev" && ROOT_ONLY_DEV_EXCEPTIONS.contains(&(name, target));
             if ROOT_ONLY_DEPENDENCIES.contains(&target) && !excepted {

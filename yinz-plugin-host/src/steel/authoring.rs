@@ -112,7 +112,7 @@ fn describe(
             } else {
                 let suggestion = permission
                     .as_str()
-                    .and_then(yinz_plugin_api::authoring::nearest_permission_type)
+                    .and_then(yinz_plugin_authoring::authoring::nearest_permission_type)
                     .map(|value| format!("; did you mean {value:?}?"))
                     .unwrap_or_default();
                 report.warnings.push(format!(

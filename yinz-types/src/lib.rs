@@ -44,6 +44,8 @@ pub mod units;
 
 pub mod data;
 pub mod input;
+#[cfg(feature = "test-support")]
+pub mod test_generators;
 
 pub mod session_manifest;
 

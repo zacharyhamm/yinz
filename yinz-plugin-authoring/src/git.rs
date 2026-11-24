@@ -98,7 +98,7 @@ fn entrypoint(root: &Path, plugin: &GitPlugin, commit: Option<String>) -> Result
             entrypoint.display()
         );
     }
-    if !yinz_plugin_api::authoring::is_script_plugin(&entrypoint) {
+    if !crate::authoring::is_script_plugin(&entrypoint) {
         bail!("repository entrypoint must resolve to a Scheme file");
     }
     Ok(InstalledPlugin {

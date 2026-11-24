@@ -50,7 +50,7 @@ fn written_actions_round_trip_or_are_refused(tc: hegel::TestCase) {
         .collect();
     for _ in 0..10 {
         let kind = tc.draw(generators::sampled_from(kinds.clone()));
-        let action = yinz_plugin_api::test_generators::action_of_kind(&tc, kind);
+        let action = yinz_types::test_generators::action_of_kind(&tc, kind);
         check_written_form(kind, &action);
     }
 }
@@ -237,7 +237,7 @@ fn written_pane_and_plugin_actions_read_back_or_name_their_shape(tc: hegel::Test
     for _ in 0..10 {
         let kind = tc.draw(generators::sampled_from(kinds.clone()));
         let action =
-            without_wire_only_fields(yinz_plugin_api::test_generators::action_of_kind(&tc, kind));
+            without_wire_only_fields(yinz_types::test_generators::action_of_kind(&tc, kind));
         check_written_form(kind, &action);
     }
 }

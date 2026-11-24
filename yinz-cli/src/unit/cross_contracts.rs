@@ -79,9 +79,17 @@ fn new_tab_without_swap_layouts_can_be_saved_after_ipc() {
         .unwrap()
         .get_mut(&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier())
         .unwrap();
-    // The plugin action wire, like IPC, represents absent swap lists as empty lists.
-    let wire: yinz_plugin_api::action::ProtobufAction = binding[0].clone().try_into().unwrap();
+    let wire: yinz_ipc::client_server_contract::client_server_contract::Action =
+        binding[0].clone().try_into().unwrap();
     binding[0] = wire.try_into().unwrap();
+    assert!(matches!(
+        &binding[0],
+        yinz_types::input::actions::Action::NewTab {
+            swap_tiled_layouts: None,
+            swap_floating_layouts: None,
+            ..
+        }
+    ));
     config
         .write_config_to_disk(
             config.to_string(false).unwrap(),
@@ -120,10 +128,10 @@ layout {
             .get_mut(&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier())
             .unwrap();
         assert!(format!("{:?}", binding[0]).contains("default_fg: Some("));
-        // The plugin action wire carries no pane colours.
-        let wire: yinz_plugin_api::action::ProtobufAction = binding[0].clone().try_into().unwrap();
+        let wire: yinz_ipc::client_server_contract::client_server_contract::Action =
+            binding[0].clone().try_into().unwrap();
         binding[0] = wire.try_into().unwrap();
-        assert!(!format!("{:?}", binding[0]).contains("default_fg: Some("));
+        assert!(format!("{:?}", binding[0]).contains("default_fg: Some("));
         config
             .write_config_to_disk(
                 config.to_string(false).unwrap(),

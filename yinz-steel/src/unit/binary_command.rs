@@ -99,3 +99,77 @@ fn compact_bytes_reject_malformed_markers_and_keep_generic_json_ordinary() {
         matches!(command, PluginCommand::FsWrite { contents, .. } if contents == "λ".as_bytes())
     );
 }
+
+#[test]
+fn web_plugin_commands_decode_from_steel_json() {
+    let cases = [
+        (
+            serde_json::json!({"HttpRespond": {"request_id": 17, "response": "{\"status\":200}"}}),
+            PluginCommand::HttpRespond {
+                request_id: 17,
+                response: "{\"status\":200}".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"HttpAssets": {"prefix": "/static/", "directory": "builtin:web/static"}}),
+            PluginCommand::HttpAssets {
+                prefix: "/static/".to_owned(),
+                directory: "builtin:web/static".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"HttpPublish": {
+                "path": "/login",
+                "content_type": "text/html; charset=utf-8",
+                "body": "<!doctype html>"
+            }}),
+            PluginCommand::HttpPublish {
+                path: "/login".to_owned(),
+                content_type: "text/html; charset=utf-8".to_owned(),
+                body: "<!doctype html>".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"AgentView": {"id": "rpc:view:1", "request": "{\"op\":\"list\"}"}}),
+            PluginCommand::AgentView {
+                id: "rpc:view:1".to_owned(),
+                request: "{\"op\":\"list\"}".to_owned(),
+            },
+        ),
+    ];
+    for (wire, expected) in cases {
+        assert_eq!(decode_command(wire.clone()).unwrap(), expected);
+        assert_eq!(serde_json::to_value(expected).unwrap(), wire);
+    }
+}
+
+#[test]
+fn plugin_cwd_and_utc_offset_selectors_round_trip_when_omitted() {
+    let load = json!({"LoadNewPlugin": {
+        "url": "file:./plugin.scm", "config": {}, "load_in_background": false, "skip_plugin_cache": true
+    }});
+    let mut unicode = load.clone();
+    unicode["LoadNewPlugin"]["cwd"] = json!("/projects/雪 and 🦀");
+    for wire in [load, unicode, json!({"GetLocalUtcOffset":{"epoch_ms":0}})] {
+        let command = decode_command(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(command).unwrap(), wire);
+    }
+    assert!(decode_command(json!("CancelYinzUpdate")).is_err());
+}
+
+#[test]
+fn project_context_defaults_omitted_sources() {
+    for wire in [
+        json!({"SetProjectContext": [["notes"], []]}),
+        json!({"SetProjectContext": [["notes"], [], {"notes": "/home/雪/[notes]"}]}),
+    ] {
+        let PluginCommand::SetProjectContext(_, _, sources) = decode_command(wire.clone()).unwrap()
+        else {
+            panic!("expected SetProjectContext");
+        };
+        assert_eq!(
+            sources.get("notes").map(String::as_str),
+            wire["SetProjectContext"][2]["notes"].as_str()
+        );
+    }
+}

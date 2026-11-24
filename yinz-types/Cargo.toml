@@ -8,7 +8,11 @@ description = "Shared domain contracts for Yinz"
 [lints]
 workspace = true
 
+[features]
+test-support = ["dep:hegeltest"]
+
 [dependencies]
+hegeltest = { version = "0.29.3", optional = true }
 unicode-segmentation = "1.12"
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 regex = { workspace = true }

@@ -116,7 +116,7 @@ pub fn resolve_log_target(
         anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Yinz config")
     })?;
     Ok(LogTarget::Legacy(
-        yinz_plugin_api::authoring::resolve_plugin_file(dir, name).map_err(anyhow::Error::msg)?,
+        crate::authoring::resolve_plugin_file(dir, name).map_err(anyhow::Error::msg)?,
     ))
 }
 

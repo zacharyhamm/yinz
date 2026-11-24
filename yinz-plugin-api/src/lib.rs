@@ -31,8 +31,8 @@ pub mod generated_api {
     ));
 }
 
-pub mod authoring;
 pub use prost;
+pub use yinz_plugin_authoring::authoring;
 
 #[cfg(test)]
 #[path = "unit/wire_tests.rs"]

@@ -3,22 +3,26 @@ name = "yinz-plugin-authoring"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Offline TypeScript plugin checks and writes, run through the compilation worker"
+description = "Offline Scheme plugin checks and writes, run through the compilation worker"
 
 [lints]
 workspace = true
 
+[features]
+default = ["worker"]
+worker = ["dep:anyhow", "dep:libc", "dep:serde_json", "dep:sha2", "dep:tempfile", "dep:yinz-config", "dep:yinz-runtime"]
+
 [dependencies]
-yinz-config = { workspace = true }
-yinz-plugin-api = { workspace = true }
-yinz-runtime = { workspace = true }
+yinz-config = { workspace = true, optional = true }
+strum = { workspace = true }
+yinz-runtime = { workspace = true, optional = true }
 yinz-types = { workspace = true }
-anyhow = { workspace = true }
-libc = { workspace = true }
+anyhow = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
-tempfile = { workspace = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 yinz-test-support = { path = "../yinz-test-support" }

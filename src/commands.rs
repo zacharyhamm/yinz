@@ -1646,7 +1646,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                     if kind.is_dir() {
                         sources(&entry.path(), paths)?;
                     } else if kind.is_file()
-                        && yinz_plugin_api::authoring::is_script_plugin(&entry.path())
+                        && yinz_server::plugin_authoring::authoring::is_script_plugin(&entry.path())
                     {
                         paths.push(entry.path());
                     }
@@ -1664,7 +1664,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             Ok(())
         },
         PluginsCli::Edit { name, file } => {
-            let edits: Vec<yinz_plugin_api::authoring::edits::EditPair> =
+            let edits: Vec<yinz_server::plugin_authoring::authoring::edits::EditPair> =
                 serde_json::from_str(&read_source(Some(&file))?)?;
             let written = yinz_server::plugin_authoring::edit(&plugin_dir()?, &name, &edits)?;
             println!(
@@ -1764,8 +1764,11 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                     {
                         path
                     } else {
-                        yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                            .map_err(|e| anyhow::anyhow!(e))?
+                        yinz_server::plugin_authoring::authoring::resolve_plugin_file(
+                            &plugin_dir()?,
+                            &name,
+                        )
+                        .map_err(|e| anyhow::anyhow!(e))?
                     }
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
@@ -1793,8 +1796,11 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                        .map_err(|e| anyhow::anyhow!(e))?
+                    yinz_server::plugin_authoring::authoring::resolve_plugin_file(
+                        &plugin_dir()?,
+                        &name,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
@@ -1955,7 +1961,7 @@ fn plugin_lifecycle_request(
                 ..Default::default()
             }
         } else {
-            let path = yinz_plugin_api::authoring::resolve_plugin_file(
+            let path = yinz_server::plugin_authoring::authoring::resolve_plugin_file(
                 directory.context("no plugin directory configured")?,
                 target,
             )

@@ -31,7 +31,7 @@ impl TestPaths for Sources {
             .to_file_path()
             .map_err(|_| anyhow!("invalid test file URL"))?;
         anyhow::ensure!(
-            yinz_plugin_api::authoring::is_script_plugin(&path),
+            yinz_plugin_authoring::authoring::is_script_plugin(&path),
             "test target must be Scheme"
         );
         let root = self
@@ -56,7 +56,7 @@ impl TestPaths for Sources {
             "test target escapes its root or is not a regular file"
         );
         anyhow::ensure!(
-            yinz_plugin_api::authoring::is_script_plugin(&path),
+            yinz_plugin_authoring::authoring::is_script_plugin(&path),
             "test target must be Scheme"
         );
         Ok(url::Url::from_file_path(path)

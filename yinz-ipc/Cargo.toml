@@ -23,6 +23,6 @@ interprocess = { workspace = true }
 tokio = { workspace = true }
 libc = { workspace = true }
 [dev-dependencies]
-yinz-plugin-api = { workspace = true, features = ["test-support"] }
+yinz-types = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 hegeltest = "0.29.3"

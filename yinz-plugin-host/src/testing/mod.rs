@@ -228,7 +228,7 @@ pub fn run_named(
     if dir.as_os_str().is_empty() {
         bail!("no plugin folder is configured; set user_plugin_dir or pass --config-dir");
     }
-    let path = yinz_plugin_api::authoring::resolve_plugin_file(dir, name)
+    let path = yinz_plugin_authoring::authoring::resolve_plugin_file(dir, name)
         .map_err(|error| anyhow!(error))?;
     run(data_dir, &path, options, allowed, cancel)
 }
@@ -259,13 +259,15 @@ fn discover(path: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
             }
             discover(&entry.path(), root, out)?;
         }
-    } else if yinz_plugin_api::authoring::is_script_plugin(path)
+    } else if yinz_plugin_authoring::authoring::is_script_plugin(path)
         && path
             .file_stem()
             .is_some_and(|stem| stem.to_string_lossy().ends_with(".test"))
     {
         out.push(path.to_owned());
-    } else if path.parent() == Some(root) && yinz_plugin_api::authoring::is_script_plugin(path) {
+    } else if path.parent() == Some(root)
+        && yinz_plugin_authoring::authoring::is_script_plugin(path)
+    {
         let stem = path.file_stem().context("plugin stem")?.to_string_lossy();
         let extension = path
             .extension()

@@ -270,7 +270,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::RegisterProjectProvider(provider) => {
                 let supported_source = env.plugin_config.is_builtin()
-                    || yinz_plugin_api::authoring::is_script_plugin(
+                    || yinz_plugin_authoring::authoring::is_script_plugin(
                         env.resolved_source_path
                             .as_deref()
                             .unwrap_or(&env.plugin_config.path),
@@ -337,7 +337,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::RegisterAgentProvider(provider) => {
                 let supported_source = env.plugin_config.is_builtin()
-                    || yinz_plugin_api::authoring::is_script_plugin(
+                    || yinz_plugin_authoring::authoring::is_script_plugin(
                         env.resolved_source_path
                             .as_deref()
                             .unwrap_or(&env.plugin_config.path),
