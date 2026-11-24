@@ -180,7 +180,7 @@ fn click_outside_highlight_starts_normal_selection() {
     );
 
     // Selection should have started
-    assert!(tab.selecting_with_mouse_in_pane.is_some());
+    assert!(tab.selecting_with_mouse_in_pane.contains_key(&client_id));
 }
 
 #[test]
@@ -553,7 +553,7 @@ fn plain_click_on_highlight_does_not_send_highlight_clicked() {
     );
 
     // Selection should have started instead
-    assert!(tab.selecting_with_mouse_in_pane.is_some());
+    assert!(tab.selecting_with_mouse_in_pane.contains_key(&client_id));
 }
 
 #[test]

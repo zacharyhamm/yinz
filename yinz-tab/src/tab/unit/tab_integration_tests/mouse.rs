@@ -3865,7 +3865,10 @@ fn plugin_gestures_preserve_selection_independent_delivery_and_chrome_hover() {
         }
         tab.handle_mouse_event(&MouseEvent::new_left_press_event(press), client)
             .unwrap();
-        assert_eq!(tab.selecting_with_mouse_in_pane, selectable.then_some(id));
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane.get(&client).copied(),
+            selectable.then_some(id)
+        );
         assert_eq!(
             tab.get_active_pane_id(client),
             Some(if selectable { id } else { terminal })
@@ -3874,7 +3877,7 @@ fn plugin_gestures_preserve_selection_independent_delivery_and_chrome_hover() {
             .unwrap();
         tab.handle_mouse_event(&MouseEvent::new_left_release_event(drag), client)
             .unwrap();
-        assert_eq!(tab.selecting_with_mouse_in_pane, None);
+        assert!(tab.selecting_with_mouse_in_pane.is_empty());
         let pane = tab.get_pane_with_id(id).unwrap();
         assert_eq!(
             pane.get_selected_text(client).is_some(),
@@ -3937,10 +3940,179 @@ fn plugin_pointer_disconnect_finishes_drag() {
     ] {
         tab.handle_mouse_event(&event, client).unwrap();
     }
-    assert_eq!(tab.selecting_with_mouse_in_pane, None);
+    assert!(tab.selecting_with_mouse_in_pane.is_empty());
     let pane = tab.get_pane_with_id(id).unwrap();
     assert_eq!(pane.get_selected_text(client).as_deref(), Some("abc"));
     assert!(pane.should_render());
+}
+
+/// Each client's drag is its own. A second client's press, drag and release elsewhere in the tab
+/// leave the first client's plugin gesture captured, and only the first client's release ends it.
+#[test]
+fn plugin_drags_from_two_clients_keep_their_own_capture() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        ModeInfo::default(),
+    );
+    tab.mouse_click_through = true;
+    tab.add_client(other, None).unwrap();
+    tab.handle_pty_bytes(TerminalId::new(1), b"terminal text".to_vec())
+        .unwrap();
+    let id = add_test_plugin(&mut tab, client, true);
+    let pane = tab.get_pane_with_id_mut(id).unwrap();
+    for c in [client, other] {
+        let plugin = pane.plugin_control_mut().unwrap();
+        plugin.set_mouse_selection_support(true);
+        plugin.handle_plugin_bytes(c, b"abcdefghi".to_vec());
+    }
+    let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+    let underlying = tab.get_pane_with_id(terminal).unwrap();
+    let (tx, ty) = (
+        underlying.get_content_x() as u16,
+        underlying.get_content_y() as i32,
+    );
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_press_event(Position::new(y, x + 1)),
+        client,
+    )
+    .unwrap();
+    for event in [
+        MouseEvent::new_left_press_event(Position::new(ty, tx)),
+        MouseEvent::new_left_motion_event(Position::new(ty, tx + 4)),
+    ] {
+        tab.handle_mouse_event(&event, other).unwrap();
+    }
+    assert_eq!(
+        tab.selecting_with_mouse_in_pane,
+        HashMap::from([(client, id), (other, terminal)])
+    );
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_event(Position::new(ty, tx + 4)),
+        other,
+    )
+    .unwrap();
+    assert_eq!(
+        tab.selecting_with_mouse_in_pane,
+        HashMap::from([(client, id)]),
+        "another client's release must not end this client's drag"
+    );
+    assert!(tab
+        .get_pane_with_id(terminal)
+        .unwrap()
+        .get_selected_text(other)
+        .is_some());
+
+    for event in [
+        MouseEvent::new_left_motion_event(Position::new(y, x + 4)),
+        MouseEvent::new_left_release_event(Position::new(y, x + 4)),
+    ] {
+        tab.handle_mouse_event(&event, client).unwrap();
+    }
+    assert!(tab.selecting_with_mouse_in_pane.is_empty());
+    assert_eq!(
+        plugin_mouse_events(&rx),
+        [
+            Mouse::LeftClick(0, 1),
+            Mouse::Hold(0, 4),
+            Mouse::Release(0, 4)
+        ]
+        .map(|mouse| (Some(crate::PluginId::new(7)), Some(client), mouse))
+    );
+    let pane = tab.get_pane_with_id(id).unwrap();
+    assert!(pane.get_selected_text(client).is_some());
+    assert_eq!(pane.get_selected_text(other), None);
+}
+
+/// A plugin can go away while it holds a drag, for instance by closing itself on the click. The
+/// capture goes with the pane, and a release always ends the releasing client's gesture, so the
+/// next press in the tab is an ordinary one.
+#[test]
+fn a_plugin_leaving_mid_drag_releases_its_capture() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    for departure in ["close", "leave tab", "already gone at release"] {
+        let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.handle_pty_bytes(TerminalId::new(1), b"terminal text".to_vec())
+            .unwrap();
+        let id = add_test_plugin(&mut tab, client, true);
+        let pane = tab.get_pane_with_id(id).unwrap();
+        let press = Position::new(pane.get_content_y() as i32, pane.get_content_x() as u16);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(press), client)
+            .unwrap();
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane,
+            HashMap::from([(client, id)])
+        );
+        match departure {
+            "close" => tab.close_pane(id, false, None),
+            "leave tab" => assert!(tab.extract_pane_leaving_tab(id, false).is_some()),
+            _ => {
+                // Stands for a departure that cleared nothing: the release alone must end it.
+                tab.close_pane(id, false, None);
+                tab.selecting_with_mouse_in_pane.insert(client, id);
+            },
+        }
+        assert!(tab.get_pane_with_id(id).is_none(), "{departure}");
+        if departure != "already gone at release" {
+            assert!(
+                tab.selecting_with_mouse_in_pane.is_empty(),
+                "{departure}: the capture must leave with its pane"
+            );
+        }
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(press), client)
+            .unwrap();
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{departure}");
+
+        let underlying = tab.get_pane_with_id(terminal).unwrap();
+        let start = Position::new(
+            underlying.get_content_y() as i32,
+            underlying.get_content_x() as u16,
+        );
+        let end = Position::new(start.line() as i32, start.column() as u16 + 4);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(start), client)
+            .unwrap();
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane,
+            HashMap::from([(client, terminal)]),
+            "{departure}: a fresh press must start a new gesture"
+        );
+        for event in [
+            MouseEvent::new_left_motion_event(end),
+            MouseEvent::new_left_release_event(end),
+        ] {
+            tab.handle_mouse_event(&event, client).unwrap();
+        }
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{departure}");
+        assert!(tab
+            .get_pane_with_id(terminal)
+            .unwrap()
+            .get_selected_text(client)
+            .is_some());
+        assert_eq!(
+            plugin_mouse_events(&rx),
+            [(
+                Some(crate::PluginId::new(7)),
+                Some(client),
+                Mouse::LeftClick(0, 0)
+            )],
+            "{departure}: nothing more reaches the departed plugin"
+        );
+    }
 }
 
 #[test]

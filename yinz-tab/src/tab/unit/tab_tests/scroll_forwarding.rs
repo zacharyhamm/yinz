@@ -379,3 +379,66 @@ fn suspended_input_resumes_only_the_addressed_terminal() {
         matches!(writer.try_recv().unwrap().0, PtyWriteInstruction::Write(bytes, target, _) if bytes == b"x" && PaneId::Terminal(target) == id)
     );
 }
+
+/// One viewport reset moves at most twice the scroll buffer size in rows, and deeply wrapped
+/// history can be further away than that. Every return-to-bottom action must leave queued output
+/// queued until the viewport arrives: parsing it into the scrolled viewport consumes it there and
+/// it never reaches the live one.
+#[test]
+fn bottom_actions_keep_output_queued_until_a_bounded_reset_reaches_the_bottom() {
+    let terminal_id = crate::TerminalId::new(1);
+    let pane_id = PaneId::Terminal(terminal_id);
+    for action in ["active pane", "terminal ID", "pane ID", "clear scroll"] {
+        let scroll_to_bottom = |tab: &mut Tab| match action {
+            "active pane" => tab
+                .scroll_active_terminal_to_bottom(ClientId::new(1))
+                .unwrap(),
+            "terminal ID" => tab.scroll_terminal_to_bottom(terminal_id),
+            "pane ID" => tab.scroll_to_bottom_by_pane_id(pane_id).unwrap(),
+            _ => assert!(tab.clear_active_terminal_scroll(ClientId::new(1)).unwrap()),
+        };
+        let mut tab = create_new_tab(Size { cols: 22, rows: 6 }, true);
+        let (cols, rows) = tab
+            .get_pane_with_id(pane_id)
+            .map(|pane| (pane.get_content_columns(), pane.get_content_rows()))
+            .unwrap();
+        // Building the pane's grid initialized the buffer size this bound comes from.
+        let reset_limit = *yinz_runtime::consts::SCROLL_BUFFER_SIZE.get().unwrap() * 2;
+        // The buffer holds logical lines, so wrapping each over three rows keeps it deep enough.
+        let wrapped_line = [vec![b'X'; cols * 3], b"\r\n".to_vec()].concat();
+        tab.handle_pty_bytes(terminal_id, wrapped_line.repeat(reset_limit / 3 + rows + 4))
+            .unwrap();
+        let excess = 3;
+        tab.get_terminal_mut(pane_id)
+            .unwrap()
+            .scroll_up(reset_limit + excess);
+        tab.handle_pty_bytes(terminal_id, b"queued output".to_vec())
+            .unwrap();
+        assert!(tab.pending_vte_events.contains_key(&terminal_id));
+
+        scroll_to_bottom(&mut tab);
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        assert!(
+            pane.terminal().unwrap().is_scrolled(),
+            "{action}: one reset must stop {excess} rows short of the bottom"
+        );
+        assert!(
+            tab.pending_vte_events.contains_key(&terminal_id)
+                && !pane.dump_screen(true, None).contains("queued output"),
+            "{action}: output was fed into a scrolled viewport"
+        );
+
+        scroll_to_bottom(&mut tab);
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        assert!(
+            !pane.terminal().unwrap().is_scrolled(),
+            "{action}: a second reset reaches the bottom"
+        );
+        assert!(!tab.pending_vte_events.contains_key(&terminal_id));
+        let viewport = pane.dump_screen(false, None);
+        assert!(
+            viewport.lines().last() == Some("queued output"),
+            "{action}: queued output is missing from the live viewport: {viewport:?}"
+        );
+    }
+}

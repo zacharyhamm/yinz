@@ -378,7 +378,9 @@ pub struct Tab {
     auto_layout: bool,
     tab_group_count: usize,
     pending_vte_events: HashMap<TerminalId, Vec<VteBytes>>,
-    pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
+    /// The pane each client's left-button gesture started in, until that client releases. Keyed
+    /// by client so one client's drag can neither move nor end another's. Only pub for the tests.
+    pub selecting_with_mouse_in_pane: HashMap<ClientId, PaneId>,
     pane_being_resized_with_mouse: Option<PaneResizeState>,
     link_handler: Rc<RefCell<LinkHandler>>,
     clipboard_provider: ClipboardProvider,
@@ -668,7 +670,7 @@ impl Tab {
             tab_group_count: 1,
             pending_vte_events: HashMap::new(),
             connected_clients,
-            selecting_with_mouse_in_pane: None,
+            selecting_with_mouse_in_pane: HashMap::new(),
             pane_being_resized_with_mouse: None,
             link_handler: Rc::new(RefCell::new(LinkHandler::new())),
             clipboard_provider,
@@ -1316,6 +1318,7 @@ impl Tab {
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
+        self.selecting_with_mouse_in_pane.remove(&client_id);
         self.forget_host_cursor_state(client_id);
         if was_connected || was_dimmed {
             self.set_client_dimmed(client_id, false);

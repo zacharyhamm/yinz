@@ -112,12 +112,16 @@ impl Tab {
         self.process_pending_vte_events(pid)
             .with_context(|| format!("failed to flush queued output of pane {pid}"))
     }
-    /// Drop the output queue and pending resize of a pane that is no longer in this tab.
-    /// A pane that is still here keeps both.
-    pub(super) fn forget_departed_terminal(&mut self, id: PaneId) {
-        if let PaneId::Terminal(pid) = id
-            && !self.has_pane_with_pid(&id)
-        {
+    /// Drop what this tab kept for a pane that is no longer in it: any client's drag that
+    /// started there, and a terminal's output queue and pending resize. A pane that is still
+    /// here keeps them all.
+    pub(super) fn forget_departed_pane(&mut self, id: PaneId) {
+        if self.has_pane_with_pid(&id) {
+            return;
+        }
+        self.selecting_with_mouse_in_pane
+            .retain(|_, pane_id| *pane_id != id);
+        if let PaneId::Terminal(pid) = id {
             self.pending_vte_events.remove(&pid);
             self.pids_waiting_resize.remove(&pid);
         }

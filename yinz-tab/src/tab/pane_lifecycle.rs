@@ -42,7 +42,7 @@ impl Tab {
         // `ignore_suppressed_panes` marks a same-tab move: the pane comes back and keeps its
         // queued output. Otherwise a closed pane's leftovers would block migration.
         if !ignore_suppressed_panes {
-            self.forget_departed_terminal(id);
+            self.forget_departed_pane(id);
         }
     }
     fn close_pane_inner(
@@ -234,9 +234,10 @@ impl Tab {
                     .collect()
             })
             .unwrap_or_default();
-        for leaving in leaving.into_iter().chain([id]) {
+        let leaving: Vec<PaneId> = leaving.into_iter().chain([id]).collect();
+        for leaving in &leaving {
             if let PaneId::Terminal(pid) = leaving {
-                self.flush_pending_vte_events(pid).non_fatal();
+                self.flush_pending_vte_events(*pid).non_fatal();
             }
         }
         let restoration = self.suppressed_panes.get(&id).map(|pane| pane.restored_by);
@@ -244,6 +245,9 @@ impl Tab {
         if let Some(successor) = restoration {
             self.reconnect_restoration_chain(id, successor);
         }
+        // A drag in a departing pane cannot continue here.
+        self.selecting_with_mouse_in_pane
+            .retain(|_, pane_id| !leaving.contains(pane_id));
         Some(pane)
     }
 
@@ -616,7 +620,7 @@ impl Tab {
                 .any(|container| container.pane_ids().any(|pane| pane == *closing))
             {
                 self.pending_command_respawns.remove(closing);
-                self.forget_departed_terminal(*closing);
+                self.forget_departed_pane(*closing);
                 self.announce_pane_closed(*closing);
             } else {
                 self.close_pane(*closing, false, None);

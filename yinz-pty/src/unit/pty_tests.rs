@@ -124,6 +124,8 @@ struct MockOsApi {
     adopted_command: Arc<Mutex<Option<RunCommand>>>,
     adopted_buffered: Arc<Mutex<Vec<u8>>>,
     migration_owned: Arc<Mutex<std::collections::HashSet<TerminalId>>>,
+    /// Every identity a session migration reserved, in order.
+    migration_reservations: Arc<Mutex<Vec<TerminalId>>>,
 }
 
 impl MockOsApi {
@@ -131,6 +133,7 @@ impl MockOsApi {
         MockOsApi {
             cwds: Arc::new(Mutex::new(HashMap::new())),
             migration_owned: Default::default(),
+            migration_reservations: Default::default(),
             cmds: Arc::new(Mutex::new(HashMap::new())),
             cmds_by_ppid: Arc::new(Mutex::new(HashMap::new())),
             local_signals: Arc::new(Mutex::new(Vec::new())),
@@ -450,6 +453,13 @@ impl TerminalProcesses for MockOsApi {
 impl TerminalSupervision for MockOsApi {
     fn owns_terminal_for_migration(&self, terminal_id: TerminalId) -> Result<bool> {
         Ok(self.migration_owned.lock().unwrap().contains(&terminal_id))
+    }
+    fn reserve_terminal_id_for_migration(&self, terminal_id: TerminalId) -> Result<()> {
+        self.migration_reservations
+            .lock()
+            .unwrap()
+            .push(terminal_id);
+        Ok(())
     }
     fn adopt_terminal(
         &self,
@@ -5550,6 +5560,319 @@ fn migration_reconciles_partial_source_release_without_killing_or_releasing_abse
     assert!(mock.local_signals.lock().unwrap().is_empty());
     assert!(mock.rerun_commands().is_empty());
     assert!(mock.cleared_terminal_ids.lock().unwrap().is_empty());
+}
+
+fn migration_adoption_result(
+    screen: &ScreenReceiver,
+) -> Result<Vec<yinz_bus::pty::AdoptedTabPanes>, String> {
+    loop {
+        let (event, _) = screen
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let ScreenInstruction::SessionMigration(yinz_bus::migration::ScreenRequest::Adopted {
+            result,
+            ..
+        }) = event
+        {
+            break result;
+        }
+    }
+}
+
+fn migration_reconciliation_result(
+    pty: &mut Pty,
+    screen: &ScreenReceiver,
+    operation: &str,
+    path: &std::path::Path,
+) -> Result<Box<yinz_types::session_migration::SessionMigrationSnapshot>, String> {
+    let (reply, _) = crossbeam::channel::bounded(1);
+    pty.session_migration(yinz_bus::migration::PtyRequest::ReconcileSource {
+        operation: operation.to_owned(),
+        path: path.to_owned(),
+        client: CLIENT_1,
+        reply,
+    });
+    loop {
+        let (event, _) = screen
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        if let ScreenInstruction::SessionMigration(
+            yinz_bus::migration::ScreenRequest::SourceReconciled { result, .. },
+        ) = event
+        {
+            break result;
+        }
+    }
+}
+
+fn held_migration_pane(command: &str) -> WarpedPane {
+    WarpedPane {
+        held: Some(yinz_types::data::HeldTerminal {
+            command: RunCommand {
+                command: PathBuf::from(command),
+                ..Default::default()
+            },
+            first_run: true,
+            exit_status: None,
+        }),
+        ..Default::default()
+    }
+}
+
+fn live_migration_pane(id: TerminalId) -> WarpedPane {
+    WarpedPane {
+        control_socket: PathBuf::from(format!("/tmp/migration-{id}.sock")),
+        ..Default::default()
+    }
+}
+
+/// One migrated tab. Its terminal states are listed in `state_order`, which a well-formed
+/// snapshot keeps equal to the order of the terminal slots.
+fn migration_snapshot_with_states(
+    operation: &str,
+    phase: yinz_types::session_migration::MigrationPhase,
+    slots: Vec<PaneId>,
+    payload: WarpedTab,
+    state_order: &[PaneId],
+    ownership: yinz_types::session_migration::MigrationOwnership,
+) -> yinz_types::session_migration::SessionMigrationSnapshot {
+    use yinz_types::session_migration::*;
+    SessionMigrationSnapshot {
+        format: SESSION_MIGRATION_FORMAT,
+        operation: operation.to_owned(),
+        inventory: migration_inventory(),
+        phase,
+        ownership: slots
+            .iter()
+            .filter(|id| matches!(id, PaneId::Terminal(_)))
+            .map(|id| (*id, ownership.clone()))
+            .collect(),
+        tabs: vec![MigrationTab {
+            source_tab_id: TabId::new(0),
+            slots,
+            payload,
+            terminal_states: state_order
+                .iter()
+                .map(|id| (*id, serde_json::Value::Null))
+                .collect(),
+            local_replay: vec![],
+            state: TabState::default(),
+        }],
+        mapping: Default::default(),
+        errors: vec![],
+    }
+}
+
+/// A successful reconciliation lets Screen remove the source panes and readopt the snapshot. One
+/// that lost a terminal's state must be refused before any terminal changes hands, so the source
+/// keeps every terminal and its journal still says so.
+#[test]
+fn migration_identities_refuse_incomplete_source_reconciliation_before_ownership_changes() {
+    use yinz_bus::migration;
+    use yinz_types::session_migration::*;
+    let mock = MockOsApi::new();
+    let ids = [TerminalId::new(1), TerminalId::new(2), TerminalId::new(3)];
+    let owned = std::collections::HashSet::from([ids[0], ids[2]]);
+    mock.migration_owned
+        .lock()
+        .unwrap()
+        .extend(owned.iter().copied());
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+    let operation = uuid::Uuid::new_v4().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("migration.json");
+    let slots: Vec<_> = ids.iter().copied().map(PaneId::Terminal).collect();
+    let mut snapshot = migration_snapshot_with_states(
+        &operation,
+        MigrationPhase::Recovery,
+        slots.clone(),
+        WarpedTab {
+            tiled_panes: ids.iter().copied().map(live_migration_pane).collect(),
+            ..Default::default()
+        },
+        &slots[..2],
+        MigrationOwnership::Uncertain,
+    );
+    snapshot.errors.push("interrupted release".into());
+    migration::save_snapshot(&path, &snapshot).unwrap();
+
+    let error = migration_reconciliation_result(&mut pty, &screen, &operation, &path).unwrap_err();
+    assert!(
+        error.contains(&format!("missing migration state for {}", slots[2])),
+        "{error}"
+    );
+    assert!(mock.release_attempts().is_empty());
+    assert_eq!(*mock.migration_owned.lock().unwrap(), owned);
+    let journal = migration::load_snapshot(&path, &operation).unwrap();
+    assert_eq!(journal.phase, MigrationPhase::Recovery);
+    assert_eq!(journal.errors, snapshot.errors);
+    assert_eq!(journal.ownership, snapshot.ownership);
+}
+
+/// The payload lists terminals tiled then floating, the order of the terminal slots, so the slots
+/// name each payload. Complete states listed in another order must not adopt, record or release a
+/// process under another terminal's identity.
+#[test]
+fn migration_identities_follow_terminal_slots_when_states_are_reordered() {
+    use yinz_bus::migration;
+    use yinz_types::session_migration::*;
+    let ids = [TerminalId::new(1), TerminalId::new(2), TerminalId::new(3)];
+    let terminals: Vec<_> = ids.iter().copied().map(PaneId::Terminal).collect();
+    let reversed: Vec<_> = terminals.iter().rev().copied().collect();
+    // A plugin slot between the terminals has no payload and no state.
+    let slots = vec![
+        terminals[0],
+        PaneId::Plugin(yinz_types::internal_ids::PluginId::new(5)),
+        terminals[1],
+        terminals[2],
+    ];
+
+    let mock = MockOsApi::new();
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+    let operation = uuid::Uuid::new_v4().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("migration.json");
+    let snapshot = migration_snapshot_with_states(
+        &operation,
+        MigrationPhase::Released,
+        slots.clone(),
+        WarpedTab {
+            tiled_panes: vec![
+                held_migration_pane("command-1"),
+                held_migration_pane("command-2"),
+            ],
+            floating_panes: vec![held_migration_pane("command-3")],
+            ..Default::default()
+        },
+        &reversed,
+        MigrationOwnership::Released,
+    );
+    let (reply, _) = crossbeam::channel::bounded(1);
+    pty.session_migration(yinz_bus::migration::PtyRequest::Adopt {
+        snapshot: Box::new(snapshot),
+        client: CLIENT_1,
+        path: path.clone(),
+        reply,
+    });
+    let adopted = migration_adoption_result(&screen).unwrap();
+    let placed: Vec<_> = adopted[0]
+        .tiled
+        .iter()
+        .chain(&adopted[0].floating)
+        .map(|pane| (pane.terminal_id, pane.cmd.command.clone()))
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            (ids[0], PathBuf::from("command-1")),
+            (ids[1], PathBuf::from("command-2")),
+            (ids[2], PathBuf::from("command-3")),
+        ]
+    );
+    assert_eq!(*mock.migration_reservations.lock().unwrap(), ids);
+    assert_eq!(
+        migration::load_snapshot(&path, &operation)
+            .unwrap()
+            .ownership,
+        ids.iter()
+            .map(|id| (
+                PaneId::Terminal(*id),
+                MigrationOwnership::Destination { terminal_id: *id }
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    // The source releases by the same pairing: the held first slot owns no process, and both
+    // live terminals are released even though the reversed states put terminal 3 first.
+    let mock = MockOsApi::new();
+    mock.migration_owned
+        .lock()
+        .unwrap()
+        .extend([ids[1], ids[2]]);
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+    let path = directory.path().join("source.json");
+    let snapshot = migration_snapshot_with_states(
+        &operation,
+        MigrationPhase::Recovery,
+        terminals.clone(),
+        WarpedTab {
+            tiled_panes: vec![
+                held_migration_pane("command-1"),
+                live_migration_pane(ids[1]),
+                live_migration_pane(ids[2]),
+            ],
+            ..Default::default()
+        },
+        &reversed,
+        MigrationOwnership::Uncertain,
+    );
+    migration::save_snapshot(&path, &snapshot).unwrap();
+    let reconciled = migration_reconciliation_result(&mut pty, &screen, &operation, &path).unwrap();
+    assert_eq!(mock.release_attempts(), [ids[1], ids[2]]);
+    assert!(mock.migration_owned.lock().unwrap().is_empty());
+    assert_eq!(reconciled.phase, MigrationPhase::Released);
+    assert_eq!(
+        reconciled.ownership,
+        terminals
+            .iter()
+            .map(|id| (*id, MigrationOwnership::Released))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A state with no terminal slot, or a slot with two states, leaves the pairing ambiguous. The
+/// destination refuses before reserving an identity or recording any ownership change.
+#[test]
+fn migration_identities_refuse_mismatched_state_keys_before_adoption() {
+    use yinz_bus::migration;
+    use yinz_types::session_migration::*;
+    let ids = [TerminalId::new(1), TerminalId::new(2)];
+    let terminals: Vec<_> = ids.iter().copied().map(PaneId::Terminal).collect();
+    let stray = PaneId::Terminal(TerminalId::new(9));
+    for (states, expected) in [
+        (
+            vec![terminals[0], terminals[1], stray],
+            format!("migration state for {stray} has no terminal slot"),
+        ),
+        (
+            vec![terminals[0], terminals[0], terminals[1]],
+            format!("duplicate migration state for {}", terminals[0]),
+        ),
+    ] {
+        let mock = MockOsApi::new();
+        let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+        let operation = uuid::Uuid::new_v4().to_string();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("migration.json");
+        let snapshot = migration_snapshot_with_states(
+            &operation,
+            MigrationPhase::Released,
+            terminals.clone(),
+            WarpedTab {
+                tiled_panes: vec![
+                    held_migration_pane("command-1"),
+                    held_migration_pane("command-2"),
+                ],
+                ..Default::default()
+            },
+            &states,
+            MigrationOwnership::Released,
+        );
+        let ownership = snapshot.ownership.clone();
+        let (reply, _) = crossbeam::channel::bounded(1);
+        pty.session_migration(yinz_bus::migration::PtyRequest::Adopt {
+            snapshot: Box::new(snapshot),
+            client: CLIENT_1,
+            path: path.clone(),
+            reply,
+        });
+        assert_eq!(migration_adoption_result(&screen).unwrap_err(), expected);
+        assert!(mock.migration_reservations.lock().unwrap().is_empty());
+        let journal = migration::load_snapshot(&path, &operation).unwrap();
+        assert_eq!(journal.errors, [expected]);
+        assert_eq!(journal.phase, MigrationPhase::Recovery);
+        assert_eq!(journal.ownership, ownership);
+    }
 }
 
 fn warp_snapshot_fixture() -> String {

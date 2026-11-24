@@ -124,6 +124,9 @@ impl Tab {
         }
     }
 
+    /// Queued output is fed only once the viewport is back at the bottom. One reset moves a
+    /// bounded number of rows, so deeply wrapped history can need more than one call; parsing
+    /// the queue before then would draw into the scrolled viewport and consume it.
     pub fn clear_terminal_scroll(&mut self, pane_id: PaneId) -> Result<bool> {
         let err_context = || format!("failed to clear scroll in pane {pane_id}");
 
@@ -132,7 +135,9 @@ impl Tab {
         };
         let was_scrolled = terminal.is_scrolled();
         terminal.clear_scroll();
-        if let PaneId::Terminal(pid) = pane_id {
+        if !terminal.is_scrolled()
+            && let PaneId::Terminal(pid) = pane_id
+        {
             self.process_pending_vte_events(pid)
                 .with_context(err_context)?;
         }

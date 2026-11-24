@@ -11,8 +11,55 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::{data::HeldTerminal, internal_ids::TerminalId};
 use yinz_types::{
     pane_id::PaneId,
-    session_migration::{MigrationOwnership, MigrationPhase},
+    session_migration::{MigrationOwnership, MigrationPhase, MigrationTab},
 };
+
+/// The source identity of each terminal payload of a migrated tab, in payload order.
+///
+/// A tab's payload lists its terminals tiled then floating, the order its terminal slots have in
+/// the layout, so the slots name them. Every terminal slot needs exactly one saved state and every
+/// state a terminal slot. This pairing decides which process is released or adopted under which
+/// identity, which ownership record changes and whose output is replayed, so both sides settle it
+/// before changing ownership: a damaged snapshot is refused instead of handing one terminal's
+/// identity to another, or leaving one out.
+fn migration_terminal_identities(tab: &MigrationTab) -> Result<Vec<TerminalId>> {
+    let identities: Vec<TerminalId> = tab
+        .slots
+        .iter()
+        .filter_map(|slot| match slot {
+            PaneId::Terminal(id) => Some(*id),
+            PaneId::Plugin(_) => None,
+        })
+        .collect();
+    for (index, id) in identities.iter().enumerate() {
+        let source = PaneId::Terminal(*id);
+        anyhow::ensure!(
+            !identities[..index].contains(id),
+            "duplicate migration slot for {source}"
+        );
+        let states = tab
+            .terminal_states
+            .iter()
+            .filter(|(state_id, _)| *state_id == source)
+            .count();
+        anyhow::ensure!(states > 0, "missing migration state for {source}");
+        anyhow::ensure!(states == 1, "duplicate migration state for {source}");
+    }
+    if let Some((id, _)) = tab
+        .terminal_states
+        .iter()
+        .find(|(id, _)| !matches!(id, PaneId::Terminal(terminal) if identities.contains(terminal)))
+    {
+        return Err(anyhow!("migration state for {id} has no terminal slot"));
+    }
+    let payloads = tab.payload.tiled_panes.len() + tab.payload.floating_panes.len();
+    anyhow::ensure!(
+        identities.len() == payloads,
+        "migration terminal identity count changed: {} terminal slots for {payloads} terminal payloads",
+        identities.len()
+    );
+    Ok(identities)
+}
 
 impl Pty {
     fn preflight_migration(
@@ -298,12 +345,23 @@ impl Pty {
             } => {
                 let result = (|| -> Result<_> {
                     let mut snapshot = yinz_bus::migration::load_snapshot(&path, &operation)?;
-                    let terminals: Vec<_> = snapshot.tabs.iter().flat_map(|tab| {
-                        tab.terminal_states.iter().zip(tab.payload.tiled_panes.iter().chain(&tab.payload.floating_panes))
-                            .map(|((id,_),pane)|(*id,pane.held.is_some()))
-                    }).collect();
-                    for (pane, held) in terminals {
-                        let PaneId::Terminal(id) = pane else { return Err(anyhow!("nonterminal source recovery address")); };
+                    // Every terminal is accounted for before any ownership changes: success lets
+                    // Screen remove the source panes, so an omitted terminal would be lost.
+                    let mut terminals = Vec::new();
+                    for tab in &snapshot.tabs {
+                        let identities = migration_terminal_identities(tab)
+                            .context("refuse source reconciliation before changing ownership")?;
+                        let payloads =
+                            tab.payload.tiled_panes.iter().chain(&tab.payload.floating_panes);
+                        terminals.extend(
+                            identities
+                                .into_iter()
+                                .zip(payloads)
+                                .map(|(id, pane)| (id, pane.held.is_some())),
+                        );
+                    }
+                    for (id, held) in terminals {
+                        let pane = PaneId::Terminal(id);
                         let owned = !held && self.bus.os_input.as_ref().context("missing source recovery backend")?
                             .owns_terminal_for_migration(id).context("inspect source terminal ownership")?;
                         if owned {
@@ -419,31 +477,27 @@ impl Pty {
                 let mut adopted = Vec::new();
                 let mut ownership = Vec::new();
                 let result: Result<Vec<AdoptedTabPanes>> = (|| {
-                    // Check every source identity before adopting even the first terminal.
-                    for tab in &snapshot.tabs {
-                        if let Some(id) = tab.slots.iter().find(|id| {
-                            matches!(id, PaneId::Terminal(_))
-                                && !tab.terminal_states.iter().any(|(source, _)| source == *id)
-                        }) {
-                            let error = format!("missing migration state for {id}");
+                    // Pair every source identity before adopting even the first terminal.
+                    let identities = match snapshot
+                        .tabs
+                        .iter()
+                        .map(migration_terminal_identities)
+                        .collect::<Result<Vec<_>>>()
+                    {
+                        Ok(identities) => identities,
+                        Err(error) => {
+                            let error = format!("{error:#}");
                             snapshot.errors.push(error.clone());
                             return Err(anyhow!(error));
-                        }
-                        anyhow::ensure!(
-                            tab.terminal_states.len()
-                                == tab.payload.tiled_panes.len() + tab.payload.floating_panes.len(),
-                            "migration terminal identity count changed"
-                        );
-                    }
-                    for tab_index in 0..snapshot.tabs.len() {
+                        },
+                    };
+                    for (tab_index, identities) in identities.into_iter().enumerate() {
                         let tab = &snapshot.tabs[tab_index];
                         let sources = [
                             tab.payload.tiled_panes.clone(),
                             tab.payload.floating_panes.clone(),
                         ];
-                        let source_ids: Vec<_> =
-                            tab.terminal_states.iter().map(|(id, _)| *id).collect();
-                        let mut source_ids = source_ids.into_iter();
+                        let mut source_ids = identities.into_iter();
                         let mut panes = AdoptedTabPanes {
                             tiled: vec![],
                             floating: vec![],
@@ -452,15 +506,13 @@ impl Pty {
                             sources.iter().zip([&mut panes.tiled, &mut panes.floating])
                         {
                             for source in sources {
-                                let source_id = source_ids
+                                let requested = source_ids
                                     .next()
                                     .context("missing migration terminal identity")?;
+                                let source_id = PaneId::Terminal(requested);
                                 snapshot.record_ownership(source_id, MigrationOwnership::Adopting);
                                 yinz_bus::migration::save_snapshot(&path, &snapshot)
                                     .context("record pending destination adoption")?;
-                                let PaneId::Terminal(requested) = source_id else {
-                                    return Err(anyhow!("migration source slot is not a terminal"));
-                                };
                                 let mut pane = self
                                     .adopt_terminal_with_id(source, Some(requested))
                                     .context("adopt session terminal")?;

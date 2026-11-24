@@ -626,7 +626,7 @@ impl MouseHandler {
             active_pane_id,
             floating_visible,
             pane_being_resized: tab.pane_being_resized_with_mouse.is_some(),
-            selecting_with_mouse: tab.selecting_with_mouse_in_pane.is_some(),
+            selecting_with_mouse: tab.selecting_with_mouse_in_pane.contains_key(&client_id),
             seam_being_dragged: tab.overlay_panes.seam_is_being_dragged(),
             pane_being_moved: if tab.overlay_panes.pane_is_being_moved_with_mouse() {
                 Some(MouseDragTarget::Overlay)
@@ -1056,7 +1056,7 @@ impl MouseHandler {
                     leave_clipboard_message = true;
                 }
                 if drag_should_be_tracked(&**pane) {
-                    tab.selecting_with_mouse_in_pane = Some(pane_id);
+                    tab.selecting_with_mouse_in_pane.insert(client_id, pane_id);
                 }
                 if leave_clipboard_message {
                     Ok(MouseEffect::state_changed_and_leave_clipboard_message())
@@ -1065,7 +1065,8 @@ impl MouseHandler {
                 }
             },
             MouseAction::UpdateSelection { position } => {
-                if let Some(pane_id_with_selection) = tab.selecting_with_mouse_in_pane
+                if let Some(pane_id_with_selection) =
+                    tab.selecting_with_mouse_in_pane.get(&client_id).copied()
                     && let Some(pane_with_selection) =
                         tab.get_pane_with_id_mut(pane_id_with_selection)
                 {
@@ -1412,7 +1413,8 @@ impl MouseHandler {
                     client_id,
                 );
                 if drag_should_be_tracked(&**pane) {
-                    tab.selecting_with_mouse_in_pane = Some(active_pane_id);
+                    tab.selecting_with_mouse_in_pane
+                        .insert(client_id, active_pane_id);
                 }
             }
         }
@@ -1429,8 +1431,11 @@ impl MouseHandler {
         let mut leave_clipboard_message = false;
         let copy_on_release = tab.copy_on_select;
 
+        // The release ends this client's gesture whatever became of its pane, or a pane that
+        // went away mid-drag would leave every later press in the tab swallowed.
         if let Some(pane_with_selection) = tab
             .selecting_with_mouse_in_pane
+            .remove(&client_id)
             .and_then(|p_id| tab.get_pane_with_id_mut(p_id))
         {
             let mut relative_position = pane_with_selection.relative_position(&position);
@@ -1470,7 +1475,6 @@ impl MouseHandler {
                             .with_context(err_context)?;
                     }
                 }
-                tab.selecting_with_mouse_in_pane = None;
             }
         }
 

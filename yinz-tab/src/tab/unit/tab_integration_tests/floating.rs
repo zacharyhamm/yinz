@@ -1917,7 +1917,7 @@ fn mark_text_inside_floating_pane() {
     )
     .unwrap();
     assert!(
-        tab.selecting_with_mouse_in_pane.is_some(),
+        tab.selecting_with_mouse_in_pane.contains_key(&client_id),
         "started selecting with mouse on click"
     );
     tab.handle_mouse_event(
@@ -1926,7 +1926,7 @@ fn mark_text_inside_floating_pane() {
     )
     .unwrap();
     assert!(
-        tab.selecting_with_mouse_in_pane.is_none(),
+        tab.selecting_with_mouse_in_pane.is_empty(),
         "stopped selecting with mouse on release"
     );
     tab.render(&mut output, None).unwrap();

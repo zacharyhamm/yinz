@@ -897,7 +897,7 @@ fn mouse_click_through_starts_selection_on_non_mouse_mode_pane() {
 
     // Selection should have started
     assert_eq!(
-        tab.selecting_with_mouse_in_pane,
+        tab.selecting_with_mouse_in_pane.get(&client_id).copied(),
         Some(PaneId::Terminal(crate::TerminalId::new(1))),
         "Expected text selection to start on the newly focused pane"
     );
