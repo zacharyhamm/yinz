@@ -30,8 +30,10 @@ pub struct NativeRenderState {
     last_transfer_id: u64,
     /// The last frame that carried chunk bytes, or ran out of allowance for them. New
     /// chunk bytes wait until the client acknowledges it, unless a whole transfer fits
-    /// what remains of the frame's allowance.
+    /// what remains of the frame's allowance and the whole-transfer allowance.
     chunk_frame: Option<u64>,
+    /// Chunk bytes per frame the client has not acknowledged, in frame order.
+    unacked_chunks: Vec<(u64, usize)>,
     /// An unstarted transfer returned its lease without an ACK-keyed entry. The next
     /// accepted ACK retries deferred panes as if it had released media.
     released_unretained: bool,
@@ -155,6 +157,7 @@ impl NativeRenderState {
                 self.media.push((high, Retained::Lease(transfer.lease)));
             }
         }
+        self.unacked_chunks.retain(|(seq, _)| *seq <= high);
         self.chunk_frame = None;
         self.deferred_panes.clear();
         self.released_unretained = false;
@@ -175,7 +178,22 @@ impl NativeRenderState {
 
     /// Start a new frame's media allowance.
     fn begin_frame(&mut self) {
-        self.frame_media_left = self.frame_media.unwrap_or(PORTABLE_FRAME_MEDIA_BYTES);
+        self.frame_media_left = self.frame_allowance();
+    }
+
+    fn frame_allowance(&self) -> usize {
+        self.frame_media.unwrap_or(PORTABLE_FRAME_MEDIA_BYTES)
+    }
+
+    /// Un-ACKed chunk bytes outside the chunk window's frame, which whole transfers sent
+    /// past a closed window may raise to one frame allowance. With the window's own frame,
+    /// at most two allowances of chunk bytes wait in the writer queue.
+    fn unacked_whole_bytes(&self) -> usize {
+        self.unacked_chunks
+            .iter()
+            .filter(|(seq, _)| Some(*seq) != self.chunk_frame)
+            .map(|(_, len)| len)
+            .sum()
     }
 
     /// Reserve `len` bytes, or report the refusal once per overload episode and return
@@ -284,11 +302,16 @@ impl NativeRenderState {
             .chunk_frame
             .is_none_or(|frame| frame <= self.acknowledged || frame == self.seq);
         // An unstarted transfer that fits what remains of this frame's allowance starts
-        // and completes here, so it is bounded like an inline image and need not wait for
-        // the window. A replacement then arrives in the frame that deletes the image it
-        // replaces, instead of leaving the position blank for a round trip.
+        // and completes here without waiting for the window, while un-ACKed whole
+        // transfers stay within one more allowance. A replacement then arrives in the
+        // frame that deletes the image it replaces, instead of leaving the position blank
+        // for a round trip. Past that allowance it waits for the window's ACK, so a viewer
+        // that falls behind its tab's other recipients cannot fill its writer queue.
         let transfer = &self.transfers[index];
-        let whole = transfer.sent == 0 && transfer.rgba.len() <= self.frame_media_left;
+        let len = transfer.rgba.len();
+        let whole = transfer.sent == 0
+            && len <= self.frame_media_left
+            && self.unacked_whole_bytes() + len <= self.frame_allowance();
         if !window_open && !whole {
             return None;
         }
@@ -313,6 +336,10 @@ impl NativeRenderState {
         });
         transfer.sent += len;
         self.frame_media_left -= len;
+        match self.unacked_chunks.last_mut() {
+            Some((seq, bytes)) if *seq == self.seq => *bytes += len,
+            _ => self.unacked_chunks.push((self.seq, len)),
+        }
         if window_open {
             // A whole transfer sent past a closed window leaves the window as it was.
             self.chunk_frame = Some(self.seq);
@@ -424,6 +451,8 @@ impl NativeRenderState {
             && self
                 .chunk_frame
                 .is_some_and(|frame| previous < frame && frame <= self.acknowledged);
+        self.unacked_chunks
+            .retain(|(frame, _)| *frame > self.acknowledged);
         let retained = self.media.len();
         self.media.retain(|(frame, _)| *frame > self.acknowledged);
         let released = self.media.len() < retained;

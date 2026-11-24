@@ -1233,6 +1233,67 @@ mod budget {
     }
 
     #[test]
+    fn render_negotiation_portable_whole_replacements_without_acks_stay_within_two_allowances() {
+        use yinz_runtime::native_media::{
+            PORTABLE_FRAME_HEADROOM_BYTES, PORTABLE_FRAME_MEDIA_BYTES, VIEWER_MEDIA_BYTES,
+        };
+        // Mirrors SEND_QUEUE_RENDER_BYTE_CAPACITY in yinz-server-os.
+        const WRITER_RENDER_BYTES: usize = 64 * 1024 * 1024;
+        const SIDE: u32 = 1024;
+        const BYTES: usize = (SIDE * SIDE * 4) as usize;
+        // Each replacement fits a frame, and the budget alone would admit more un-ACKed
+        // replacements than the writer queue holds.
+        const { assert!(BYTES <= PORTABLE_FRAME_MEDIA_BYTES) };
+        const { assert!(VIEWER_MEDIA_BYTES / BYTES * BYTES > WRITER_RENDER_BYTES) };
+        let budget = MediaBudget::viewer();
+        let (mut scene, viewer) = portable_scene(budget.clone(), PORTABLE_FRAME_MEDIA_BYTES);
+        scene.states.get_mut(&viewer).unwrap().frame_media = None;
+        let mut image = scene.store(SIDE, 1);
+        // A viewer behind its tab's other recipients keeps receiving frames without
+        // ACKing any of them.
+        let mut queued = 0;
+        let mut carried = Vec::new();
+        for shade in 1..=20u8 {
+            if shade > 1 {
+                image = scene.replace(image, SIDE, shade);
+            }
+            let frame = scene.render_one(viewer, pane(1), &[(image, 1, SIDE)]);
+            queued += frame.media;
+            carried.push(frame.transfers.len());
+            assert!(
+                queued <= 2 * PORTABLE_FRAME_MEDIA_BYTES,
+                "replacement {shade}: {queued} un-ACKed media bytes"
+            );
+        }
+        const {
+            assert!(
+                2 * PORTABLE_FRAME_MEDIA_BYTES + PORTABLE_FRAME_HEADROOM_BYTES
+                    <= WRITER_RENDER_BYTES
+            )
+        };
+        // The window's frame, then whole replacements up to one more allowance.
+        let mut expected = vec![0; 20];
+        expected[..3].fill(1);
+        assert_eq!(carried, expected);
+        assert_eq!(queued, 3 * BYTES);
+        // Three completed leases and the latest pending replacement; stale ones were dropped.
+        assert_eq!(budget.usage().entries, 4);
+        assert!(scene.wire[&viewer].visible().is_empty());
+        // The window's ACK retries the pane, and the latest image arrives whole.
+        assert!(scene.ack(viewer, 1).contains(&pane(1)));
+        let frame = scene.render_one(viewer, pane(1), &[(image, 1, SIDE)]);
+        assert_eq!(
+            (frame.transfers.len(), frame.placements),
+            (1, 1),
+            "{frame:?}"
+        );
+        assert_eq!(frame.media, BYTES);
+        assert_eq!(scene.wire[&viewer].visible(), [20]);
+        assert!(scene.ack_last(viewer).is_empty());
+        assert_eq!(budget.usage(), MediaUsage::default());
+    }
+
+    #[test]
     fn render_negotiation_portable_unstarted_abandonment_retries_deferred_panes() {
         let small = 64 * 64 * 4;
         let budget = MediaBudget::new(32, IMAGE);

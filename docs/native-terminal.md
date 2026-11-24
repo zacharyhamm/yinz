@@ -987,11 +987,16 @@ sends new chunk bytes only after the viewer ACKs the last frame that carried
 chunks, or that ran out of allowance for them. At most one such frame is
 unacknowledged. Throughput for those transfers is about 8 MiB per round trip.
 A transfer that fits what remains of the frame's allowance is sent whole in
-that frame without waiting, like an inline image. A program that redraws an
-image of up to 8 MiB faster than the round trip therefore sees each
-replacement arrive in the frame that deletes the image it replaces, without
-a blank gap. Each such frame stays within the 8 MiB allowance, and its lease
-counts against the viewer's budget until its ACK. A placement whose transfer
+that frame without waiting, as long as whole transfers in unacknowledged frames
+stay within one more 8 MiB allowance. A program that redraws an image of up to
+8 MiB faster than the round trip therefore sees replacements arrive in the
+frame that deletes the image they replace, without a blank gap, until that
+allowance is spent. Later replacements wait for the ACK of the last chunk
+frame, like a transfer that spans frames, and their position stays empty
+meanwhile. Each lease counts against the viewer's budget until its frame's
+ACK. Unacknowledged chunk bytes therefore stay within two allowances, well
+below the writer's 64 MiB limit, even for a viewer that falls behind other
+viewers of its tab. A placement whose transfer
 is incomplete is withheld like a deferred one, without a warning, and the ACK
 that opens the window re-renders its pane. A larger replacement leaves its
 position empty until its last chunk arrives. The frame that
