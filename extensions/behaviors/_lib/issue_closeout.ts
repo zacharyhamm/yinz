@@ -423,7 +423,12 @@ export async function closeout(
   const state = await loadState(context);
   await validate(context, state, deps);
   if (!state.closeout || state.closeout.decision === "invalidated") {
-    if (args.decision && (args.handoffId || !args.request)) {
+    if (args.decision && !args.request) {
+      throw new Error(
+        "Closeout consent requires the actual user request",
+      );
+    }
+    if (args.decision && args.handoffId) {
       throw new Error(
         "No current closeout offer: omit handoffId and pass the user's request to offer and decide in one call",
       );

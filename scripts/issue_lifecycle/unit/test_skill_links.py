@@ -35,7 +35,8 @@ OMIT_HANDOFF = [
     re.compile(r"\b(fills|fill in|fills in|infers|derives)\s+" + HANDOFF, re.IGNORECASE),
     re.compile(r"revisionApproval:\s*\{\s*request\s*\}"),
 ]
-CLOSEOUT = re.compile(r"\bcloseout\b", re.IGNORECASE)
+# resume-closeout is not the closeout decision, so it gets no exemption.
+CLOSEOUT = re.compile(r"(?<![-\w])closeout\b", re.IGNORECASE)
 # Other commands whose handoff stays mandatory; a closeout sentence naming one is not exempt.
 OTHER_HANDOFF_COMMANDS = re.compile(r"\b(approve|adjudicate-plan|decide-review|approve-review-fixes|ready|drive)\b",
                                     re.IGNORECASE)

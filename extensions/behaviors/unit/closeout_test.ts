@@ -334,6 +334,20 @@ Deno.test("closeout cleanup request answers a current offer without its handoffI
   equal(h.state().closeout?.pane, "closed");
 });
 
+Deno.test("closeout one-call cleanup waits for the recorded completion", async () => {
+  const h = fixture();
+  // Agenda was completed but the `done` save was lost.
+  const { outcome: _outcome, ...merged } = h.state();
+  h.resources.set("state", { ...merged, phase: "merged" });
+  await rejects(
+    () =>
+      closeout(h.context, { decision: "accept", request: "cleanup" }, h.deps),
+    "recorded outcome",
+  );
+  assert(!h.state().closeout);
+  assert(!h.events.some((e) => e.startsWith("effect:")));
+});
+
 Deno.test("closeout one-call cleanup still refuses a dirty worktree", async () => {
   const h = fixture();
   h.failGit(true);
