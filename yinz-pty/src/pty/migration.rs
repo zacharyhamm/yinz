@@ -419,6 +419,22 @@ impl Pty {
                 let mut adopted = Vec::new();
                 let mut ownership = Vec::new();
                 let result: Result<Vec<AdoptedTabPanes>> = (|| {
+                    // Check every source identity before adopting even the first terminal.
+                    for tab in &snapshot.tabs {
+                        if let Some(id) = tab.slots.iter().find(|id| {
+                            matches!(id, PaneId::Terminal(_))
+                                && !tab.terminal_states.iter().any(|(source, _)| source == *id)
+                        }) {
+                            let error = format!("missing migration state for {id}");
+                            snapshot.errors.push(error.clone());
+                            return Err(anyhow!(error));
+                        }
+                        anyhow::ensure!(
+                            tab.terminal_states.len()
+                                == tab.payload.tiled_panes.len() + tab.payload.floating_panes.len(),
+                            "migration terminal identity count changed"
+                        );
+                    }
                     for tab_index in 0..snapshot.tabs.len() {
                         let tab = &snapshot.tabs[tab_index];
                         let sources = [
@@ -427,10 +443,6 @@ impl Pty {
                         ];
                         let source_ids: Vec<_> =
                             tab.terminal_states.iter().map(|(id, _)| *id).collect();
-                        anyhow::ensure!(
-                            source_ids.len() == sources.iter().map(Vec::len).sum::<usize>(),
-                            "migration terminal identity count changed"
-                        );
                         let mut source_ids = source_ids.into_iter();
                         let mut panes = AdoptedTabPanes {
                             tiled: vec![],

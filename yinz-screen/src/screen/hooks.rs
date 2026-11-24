@@ -95,7 +95,7 @@ impl Screen {
         if let Some(cwd) = tab.and_then(|tab| tab.pane_last_agent_cwd(pane_id)) {
             payload.insert("agent_cwd".to_owned(), cwd);
         }
-        if let Some(session_id) = pane.and_then(|pane| pane.last_agent_session_id()) {
+        if let Some(session_id) = pane.and_then(|pane| pane.terminal()?.last_agent_session_id()) {
             payload.insert("agent_session_id".to_owned(), session_id.to_owned());
         }
         payload.insert("agent_command".to_owned(), run_command.to_string());

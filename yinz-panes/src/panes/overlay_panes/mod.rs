@@ -1685,7 +1685,9 @@ impl OverlayPanes {
     ) {
         self.style.agent_theme_mapping = mapping;
         for pane in self.get_panes_mut().map(|(_, pane)| pane) {
-            pane.update_agent_theme_mapping(mapping);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_agent_theme_mapping(mapping);
+            }
         }
     }
     pub fn update_application_baseline(
@@ -1694,13 +1696,17 @@ impl OverlayPanes {
     ) {
         self.style.application = baseline;
         for (_, pane) in self.get_panes_mut() {
-            pane.update_application_baseline(baseline);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_application_baseline(baseline);
+            }
         }
     }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for (_, pane) in self.get_panes_mut() {
-            pane.update_terminal_theme(theme);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_terminal_theme(theme);
+            }
         }
     }
     pub fn update_pane_themes(&mut self, theme: Styling) {
@@ -1721,7 +1727,9 @@ impl OverlayPanes {
     }
     pub fn update_pane_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
         for (_, pane) in self.get_panes_mut() {
-            pane.update_kitty_keyboard_protocol_disabled(disabled);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_kitty_keyboard_protocol_disabled(disabled);
+            }
         }
     }
     pub fn set_session_is_mirrored(&mut self, session_is_mirrored: bool) {
@@ -1734,7 +1742,9 @@ impl OverlayPanes {
     }
     pub fn update_pane_sixel_host_support(&mut self, supported: bool) {
         for (_, pane) in self.get_panes_mut() {
-            pane.update_sixel_host_support(supported);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_sixel_host_support(supported);
+            }
         }
     }
     pub fn update_pane_rounded_corners(&mut self, rounded_corners: bool) {
@@ -1754,7 +1764,6 @@ impl OverlayPanes {
     pub fn set_force_render(&mut self) {
         for (_, pane) in self.get_panes_mut() {
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
     }
@@ -1765,7 +1774,6 @@ impl OverlayPanes {
                 continue;
             }
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
     }
@@ -1823,7 +1831,7 @@ impl OverlayPanes {
                         Offset::default()
                     },
                 );
-                pane.set_frame(framed && split.is_none());
+                pane.invalidate_all_frames();
                 let current = pane.current_geom();
                 if current.cols.as_usize() > 0 && current.rows.as_usize() > 0 {
                     let result = resize_pty!(pane, os_api, self.senders, self.character_cell_size)
@@ -1981,7 +1989,9 @@ impl OverlayPanes {
                 let geom = pane.current_geom();
                 let has_content = geom.cols.as_usize() > 0 && geom.rows.as_usize() > 0;
                 let pane_is_selectable = pane.selectable();
-                let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
+                let pane_has_guest_modal = pane
+                    .terminal()
+                    .is_some_and(|term| term.has_guest_modal_for_any_client());
                 let z_index = Some(z_index_offset + index + 1);
                 let is_resizable =
                     !matches!(kind, OverlayKind::Modal) && !fullscreen.contains(&pane_id);

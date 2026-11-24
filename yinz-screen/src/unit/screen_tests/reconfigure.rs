@@ -118,8 +118,10 @@ fn active_pane_replies(screen: &mut Screen, bytes: &[u8]) -> Vec<Vec<u8>> {
         .unwrap()
         .get_active_pane_mut(client_id)
         .unwrap();
-    pane.handle_pty_bytes(bytes.to_vec());
-    pane.terminal_io_mut().unwrap().drain_messages_to_pty()
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(bytes.to_vec());
+    pane.terminal_mut().unwrap().drain_messages_to_pty()
 }
 
 /// The forcing function: a field added to `ScreenConfig` has to be destructured here and
@@ -364,7 +366,7 @@ fn a_reload_that_turns_the_kitty_keyboard_protocol_off_reaches_an_open_pane() {
         .unwrap();
     let key = yinz_types::keys::KeyWithModifier::new(yinz_types::keys::BareKey::Enter);
     assert!(matches!(
-        pane.adjust_input_to_terminal(&Some(key), vec![b'\r'], false, Some(client_id)),
+        pane.terminal_mut().unwrap().adjust_input_to_terminal(&Some(key), vec![b'\r'], false, Some(client_id)),
         Some(crate::tab::AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"\r"
     ));
 }

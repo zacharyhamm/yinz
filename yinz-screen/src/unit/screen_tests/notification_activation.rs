@@ -213,9 +213,11 @@ fn notification_return_cross_tab_publishes_final_scroll_mode() {
                     .unwrap()
                     .get_pane_with_id_mut(pane_id)
                     .unwrap();
-                pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
+                pane.terminal_mut()
+                    .unwrap()
+                    .handle_pty_bytes(b"scrollback\r\n".repeat(100));
                 if scrolled {
-                    pane.scroll_up(5, Some(client));
+                    pane.terminal_mut().unwrap().scroll_up(5);
                 }
             }
             screen.change_mode(initial_mode, None, client).unwrap();

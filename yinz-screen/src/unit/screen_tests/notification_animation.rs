@@ -467,6 +467,8 @@ fn notification_movement_and_expiry_repaint_an_agent_margin() {
     let id = tab.get_active_pane_id(client).unwrap();
     tab.get_pane_with_id_mut(id)
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .set_detected_agent(true);
     screen.core.pinned_now = Some(start);
     let receiver = screen_wired_to_server(&mut screen);

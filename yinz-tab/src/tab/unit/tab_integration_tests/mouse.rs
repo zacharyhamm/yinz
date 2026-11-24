@@ -172,6 +172,17 @@ fn plugin_wheel_receives_its_relative_position_before_each_scroll() {
         tab.handle_scrollwheel_up(&point, 3, client_id).unwrap();
         tab.handle_scrollwheel_down(&next_point, 2, client_id)
             .unwrap();
+        for right in [false, true] {
+            tab.handle_mouse_event(
+                &MouseEvent {
+                    wheel_left: !right,
+                    wheel_right: right,
+                    ..MouseEvent::new_buttonless_motion(point)
+                },
+                client_id,
+            )
+            .unwrap();
+        }
         assert_eq!(tab.get_active_pane_id(client_id), focused);
         let events: Vec<_> = receiver
             .try_iter()
@@ -191,6 +202,8 @@ fn plugin_wheel_receives_its_relative_position_before_each_scroll() {
                 (Some(plugin_id), Some(client_id), Mouse::ScrollUp(3)),
                 (Some(plugin_id), Some(client_id), Mouse::Hover(3, 4)),
                 (Some(plugin_id), Some(client_id), Mouse::ScrollDown(2)),
+                (Some(plugin_id), Some(client_id), Mouse::ScrollLeft(4)),
+                (Some(plugin_id), Some(client_id), Mouse::ScrollRight(4)),
             ],
             "overlay={overlay}"
         );
@@ -1894,7 +1907,7 @@ fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts(
         );
         assert!(
             !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
-                .map(|pane| pane.is_scrolled())
+                .map(|pane| pane.terminal().unwrap().is_scrolled())
                 .unwrap_or(false),
             "a forwarded alt wheel must not also scroll the host pane"
         );
@@ -1914,7 +1927,7 @@ fn alt_wheel_jumps_between_prompts_of_the_pane_below_the_cursor() {
 
     let pane_is_scrolled = |tab: &Tab| {
         tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
-            .map(|pane| pane.is_scrolled())
+            .map(|pane| pane.terminal().unwrap().is_scrolled())
             .unwrap_or(false)
     };
     assert!(!pane_is_scrolled(&tab));
@@ -1960,7 +1973,7 @@ fn alt_wheel_is_swallowed_when_advanced_mouse_actions_are_disabled() {
 
     assert!(
         !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
-            .map(|pane| pane.is_scrolled())
+            .map(|pane| pane.terminal().unwrap().is_scrolled())
             .unwrap_or(false),
         "alt wheel must be swallowed when advanced mouse actions are disabled"
     );
@@ -3765,4 +3778,292 @@ fn clipboard_uses_side_effect_message() {
         panic!("clipboard must bypass visual rendering");
     };
     assert!(output[&ClientId::new(1)].contains("\x1b]52;c;Y29weQ=="));
+}
+
+fn add_test_plugin(tab: &mut Tab, client: ClientId, focus: bool) -> PaneId {
+    let id = PaneId::Plugin(crate::PluginId::new(7));
+    tab.new_pane(
+        id,
+        None,
+        None,
+        false,
+        focus,
+        NewPanePlacement::Tiled {
+            direction: None,
+            borderless: None,
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    id
+}
+
+fn plugin_mouse_events(
+    rx: &Receiver<(PluginInstruction, ErrorContext)>,
+) -> Vec<(
+    Option<crate::PluginId>,
+    Option<ClientId>,
+    yinz_types::data::Mouse,
+)> {
+    rx.try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events,
+            _ => vec![],
+        })
+        .filter_map(|(id, client, event)| match event {
+            yinz_types::data::Event::Mouse(mouse) => Some((id, client, mouse)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn plugin_gestures_preserve_selection_independent_delivery_and_chrome_hover() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    for (focus, enabled, grid, selectable) in [
+        (true, true, true, true),
+        (false, true, true, true),
+        (true, false, true, true),
+        (false, false, true, true),
+        (true, true, false, true),
+        (false, true, false, true),
+        (false, false, true, false),
+    ] {
+        let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.mouse_click_through = true;
+        let id = add_test_plugin(&mut tab, client, focus);
+        tab.set_pane_selectable(id, selectable);
+        let pane = tab.get_pane_with_id_mut(id).unwrap();
+        pane.plugin_control_mut()
+            .unwrap()
+            .set_mouse_selection_support(enabled);
+        for c in [client, other] {
+            pane.plugin_control_mut()
+                .unwrap()
+                .handle_plugin_bytes(c, b"abcdefghi".to_vec());
+        }
+        if !grid {
+            pane.remove_client(client);
+        }
+        let x = pane.get_content_x() as u16;
+        let y = pane.get_content_y() as i32;
+        let press = Position::new(y, x + 1);
+        let drag = Position::new(y, x + 4);
+        if !selectable {
+            tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(press), client)
+                .unwrap();
+        }
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(press), client)
+            .unwrap();
+        assert_eq!(tab.selecting_with_mouse_in_pane, selectable.then_some(id));
+        assert_eq!(
+            tab.get_active_pane_id(client),
+            Some(if selectable { id } else { terminal })
+        );
+        tab.handle_mouse_event(&MouseEvent::new_left_motion_event(drag), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(drag), client)
+            .unwrap();
+        assert_eq!(tab.selecting_with_mouse_in_pane, None);
+        let pane = tab.get_pane_with_id(id).unwrap();
+        assert_eq!(
+            pane.get_selected_text(client).is_some(),
+            selectable && enabled && grid
+        );
+        assert_eq!(pane.get_selected_text(other), None);
+        let events = if selectable {
+            vec![
+                Mouse::LeftClick(0, 1),
+                Mouse::Hold(0, 4),
+                Mouse::Release(0, 4),
+            ]
+        } else {
+            let underlying = tab.get_pane_with_id(terminal).unwrap();
+            let away = Position::new(
+                underlying.get_content_y() as i32,
+                underlying.get_content_x() as u16,
+            );
+            tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(away), client)
+                .unwrap();
+            vec![
+                Mouse::Hover(0, 1),
+                Mouse::LeftClick(0, 1),
+                Mouse::Hover(0, usize::from(u16::MAX)),
+            ]
+        };
+        assert_eq!(
+            plugin_mouse_events(&rx),
+            events
+                .into_iter()
+                .map(|mouse| (Some(crate::PluginId::new(7)), Some(client), mouse))
+                .collect::<Vec<_>>(),
+            "focus={focus}, enabled={enabled}, grid={grid}, selectable={selectable}"
+        );
+    }
+}
+
+#[test]
+fn plugin_pointer_disconnect_finishes_drag() {
+    let client = ClientId::new(1);
+    let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        ModeInfo::default(),
+    );
+    let id = add_test_plugin(&mut tab, client, true);
+    let pane = tab.get_pane_with_id_mut(id).unwrap();
+    let x = pane.get_content_x() as u16;
+    let y = pane.get_content_y() as i32;
+    let plugin = pane.plugin_control_mut().unwrap();
+    plugin.set_mouse_selection_support(true);
+    plugin.handle_plugin_bytes(client, b"abcdef".to_vec());
+    drop(rx);
+    for event in [
+        MouseEvent::new_left_press_event(Position::new(y, x)),
+        MouseEvent::new_left_motion_event(Position::new(y, x + 3)),
+        MouseEvent::new_left_release_event(Position::new(y, x + 3)),
+    ] {
+        tab.handle_mouse_event(&event, client).unwrap();
+    }
+    assert_eq!(tab.selecting_with_mouse_in_pane, None);
+    let pane = tab.get_pane_with_id(id).unwrap();
+    assert_eq!(pane.get_selected_text(client).as_deref(), Some("abc"));
+    assert!(pane.should_render());
+}
+
+#[test]
+fn plugin_pane_id_scroll_and_terminal_actions() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let os = FakeInputOutput::default();
+    let files = os.file_dumps.clone();
+    let (mut tab, rx) = create_new_tab_with_plugin_receiver_and_os(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        ModeInfo::default(),
+        Box::new(os),
+    );
+    let id = add_test_plugin(&mut tab, client, true);
+    let plugin = crate::PluginId::new(7);
+    tab.handle_plugin_bytes(plugin, client, b"visible plugin text".to_vec())
+        .unwrap();
+    let attaching = ClientId::new(2);
+    tab.add_client(attaching, None).unwrap();
+    let loading = crate::ui::loading_indication::LoadingIndication::new("second client".into())
+        .with_started_at(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    tab.start_client_plugin_loading_indication(plugin, attaching, loading);
+    let contents = |tab: &Tab, viewer| {
+        tab.get_pane_with_id(id)
+            .unwrap()
+            .dump_screen(false, Some(viewer))
+    };
+    assert!(contents(&tab, attaching).contains("Loading second client"));
+    tab.progress_plugin_loading_offset(plugin);
+    assert!(contents(&tab, client).contains("visible plugin text"));
+    tab.handle_plugin_bytes(plugin, attaching, b"second grid".to_vec())
+        .unwrap();
+    tab.progress_plugin_loading_offset(plugin);
+    assert!(contents(&tab, attaching).contains("second grid"));
+    assert!(contents(&tab, client).contains("visible plugin text"));
+    tab.scroll_up_by_pane_id(id);
+    tab.scroll_down_by_pane_id(id).unwrap();
+    assert_eq!(
+        plugin_mouse_events(&rx),
+        [
+            (Some(plugin), None, Mouse::ScrollUp(1)),
+            (Some(plugin), None, Mouse::ScrollDown(1))
+        ]
+    );
+    tab.clear_active_terminal_screen(client).unwrap();
+    tab.clear_screen_for_pane_id(id);
+    tab.update_search_term(b"query".to_vec(), client);
+    tab.search_down(client);
+    tab.scroll_active_terminal_to_previous_prompt(client);
+    assert!(tab
+        .get_dump_active_terminal_screen(client, false)
+        .contains("visible plugin text"));
+    assert_eq!(
+        tab.get_dump_with_ansi_active_terminal_screen(client, false),
+        ""
+    );
+    assert_eq!(
+        tab.get_dump_with_ansi_terminal_screen(id, false).as_deref(),
+        Some("")
+    );
+    let missing = PaneId::Plugin(crate::PluginId::new(99));
+    assert_eq!(tab.get_dump_with_ansi_terminal_screen(missing, false), None);
+    tab.dump_with_ansi_terminal_screen(Some("by-id".into()), id, false)
+        .unwrap();
+    tab.dump_with_ansi_active_terminal_screen(Some("active".into()), client, false)
+        .unwrap();
+    tab.dump_with_ansi_terminal_screen(Some("missing".into()), missing, false)
+        .unwrap();
+    assert_eq!(
+        *files.lock().unwrap(),
+        HashMap::from([
+            ("by-id".into(), String::new()),
+            ("active".into(), String::new())
+        ])
+    );
+}
+
+#[test]
+fn osc133_copy_uses_the_terminal_capability() {
+    let client = ClientId::new(1);
+    let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        ModeInfo::default(),
+    );
+    let (tx, jobs) = channels::unbounded();
+    tab.senders.to_background_jobs = Some(SenderWithContext::new(tx));
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    tab.handle_pty_bytes(
+        TerminalId::new(1),
+        b"\x1b]133;A\x07$ \x1b]133;B\x07echo hello\x1b]133;C\x07\r\nhello\x1b]133;D;0\x07".to_vec(),
+    )
+    .unwrap();
+    tab.scroll_active_terminal_to_previous_prompt(client);
+    tab.select_command_at_scroll_position(client);
+    let selected = tab
+        .get_pane_with_id(terminal)
+        .unwrap()
+        .get_selected_text(client)
+        .unwrap();
+    assert!(selected.contains("hello"), "{selected:?}");
+    tab.scroll_active_terminal_to_next_prompt(client);
+    tab.copy_last_command_output(client).unwrap();
+    let copies = || {
+        rx.try_iter()
+            .filter_map(|(i, _)| match i {
+                PluginInstruction::RecordClipboard(entry) => Some(entry.content),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(copies(), ["hello"]);
+    assert!(
+        matches!(jobs.try_recv().unwrap().0, crate::background_jobs::BackgroundJob::ClearCommandOutputFlash{pane_id} if pane_id == terminal)
+    );
+    assert!(jobs.try_recv().is_err());
+    add_test_plugin(&mut tab, client, true);
+    tab.select_command_at_scroll_position(client);
+    tab.copy_last_command_output(client).unwrap();
+    assert!(copies().is_empty() && jobs.try_recv().is_err());
 }

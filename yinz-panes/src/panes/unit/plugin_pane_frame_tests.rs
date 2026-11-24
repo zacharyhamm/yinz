@@ -1,5 +1,6 @@
 use super::tests::{frame_params, test_plugin_pane};
 use crate::pane::Pane;
+use crate::pane::PluginPaneControl;
 use yinz_types::data::InputMode;
 use yinz_types::internal_ids::ClientId;
 use yinz_types::pane_size::Offset;
@@ -10,7 +11,9 @@ fn plugin_control_capability_reports_loading_errors_without_terminal_io() {
     let pane: &mut dyn Pane = &mut plugin;
     let client = ClientId::new(1);
     pane.add_client(client);
-    assert!(pane.terminal_io_mut().is_none());
+    assert!(pane.terminal().is_none());
+    assert!(pane.plugin_control().is_some());
+    assert!(pane.terminal_mut().is_none());
     let mut loading = crate::ui::loading_indication::LoadingIndication::default();
     loading.indicate_loading_error("capability loading error".into());
     pane.plugin_control_mut()
@@ -77,6 +80,15 @@ fn frames_are_cached_per_client_but_pinned_frames_redraw() {
     assert!(render(&mut pane, client));
     assert!(!render(&mut pane, client));
     assert!(render(&mut pane, other));
+    pane.invalidate_frame(client);
+    assert!(!render(&mut pane, other));
+    assert!(render(&mut pane, client));
+    assert!(!render(&mut pane, client));
+    pane.invalidate_all_frames();
+    for id in [client, other] {
+        assert!(render(&mut pane, id));
+        assert!(!render(&mut pane, id));
+    }
     pane.set_borderless(true);
     pane.update_name("renamed");
     assert!(!render(&mut pane, client));

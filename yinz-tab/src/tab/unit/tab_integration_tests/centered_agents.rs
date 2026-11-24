@@ -1192,13 +1192,17 @@ fn centered_agent_detection_restores_tiled_and_floating_shells() {
         let original = tab.get_pane_with_id(id).unwrap().render_geom();
         tab.get_pane_with_id_mut(id)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .set_detected_agent(true);
         draw(&mut tab);
         let pane = tab.get_pane_with_id(id).unwrap();
         assert_eq!(pane.get_content_columns(), 80);
-        assert!(pane.agent_info().is_none());
-        assert!(!pane.was_an_agent());
+        assert!(pane.terminal().unwrap().agent_info().is_none());
+        assert!(!pane.terminal().unwrap().was_an_agent());
         tab.get_pane_with_id_mut(id)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .set_detected_agent(false);
         draw(&mut tab);
@@ -3303,6 +3307,8 @@ fn centered_agent_waiting_pulse_uses_packed_geometry() {
         let mut info = tab
             .get_pane_with_id(waiting)
             .unwrap()
+            .terminal()
+            .unwrap()
             .agent_info()
             .unwrap()
             .clone();
@@ -3484,6 +3490,8 @@ fn centered_agent_waiting_pulse_remains_visible_in_the_packed_margin() {
     let waiting = PaneId::Terminal(TerminalId::new(0));
     let mut info = tab
         .get_pane_with_id(waiting)
+        .unwrap()
+        .terminal()
         .unwrap()
         .agent_info()
         .unwrap()
@@ -3696,6 +3704,8 @@ fn fullscreen_gutters_and_waiting_pulses_respect_side_ui_and_occlusion() {
                 let mut info = tab
                     .get_pane_with_id(id)
                     .unwrap()
+                    .terminal()
+                    .unwrap()
                     .agent_info()
                     .unwrap()
                     .clone();
@@ -3756,6 +3766,8 @@ fn fullscreen_gutters_and_waiting_pulses_respect_side_ui_and_occlusion() {
         mark_agent(&mut tab, id);
         let mut info = tab
             .get_pane_with_id(id)
+            .unwrap()
+            .terminal()
             .unwrap()
             .agent_info()
             .unwrap()

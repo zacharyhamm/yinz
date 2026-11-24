@@ -102,7 +102,9 @@ fn joining_clients_see_plugin_errors_without_plugin_bytes() {
         assert!(pane
             .dump_screen(false, Some(joining))
             .contains("plugin failed to load"));
-        pane.handle_plugin_bytes(joining, b"client-specific output".to_vec());
+        pane.plugin_control_mut()
+            .unwrap()
+            .handle_plugin_bytes(joining, b"client-specific output".to_vec());
         tab.remove_client(joining); // Switching tabs retains the client's grid.
         tab.add_client(joining, None).unwrap();
         assert!(tab
@@ -275,7 +277,7 @@ fn removing_clients_preserves_shared_hover_until_the_last_client_leaves() {
             tab.mouse_hover_pane_id.insert(client, pane_id);
         }
         let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
-        pane.set_plugin_regex_highlights(
+        pane.terminal_mut().unwrap().set_plugin_regex_highlights(
             crate::PluginId::new(1),
             vec![RegexHighlight {
                 pattern: "test".into(),
@@ -291,10 +293,12 @@ fn removing_clients_preserves_shared_hover_until_the_last_client_leaves() {
             &Default::default(),
         );
         let position = Some(Position::new(0, 0));
-        assert!(pane.set_hover_position(position));
+        assert!(pane.terminal_mut().unwrap().set_hover_position(position));
         tab.remove_client_pane_state(first);
         assert!(!tab
             .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .set_hover_position(position));
         let last = clients.into_iter().find(|id| *id != first).unwrap();
@@ -302,6 +306,8 @@ fn removing_clients_preserves_shared_hover_until_the_last_client_leaves() {
         tab.remove_client_pane_state(last);
         assert!(!tab
             .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .set_hover_position(None));
         assert!(tab.mouse_hover_pane_id.is_empty());

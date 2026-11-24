@@ -1,5 +1,6 @@
 use std::time::Instant;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::data::Mouse;
 use yinz_types::geometry::{Direction, Resize, ResizeStrategy};
 use yinz_types::input::layout::Run;
 use yinz_types::internal_ids::ContextMenuRequestId;
@@ -32,8 +33,10 @@ fn clear_hover_for_client(tab: &mut Tab, client_id: ClientId) -> bool {
 fn clear_hover_for_client_except(tab: &mut Tab, client_id: ClientId, keep: Option<PaneId>) -> bool {
     let mut cleared = false;
     if let Some(prev_pid) = tab.mouse_hover_pane_id.remove(&client_id) {
-        if let Some(pane) = tab.get_pane_with_id_mut(prev_pid) {
-            pane.set_hover_position(None);
+        if let Some(pane) = tab.get_pane_with_id_mut(prev_pid)
+            && let Some(term) = pane.terminal_mut()
+        {
+            term.set_hover_position(None);
         }
         cleared = true;
     }
@@ -42,10 +45,7 @@ fn clear_hover_for_client_except(tab: &mut Tab, client_id: ClientId, keep: Optio
     }
     if let Some(prev_plugin_pid) = tab.plugin_hover_pane_id.remove(&client_id) {
         if let Some(pane) = tab.get_pane_with_id(prev_plugin_pid) {
-            let _ = pane.mouse_event(
-                &MouseEvent::new_buttonless_motion(Position::new(0, u16::MAX)),
-                client_id,
-            );
+            send_plugin_mouse(pane, Mouse::Hover(0, usize::from(u16::MAX)), client_id);
         }
         cleared = true;
     }
@@ -472,12 +472,15 @@ fn edge_and_delta_to_strategies(
 
 /// Whether a press in this pane should be followed until it is released.
 ///
-/// A pane that does its own text selection needs the drag to extend the selection. A plugin pane
-/// needs it so its `Mouse::LeftClick`, `Mouse::Hold` and `Mouse::Release` events are all sent from
-/// those same three `Pane` calls (see `PluginPane::start_selection`); otherwise a form widget that
-/// activates on release would never fire.
-fn drag_should_be_tracked(pane_id: PaneId, pane: &dyn Pane) -> bool {
-    pane.supports_mouse_selection() || matches!(pane_id, PaneId::Plugin(_))
+/// A plugin receives the entire gesture even when it has no local text selection.
+fn drag_should_be_tracked(pane: &dyn Pane) -> bool {
+    pane.supports_mouse_selection() || pane.plugin_control().is_some()
+}
+
+fn send_plugin_mouse(pane: &dyn Pane, mouse: Mouse, client_id: ClientId) {
+    if let Some(plugin) = pane.plugin_control() {
+        plugin.send_mouse(mouse, Some(client_id)).non_fatal();
+    }
 }
 
 /// Which collection a frame press belongs to, for the resize that press starts.
@@ -524,37 +527,31 @@ impl MouseHandler {
         event: &MouseEvent,
         client_id: ClientId,
     ) -> Result<Option<MouseEffect>> {
-        let pane_id_at_position = Self::get_pane_at(tab, &event.position, false)?.map(|p| p.pid());
-        let pane_id = match pane_id_at_position {
-            Some(pane_id) => pane_id,
-            None => return Ok(None),
-        };
-        if !tab.pane_has_guest_modal_for_client(pane_id, client_id) {
+        let Some(pane) = Self::get_pane_at(tab, &event.position, false)? else {
             return Ok(None);
-        }
+        };
+        let Some(terminal) = pane.terminal() else {
+            return Ok(None);
+        };
+        let Some(selection) = terminal.guest_modal_selection(client_id) else {
+            return Ok(None);
+        };
+        let pane_id = pane.pid();
         let hit_option = if event.event_type == MouseEventType::Release && event.left {
-            let style = tab.style;
-            if let Some(pane) = tab.get_pane_with_id(pane_id) {
-                let relative_position = pane.relative_position(&event.position);
-                let rows = pane.get_content_rows();
-                let columns = pane.get_content_columns();
-                let row = relative_position.line();
-                if row < 0 {
-                    None
-                } else {
-                    let session_name = pane.guest_session_name().unwrap_or_default();
-                    let selection = pane.guest_modal_selection(client_id).unwrap_or(0);
-                    let shortcuts = pane.guest_modal_shortcuts();
-                    crate::panes::nested_session_modal::guest_modal_option_at_content_row(
-                        rows,
-                        columns,
-                        row as usize,
-                        &style,
-                        session_name.as_str(),
-                        selection,
-                        &shortcuts,
-                    )
-                }
+            let row = pane.relative_position(&event.position).line();
+            if let Ok(row) = usize::try_from(row) {
+                let session_name = terminal.guest_session_name().unwrap_or_default();
+                let shortcuts = terminal.guest_modal_shortcuts();
+                let (rows, columns) = (pane.get_content_rows(), pane.get_content_columns());
+                crate::panes::nested_session_modal::guest_modal_option_at_content_row(
+                    rows,
+                    columns,
+                    row,
+                    &tab.style,
+                    session_name.as_str(),
+                    selection,
+                    &shortcuts,
+                )
             } else {
                 None
             }
@@ -694,11 +691,15 @@ impl MouseHandler {
         };
         let terminal_wants_mouse = if Some(pane_id) == active_pane_id {
             let relative_position = pane.relative_position(position);
-            pane.mouse_left_click(&relative_position, false).is_some()
+            pane.terminal()
+                .and_then(|term| term.mouse_left_click(&relative_position, false))
+                .is_some()
         } else {
             false
         };
-        let terminal_emulator_wants_mouse = pane.terminal_emulator_wants_mouse();
+        let terminal_emulator_wants_mouse = pane
+            .terminal()
+            .is_some_and(|term| term.terminal_emulator_wants_mouse());
 
         Some(ClickedPaneDetails {
             pane_id,
@@ -712,7 +713,7 @@ impl MouseHandler {
             on_seam,
             terminal_wants_mouse,
             terminal_emulator_wants_mouse,
-            is_agent: pane.agent_info().is_some(),
+            is_agent: pane.terminal().and_then(|term| term.agent_info()).is_some(),
         })
     }
 
@@ -973,8 +974,9 @@ impl MouseHandler {
             MouseAction::GroupToggle(pane_id) => {
                 if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
                     let relative_position = pane.relative_position(&event.position);
-                    if let Some((hit_plugin_id, pattern, matched_string, context)) =
-                        pane.plugin_highlight_at(&relative_position)
+                    if let Some((hit_plugin_id, pattern, matched_string, context)) = pane
+                        .terminal()
+                        .and_then(|term| term.plugin_highlight_at(&relative_position))
                     {
                         let _ = tab
                             .senders
@@ -1045,10 +1047,15 @@ impl MouseHandler {
                 let mut leave_clipboard_message = false;
                 pane.set_selection_options(osc133_command_selection, &word_separators);
                 pane.start_selection(&relative_position, client_id);
+                send_plugin_mouse(
+                    &**pane,
+                    Mouse::LeftClick(relative_position.line(), relative_position.column()),
+                    client_id,
+                );
                 if pane.get_selected_text(client_id).is_some() {
                     leave_clipboard_message = true;
                 }
-                if drag_should_be_tracked(pane_id, &**pane) {
+                if drag_should_be_tracked(&**pane) {
                     tab.selecting_with_mouse_in_pane = Some(pane_id);
                 }
                 if leave_clipboard_message {
@@ -1064,6 +1071,11 @@ impl MouseHandler {
                 {
                     let relative_position = pane_with_selection.relative_position(&position);
                     pane_with_selection.update_selection(&relative_position, client_id);
+                    send_plugin_mouse(
+                        &**pane_with_selection,
+                        Mouse::Hold(relative_position.line(), relative_position.column()),
+                        client_id,
+                    );
                 }
                 Ok(MouseEffect::default())
             },
@@ -1229,16 +1241,18 @@ impl MouseHandler {
         // once the context has left here.
         let relative_position = pane.relative_position(&position);
         let text_around = pane
-            .text_around_position(&relative_position)
+            .terminal()
+            .and_then(|term| term.text_around_position(&relative_position))
             .unwrap_or_default();
-        let link = pane.plugin_highlight_at(&relative_position).map(
-            |(plugin_id, pattern, matched, context)| ContextMenuLink {
+        let link = pane
+            .terminal()
+            .and_then(|term| term.plugin_highlight_at(&relative_position))
+            .map(|(plugin_id, pattern, matched, context)| ContextMenuLink {
                 plugin_id,
                 pattern,
                 matched,
                 context,
-            },
-        );
+            });
         let pane_command = match pane.invoked_with() {
             Some(Run::Command(command)) => Some(command.to_string()),
             _ => None,
@@ -1257,9 +1271,9 @@ impl MouseHandler {
             on_frame,
             pane_title: pane.current_title(),
             pane_command,
-            pane_exited: pane.exited(),
-            pane_exit_status: pane.exit_status(),
-            pane_is_held: pane.is_held(),
+            pane_exited: pane.terminal().is_some_and(|term| term.exited()),
+            pane_exit_status: pane.terminal().and_then(|term| term.exit_status()),
+            pane_is_held: pane.terminal().is_some_and(|term| term.is_held()),
             pane_is_floating: is_floating,
             selected_text: pane
                 .get_selected_text(client_id)
@@ -1294,6 +1308,11 @@ impl MouseHandler {
             let relative_position = pane_at_position.relative_position(&position);
             pane_at_position.set_selection_options(osc133_command_selection, &word_separators);
             pane_at_position.start_selection(&relative_position, client_id);
+            send_plugin_mouse(
+                &**pane_at_position,
+                Mouse::LeftClick(relative_position.line(), relative_position.column()),
+                client_id,
+            );
         }
 
         // `focus_pane_at` above already swallowed the click if it landed on an overlay - but
@@ -1346,6 +1365,11 @@ impl MouseHandler {
             let relative_position = pane_at_position.relative_position(&position);
             pane_at_position.set_selection_options(osc133_command_selection, &word_separators);
             pane_at_position.start_selection(&relative_position, client_id);
+            send_plugin_mouse(
+                &**pane_at_position,
+                Mouse::LeftClick(relative_position.line(), relative_position.column()),
+                client_id,
+            );
             return Ok(MouseEffect::state_changed());
         }
 
@@ -1359,13 +1383,17 @@ impl MouseHandler {
             .ok_or_else(|| anyhow!("Failed to find pane {active_pane_id:?}"))
             .with_context(err_context)?;
 
-        let terminal_wants_mouse = pane.terminal_emulator_wants_mouse();
+        let terminal_wants_mouse = pane
+            .terminal()
+            .is_some_and(|term| term.terminal_emulator_wants_mouse());
 
         if terminal_wants_mouse {
             let relative_position = pane.relative_position(&click_event.position);
             let mut event_for_pane = click_event;
             event_for_pane.position = relative_position;
-            if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id)
+            if let Some(mouse_event) = pane
+                .terminal()
+                .and_then(|term| term.mouse_event(&event_for_pane, client_id))
                 && !pane.position_is_on_frame(&click_event.position)
             {
                 tab.clear_search(client_id);
@@ -1378,7 +1406,12 @@ impl MouseHandler {
                 let relative_position = pane.relative_position(&position);
                 pane.set_selection_options(osc133_command_selection, &word_separators);
                 pane.start_selection(&relative_position, client_id);
-                if drag_should_be_tracked(active_pane_id, &**pane) {
+                send_plugin_mouse(
+                    &**pane,
+                    Mouse::LeftClick(relative_position.line(), relative_position.column()),
+                    client_id,
+                );
+                if drag_should_be_tracked(&**pane) {
                     tab.selecting_with_mouse_in_pane = Some(active_pane_id);
                 }
             }
@@ -1412,8 +1445,9 @@ impl MouseHandler {
                     .min(pane_with_selection.get_content_rows() as isize),
             );
 
-            if let Some(mouse_event) =
-                pane_with_selection.mouse_left_click_release(&relative_position)
+            if let Some(mouse_event) = pane_with_selection
+                .terminal()
+                .and_then(|term| term.mouse_left_click_release(&relative_position))
             {
                 let pane_id = pane_with_selection.pid();
                 tab.clear_search(client_id);
@@ -1423,6 +1457,11 @@ impl MouseHandler {
             } else {
                 let relative_position = pane_with_selection.relative_position(&position);
                 pane_with_selection.end_selection(&relative_position, client_id);
+                send_plugin_mouse(
+                    &**pane_with_selection,
+                    Mouse::Release(relative_position.line(), relative_position.column()),
+                    client_id,
+                );
                 if pane_with_selection.supports_mouse_selection() && copy_on_release {
                     let selected_text = pane_with_selection.get_selected_text(client_id);
                     if let Some(selected_text) = selected_text {
@@ -1587,8 +1626,9 @@ impl MouseHandler {
                 && let Some(pane) = tab.get_pane_with_id(pid)
             {
                 let relative_position = pane.relative_position(&position);
-                let _ = pane.mouse_event(
-                    &MouseEvent::new_buttonless_motion(relative_position),
+                send_plugin_mouse(
+                    pane,
+                    Mouse::Hover(relative_position.line(), relative_position.column()),
                     client_id,
                 );
             }
@@ -1596,10 +1636,7 @@ impl MouseHandler {
                 if let Some(previous_pid) = previous_plugin_hover_pane_id
                     && let Some(pane) = tab.get_pane_with_id(previous_pid)
                 {
-                    let _ = pane.mouse_event(
-                        &MouseEvent::new_buttonless_motion(Position::new(0, u16::MAX)),
-                        client_id,
-                    );
+                    send_plugin_mouse(pane, Mouse::Hover(0, usize::from(u16::MAX)), client_id);
                 }
                 match current_plugin_hover_pane_id {
                     Some(pid) => {
@@ -1635,7 +1672,9 @@ impl MouseHandler {
             && Some(prev_pane_id) != pane_id
             && let Some(pane) = tab.get_pane_with_id_mut(prev_pane_id)
         {
-            should_render |= pane.set_hover_position(None);
+            should_render |= pane
+                .terminal_mut()
+                .is_some_and(|term| term.set_hover_position(None));
         }
 
         if tab.mouse_help_text_visible.remove(&client_id).is_some() {
@@ -1677,8 +1716,30 @@ impl MouseHandler {
             let on_frame = pane.position_is_on_frame(&event.position);
             let off_plugin_content = matches!(pane_id, PaneId::Plugin(_))
                 && (on_frame || !pane.contains(&event.position));
-            if (!off_plugin_content || event.event_type == MouseEventType::Motion)
-                && let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id)
+            if let Some(plugin) = pane.plugin_control() {
+                let (line, col) = (relative_position.line(), relative_position.column());
+                let mouse = match event.event_type {
+                    MouseEventType::Motion
+                        if !event.left
+                            && !event.right
+                            && !event.middle
+                            && !event.wheel_up
+                            && !event.wheel_down =>
+                    {
+                        Some(Mouse::Hover(line, col))
+                    },
+                    MouseEventType::Press if event.right && !off_plugin_content => {
+                        Some(Mouse::RightClick(line, col))
+                    },
+                    _ => None,
+                };
+                if let Some(mouse) = mouse {
+                    plugin.send_mouse(mouse, Some(client_id)).non_fatal();
+                }
+            }
+            if let Some(mouse_event) = pane
+                .terminal()
+                .and_then(|term| term.mouse_event(&event_for_pane, client_id))
                 && !on_frame
             {
                 tab.clear_search(client_id);
@@ -1691,10 +1752,15 @@ impl MouseHandler {
             }
             if event.event_type == MouseEventType::Motion
                 && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
-                && !pane.terminal_emulator_wants_mouse()
+                && !pane
+                    .terminal()
+                    .is_some_and(|term| term.terminal_emulator_wants_mouse())
             {
                 let relative = pane.relative_position(&event.position);
-                if pane.set_hover_position(Some(relative)) {
+                if pane
+                    .terminal_mut()
+                    .is_some_and(|term| term.set_hover_position(Some(relative)))
+                {
                     should_render = true;
                 }
             }
@@ -2275,16 +2341,25 @@ impl MouseHandler {
             let relative_position = pane.relative_position(point);
             // Plugin wheel events carry only a count. Supply their actual position first,
             // including when the terminal has not sent any preceding pointer motion.
-            if matches!(pane_id, PaneId::Plugin(_)) {
-                let _ = pane.mouse_event(
-                    &MouseEvent::new_buttonless_motion(relative_position),
-                    client_id,
-                );
+            if let Some(plugin) = pane.plugin_control() {
+                plugin
+                    .send_mouse(
+                        Mouse::Hover(relative_position.line(), relative_position.column()),
+                        Some(client_id),
+                    )
+                    .non_fatal();
+                plugin
+                    .send_mouse(Mouse::ScrollUp(lines), Some(client_id))
+                    .non_fatal();
+                return Ok(MouseEffect::default());
             }
-            if let Some(mouse_event) = pane.mouse_scroll_up(&relative_position) {
+            let terminal = pane
+                .terminal_mut()
+                .context("wheel target has no terminal")?;
+            if let Some(mouse_event) = terminal.mouse_scroll_up(&relative_position) {
                 Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;
-            } else if pane.is_alternate_mode_active() {
+            } else if terminal.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
                     tab.write_to_pane_id(
@@ -2298,7 +2373,7 @@ impl MouseHandler {
                     .with_context(err_context)?;
                 }
             } else {
-                pane.scroll_up(lines, Some(client_id));
+                terminal.scroll_up(lines);
             }
         }
         Ok(MouseEffect::default())
@@ -2321,16 +2396,25 @@ impl MouseHandler {
             let relative_position = pane.relative_position(point);
             // Plugin wheel events carry only a count. Supply their actual position first,
             // including when the terminal has not sent any preceding pointer motion.
-            if matches!(pane_id, PaneId::Plugin(_)) {
-                let _ = pane.mouse_event(
-                    &MouseEvent::new_buttonless_motion(relative_position),
-                    client_id,
-                );
+            if let Some(plugin) = pane.plugin_control() {
+                plugin
+                    .send_mouse(
+                        Mouse::Hover(relative_position.line(), relative_position.column()),
+                        Some(client_id),
+                    )
+                    .non_fatal();
+                plugin
+                    .send_mouse(Mouse::ScrollDown(lines), Some(client_id))
+                    .non_fatal();
+                return Ok(MouseEffect::default());
             }
-            if let Some(mouse_event) = pane.mouse_scroll_down(&relative_position) {
+            let terminal = pane
+                .terminal_mut()
+                .context("wheel target has no terminal")?;
+            if let Some(mouse_event) = terminal.mouse_scroll_down(&relative_position) {
                 Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;
-            } else if pane.is_alternate_mode_active() {
+            } else if terminal.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
                     tab.write_to_pane_id(
@@ -2344,9 +2428,9 @@ impl MouseHandler {
                     .with_context(err_context)?;
                 }
             } else {
-                pane.scroll_down(lines, Some(client_id));
-                if !pane.is_scrolled()
-                    && let PaneId::Terminal(pid) = pane.pid()
+                terminal.scroll_down(lines);
+                if !terminal.is_scrolled()
+                    && let PaneId::Terminal(pid) = pane_id
                 {
                     tab.process_pending_vte_events(pid)
                         .with_context(err_context)?;
@@ -2371,7 +2455,8 @@ impl MouseHandler {
         let report_for_pane = tab.get_pane_with_id(pane_id).and_then(|pane| {
             let mut event_for_pane = *event;
             event_for_pane.position = pane.relative_position(&event.position);
-            pane.mouse_event(&event_for_pane, client_id)
+            pane.terminal()
+                .and_then(|term| term.mouse_event(&event_for_pane, client_id))
         });
         if let Some(report_for_pane) = report_for_pane {
             Self::write_to_pane(tab, report_for_pane.into_bytes(), pane_id, client_id)
@@ -2381,9 +2466,13 @@ impl MouseHandler {
 
         if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
             if to_previous_prompt {
-                pane.scroll_to_previous_prompt(client_id);
+                if let Some(term) = pane.terminal_mut() {
+                    term.scroll_to_previous_prompt(client_id);
+                }
             } else {
-                pane.scroll_to_next_prompt(client_id);
+                if let Some(term) = pane.terminal_mut() {
+                    term.scroll_to_next_prompt(client_id);
+                }
             }
         }
         Ok(MouseEffect::state_changed())
@@ -2406,11 +2495,12 @@ impl MouseHandler {
             return Ok(MouseEffect::default());
         }
         if let Some(pane) = Self::get_pane_at(tab, point, false).with_context(err_context)? {
-            if scroll_right {
-                pane.scroll_right(cols, client_id);
+            let mouse = if scroll_right {
+                Mouse::ScrollRight(cols)
             } else {
-                pane.scroll_left(cols, client_id);
-            }
+                Mouse::ScrollLeft(cols)
+            };
+            send_plugin_mouse(&**pane, mouse, client_id);
         }
         Ok(MouseEffect::default())
     }

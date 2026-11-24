@@ -1,5 +1,5 @@
 use crate::{
-    pane::{Pane, MIN_TERMINAL_HEIGHT},
+    pane::{PaneGeometry, MIN_TERMINAL_HEIGHT},
     panes::PaneId,
 };
 use std::cell::RefCell;
@@ -8,22 +8,22 @@ use std::rc::Rc;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::pane_size::{Dimension, PaneGeom};
 
-pub struct StackedPanes<'a> {
-    panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,
+pub struct StackedPanes<'a, G: PaneGeometry + ?Sized> {
+    panes: Rc<RefCell<HashMap<PaneId, &'a mut G>>>,
 }
 
-impl<'a> StackedPanes<'a> {
-    pub fn new(panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>) -> Self {
+impl<'a, G: PaneGeometry + ?Sized> StackedPanes<'a, G> {
+    pub fn new(panes: Rc<RefCell<HashMap<PaneId, &'a mut G>>>) -> Self {
         StackedPanes { panes }
     }
     pub fn new_from_btreemap(
-        panes: impl IntoIterator<Item = (&'a PaneId, &'a mut Box<dyn Pane>)>,
+        panes: impl IntoIterator<Item = (&'a PaneId, &'a mut Box<G>)>,
         panes_to_hide: &HashSet<PaneId>,
     ) -> Self {
         let panes: HashMap<_, _> = panes
             .into_iter()
             .filter(|(p_id, _)| !panes_to_hide.contains(p_id))
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.as_mut()))
             .collect();
         let panes = Rc::new(RefCell::new(panes));
         StackedPanes { panes }
@@ -330,7 +330,7 @@ impl<'a> StackedPanes<'a> {
         let panes = self.panes.borrow();
         let pane_to_close = panes.get(current_pane_id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close.as_ref())?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         Ok((position_of_current_pane, position_of_flexible_pane))
@@ -338,7 +338,7 @@ impl<'a> StackedPanes<'a> {
     fn position_of_current_pane(
         &self,
         all_stacked_pane_positions: &[(PaneId, PaneGeom)],
-        pane_to_close: &dyn Pane,
+        pane_to_close: &G,
     ) -> Result<usize> {
         let err_context = || "Failed to find position of current pane".to_string();
         all_stacked_pane_positions
@@ -1035,7 +1035,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close.as_ref())?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let only_one_pane_remaining_in_stack_after_close = all_stacked_pane_positions.len() == 2;
         if all_stacked_pane_positions.len() > position_of_current_pane + 1 {
             let mut pane_to_close_position_and_size = pane_to_close.position_and_size();
@@ -1083,7 +1083,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close.as_ref())?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         let id_of_flexible_pane = all_stacked_pane_positions
@@ -1115,7 +1115,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close.as_ref())?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         let id_of_flexible_pane = all_stacked_pane_positions

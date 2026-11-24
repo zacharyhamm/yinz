@@ -36,6 +36,8 @@ fn adopt_with_observer(
         .unwrap()
         .get_pane_with_id(PANE)
         .unwrap()
+        .terminal()
+        .unwrap()
         .held_for_warp();
     let payload = WarpedPane {
         agent: source.get_pane_info(PANE).unwrap().agent,
@@ -440,6 +442,8 @@ fn warp_tracking_restores_osc_status_after_identity_and_without_tracking() {
             .tab_containing_pane(PANE)
             .unwrap()
             .get_pane_with_id(PANE)
+            .unwrap()
+            .terminal()
             .unwrap()
             .terminal_state()
             .unwrap();
@@ -879,6 +883,8 @@ fn permission_wait_survives_transfers(notification: bool) {
                     .unwrap()
                     .get_pane_with_id_mut(PANE)
                     .unwrap()
+                    .terminal_mut()
+                    .unwrap()
                     .set_suspended(true);
                 permission_key(&mut source, KeyWithModifier::new(BareKey::Enter), cli);
                 assert_eq!(source.agent_status_for_test().agent, waiting);
@@ -886,6 +892,8 @@ fn permission_wait_survives_transfers(notification: bool) {
                     .tab_containing_pane_mut(PANE)
                     .unwrap()
                     .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .terminal_mut()
                     .unwrap()
                     .set_suspended(false);
                 finish_paste(&writes);
@@ -1547,6 +1555,8 @@ fn restored_claude_registry_reconciles_orphan_without_completing_a_turn() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .handle_pty_bytes(b"\x1b]7501;state=blocked:app=claude\x07".to_vec());
         assert!(screen
             .reconcile_restored_claude(
@@ -1642,6 +1652,8 @@ fn restored_claude_registry_rejects_superseded_observations() {
                     .tab_containing_pane_mut(PANE)
                     .unwrap()
                     .get_pane_with_id_mut(PANE)
+                    .unwrap()
+                    .terminal_mut()
                     .unwrap()
                     .set_last_hook_at_ms(info.last_hook_at_ms.unwrap() + 1);
             },

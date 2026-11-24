@@ -69,7 +69,7 @@ use crate::ui::hint_text::HintExitStatus;
 use crate::ui::loading_indication::LoadingIndication;
 use swap_layouts::SwapLayouts;
 use yinz_panes::layout_applier::LayoutApplier;
-use yinz_panes::pane::pane_info_for_pane;
+use yinz_panes::pane::{pane_info_for_pane, TerminalPaneOps};
 use yinz_panes::resize_pty;
 
 use self::clipboard::ClipboardProvider;
@@ -752,7 +752,12 @@ impl Tab {
         };
         let columns = pane.get_content_columns() as u16;
         let rows = pane.get_content_rows() as u16;
-        if pane.is_held() || pane.exited() || columns == 0 || rows == 0 {
+        if pane
+            .terminal()
+            .is_some_and(|term| term.is_held() || term.exited())
+            || columns == 0
+            || rows == 0
+        {
             return Ok(());
         }
         resize_pty!(
@@ -856,17 +861,22 @@ impl Tab {
             return hover_hint_variants();
         }
         if let Some(focused_pane) = self.get_active_pane(client_id) {
-            if focused_pane.is_suspended() {
+            if focused_pane
+                .terminal()
+                .is_some_and(|term| term.is_suspended())
+            {
                 return suspended_hint_variants();
             }
-            if focused_pane.is_held() {
-                let exited = focused_pane.exited();
+            if focused_pane.terminal().is_some_and(|term| term.is_held()) {
+                let exited = focused_pane.terminal().is_some_and(|term| term.exited());
                 let is_first_run = !exited;
                 let exit_status = if exited {
-                    Some(match focused_pane.exit_status() {
-                        Some(exit_code) => HintExitStatus::Code(exit_code),
-                        None => HintExitStatus::Exited,
-                    })
+                    Some(
+                        match focused_pane.terminal().and_then(|term| term.exit_status()) {
+                            Some(exit_code) => HintExitStatus::Code(exit_code),
+                            None => HintExitStatus::Exited,
+                        },
+                    )
                 } else {
                     None
                 };
@@ -1058,10 +1068,10 @@ impl Tab {
         let Some((_, pane)) = self.get_selectable_tiled_content_panes().next() else {
             return String::new();
         };
-        if !(pane.is_held() && pane.exited()) {
+        let Some(terminal) = pane.terminal().filter(|t| t.is_held() && t.exited()) else {
             return String::new();
-        }
-        match pane.exit_status() {
+        };
+        match terminal.exit_status() {
             Some(exit_code) => format!(" [ EXIT CODE: {} ] ", exit_code),
             None => " [ EXITED ] ".to_string(),
         }
@@ -1072,7 +1082,10 @@ impl Tab {
             return None;
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;
-        let (position, length) = pane.scroll_position();
+        let (position, length) = pane
+            .terminal()
+            .map(|term| term.scroll_position())
+            .unwrap_or_default();
         if position > 0 || length > 0 {
             Some((position, length))
         } else {
@@ -1491,7 +1504,7 @@ impl Tab {
     }
     pub fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
         self.get_active_pane(client_id)
-            .map(|pane| pane.is_scrolled())
+            .map(|pane| pane.terminal().is_some_and(|term| term.is_scrolled()))
             .unwrap_or(false)
     }
     /// This tab's pane with `pane_id`, wherever it is standing: tiled, floating, an overlay,
@@ -1516,6 +1529,12 @@ impl Tab {
                     .get_mut(&pane_id)
                     .map(|suppressed| &mut suppressed.pane)
             })
+    }
+    pub fn get_terminal(&self, id: PaneId) -> Option<&dyn TerminalPaneOps> {
+        self.get_pane_with_id(id)?.terminal()
+    }
+    pub fn get_terminal_mut(&mut self, id: PaneId) -> Option<&mut dyn TerminalPaneOps> {
+        self.get_pane_with_id_mut(id)?.terminal_mut()
     }
     /// The pane with `pane_id` if it is on screen - tiled, floating or an overlay - and `None`
     /// for one suppressed under something else. What a frame, a cursor or a mouse gesture asks
@@ -1584,11 +1603,11 @@ impl Tab {
         let PaneId::Terminal(terminal_id) = pane_id else {
             return;
         };
-        let focus_event = self.get_pane_with_id(pane_id).and_then(|pane| {
+        let focus_event = self.get_terminal(pane_id).and_then(|terminal| {
             if focused {
-                pane.focus_event()
+                terminal.focus_event()
             } else {
-                pane.unfocus_event()
+                terminal.unfocus_event()
             }
         });
         if let Some(focus_event) = focus_event {
@@ -1619,19 +1638,19 @@ impl Tab {
             .chain(self.floating_panes.get_panes())
             .chain(self.overlay_panes.get_panes())
             .chain(self.suppressed_stack_list_members())
-            .filter(|(_, pane)| pane.has_bell())
+            .filter(|(_, pane)| pane.terminal().is_some_and(|term| term.has_bell()))
             .map(|(pane_id, _)| *pane_id)
             .collect();
 
         for pane_id in ringing_panes {
             // Consume the bell from the pane
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.consume_bell();
+            if let Some(term) = self.get_terminal_mut(pane_id) {
+                term.consume_bell();
             }
             let is_focused = focused_pane_ids.contains(&pane_id);
             if !is_focused && !self.panes_with_pending_bell.contains(&pane_id) {
-                if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                    pane.set_bell_notification(true);
+                if let Some(term) = self.get_terminal_mut(pane_id) {
+                    term.set_bell_notification(true);
                 }
                 self.panes_with_pending_bell.insert(pane_id);
                 newly_notified_panes.push(pane_id);
@@ -1649,7 +1668,9 @@ impl Tab {
     pub fn clear_bell_notification_for_pane(&mut self, pane_id: PaneId) {
         self.panes_with_pending_bell.remove(&pane_id);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_bell_notification(false);
+            if let Some(term) = pane.terminal_mut() {
+                term.set_bell_notification(false);
+            }
             pane.clear_pane_frame_color_override(None);
         }
         self.tab_has_pending_bell = false;
@@ -1673,13 +1694,13 @@ impl Tab {
             .chain(self.floating_panes.get_panes())
             .chain(self.overlay_panes.get_panes())
             .chain(self.suppressed_stack_list_members())
-            .filter(|(_, pane)| pane.has_bell())
+            .filter(|(_, pane)| pane.terminal().is_some_and(|term| term.has_bell()))
             .map(|(pane_id, _)| *pane_id)
             .collect();
         let had_bell = !ringing_panes.is_empty();
         for pane_id in ringing_panes {
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.consume_bell();
+            if let Some(term) = self.get_terminal_mut(pane_id) {
+                term.consume_bell();
             }
         }
         had_bell
@@ -1706,8 +1727,8 @@ impl Tab {
         fg: Option<String>,
         bg: Option<String>,
     ) -> Result<()> {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_pane_default_colors(fg, bg);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_pane_default_colors(fg, bg);
         }
         Ok(())
     }
@@ -1719,7 +1740,10 @@ impl Tab {
                 .retain(|(_, pane), _| *pane != pane_id);
         }
         self.get_pane_with_id_mut(pane_id)
-            .map(|pane| pane.set_agent_info(agent))
+            .map(|pane| {
+                pane.terminal_mut()
+                    .is_some_and(|term| term.set_agent_info(agent))
+            })
             .unwrap_or(false)
     }
     /// Whether any pane in this tab needs human input, including hidden panes.
@@ -1735,7 +1759,8 @@ impl Tab {
                     .map(|suppressed| &suppressed.pane),
             )
             .any(|pane| {
-                pane.agent_info()
+                pane.terminal()
+                    .and_then(|term| term.agent_info())
                     .is_some_and(AgentInfo::is_waiting_on_a_person)
             })
     }
@@ -1743,21 +1768,21 @@ impl Tab {
     /// at some point. The second half is what makes a clean exit fire `agent_exit` - the
     /// agent's own `SessionEnd` hook clears the record a moment before the process goes.
     pub fn pane_is_agent(&self, pane_id: PaneId) -> bool {
-        self.get_pane_with_id(pane_id)
-            .is_some_and(|pane| pane.agent_info().is_some() || pane.was_an_agent())
+        self.get_terminal(pane_id)
+            .is_some_and(|term| term.agent_info().is_some() || term.was_an_agent())
     }
     /// `pane_id`'s agent record, wherever the pane is - the screen reads it before a change so
     /// that a hook can be told what the record moved from.
     pub fn pane_last_agent_cwd(&self, pane_id: PaneId) -> Option<String> {
-        self.get_pane_with_id(pane_id)
+        self.get_terminal(pane_id)
             .and_then(|pane| pane.last_agent_cwd().map(str::to_owned))
     }
     pub fn pane_last_agent_kind(&self, pane_id: PaneId) -> Option<String> {
-        self.get_pane_with_id(pane_id)
+        self.get_terminal(pane_id)
             .and_then(|pane| pane.last_agent_kind().map(str::to_owned))
     }
     pub fn pane_agent_info(&self, pane_id: PaneId) -> Option<AgentInfo> {
-        self.get_pane_with_id(pane_id)
+        self.get_terminal(pane_id)
             .and_then(|pane| pane.agent_info().cloned())
     }
     /// The command `pane_id` runs, for a command pane; `None` for a shell, an editor or a
@@ -1781,13 +1806,13 @@ impl Tab {
             || self.overlay_panes.panes_contain(pid)
     }
     pub fn set_pane_is_nested_guest(&mut self, pane_id: PaneId, is_nested_guest: bool) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_is_nested_guest(is_nested_guest);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_is_nested_guest(is_nested_guest);
         }
     }
     pub fn is_pane_nested_guest(&self, pane_id: PaneId) -> bool {
         if let Some(pane) = self.get_pane_with_id(pane_id) {
-            pane.is_nested_guest()
+            pane.terminal().is_some_and(|term| term.is_nested_guest())
         } else {
             false
         }
@@ -1799,18 +1824,18 @@ impl Tab {
             .collect()
     }
     pub fn set_guest_modal_on_pane(&mut self, pane_id: PaneId, client_ids: &[ClientId]) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_guest_modal(client_ids);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_guest_modal(client_ids);
         }
     }
     pub fn clear_guest_modal_on_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_guest_modal(client_id);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_guest_modal(client_id);
         }
     }
     pub fn clear_all_guest_modals_on_pane(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_all_guest_modals();
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_all_guest_modals();
         }
     }
     pub fn set_guest_choice_indicator_on_pane(
@@ -1819,21 +1844,19 @@ impl Tab {
         client_id: ClientId,
         indicator: Option<GuestChoiceIndicator>,
     ) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_guest_choice_indicator(client_id, indicator);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_guest_choice_indicator(client_id, indicator);
         }
     }
     pub fn clear_all_guest_choice_indicators_on_pane(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_all_guest_choice_indicators();
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_all_guest_choice_indicators();
         }
     }
     pub fn pane_has_guest_modal_for_client(&self, pane_id: PaneId, client_id: ClientId) -> bool {
-        if let Some(pane) = self.get_pane_with_id(pane_id) {
-            pane.guest_modal_selection(client_id).is_some()
-        } else {
-            false
-        }
+        self.get_terminal(pane_id)
+            .and_then(|term| term.guest_modal_selection(client_id))
+            .is_some()
     }
     /// Note where a leaving client was, if it is the last client here, for the next to join.
     /// Every tab is asked, so one the client is not in keeps what it has.
@@ -1859,8 +1882,9 @@ impl Tab {
         if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id)
             && !self.mouse_hover_pane_id.values().any(|id| *id == pane_id)
             && let Some(pane) = self.get_pane_with_id_mut(pane_id)
+            && let Some(term) = pane.terminal_mut()
         {
-            pane.set_hover_position(None);
+            term.set_hover_position(None);
         }
         self.plugin_hover_pane_id.remove(&client_id);
         self.keyboard_text_selection.remove(&client_id);
@@ -1889,8 +1913,8 @@ impl Tab {
         pane_id: PaneId,
         session_name: Option<SessionName>,
     ) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_guest_session_name(session_name);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_guest_session_name(session_name);
         }
     }
     pub fn set_guest_modal_shortcuts_on_pane(
@@ -1898,8 +1922,8 @@ impl Tab {
         pane_id: PaneId,
         shortcuts: GuestModalShortcuts,
     ) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_guest_modal_shortcuts(shortcuts);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_guest_modal_shortcuts(shortcuts);
         }
     }
 
@@ -2556,8 +2580,8 @@ impl Tab {
                 (matches!(id, PaneId::Terminal(_))
                     && suppressed.restored_by.is_none()
                     && pane.selectable()
-                    && !pane.is_held()
-                    && !pane.exited()
+                    && !pane.terminal().is_some_and(|term| term.is_held())
+                    && !pane.terminal().is_some_and(|term| term.exited())
                     && !run_requests_overlay(pane.invoked_with())
                     && !self.pane_is_stack_list_member(id)
                     && self.pane_tabs_of(*id).is_none())
@@ -2669,7 +2693,7 @@ impl Tab {
                 && matches!(id, PaneId::Terminal(_))
                 && self
                     .get_pane_with_id(*id)
-                    .is_some_and(|pane| !pane.exited())
+                    .is_some_and(|pane| !pane.terminal().is_some_and(|term| term.exited()))
         })
     }
 
@@ -3330,11 +3354,10 @@ impl Tab {
             .unwrap_or(true)
     }
 
-    /// Mark `pane_id`'s frame and boundaries for repaint without touching its contents.
+    /// Request a normal render so the idle bell fade can advance.
     pub fn set_pane_frame_should_render(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.rendered_pane_mut(pane_id) {
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
         }
     }
 
@@ -3346,7 +3369,6 @@ impl Tab {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.flash_pane_frame_color_override(now);
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             true
         } else {
             false
@@ -3368,22 +3390,22 @@ impl Tab {
         highlights: Vec<RegexHighlight>,
         style: &Style,
     ) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.set_plugin_regex_highlights(plugin_id, highlights, style);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.set_plugin_regex_highlights(plugin_id, highlights, style);
         }
     }
 
     pub fn clear_all_plugin_highlights(&mut self, plugin_id: PluginId) {
         for pane_id in self.get_all_pane_ids() {
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.clear_plugin_highlights(plugin_id);
+            if let Some(term) = self.get_terminal_mut(pane_id) {
+                term.clear_plugin_highlights(plugin_id);
             }
         }
     }
 
     pub fn clear_plugin_highlights_for_pane(&mut self, pane_id: PaneId, plugin_id: PluginId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_plugin_highlights(plugin_id);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_plugin_highlights(plugin_id);
         }
     }
 
@@ -3422,8 +3444,11 @@ impl Tab {
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) {
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
-            plugin_pane.show_cursor(client_id, cursor_position);
+        if let Some(plugin) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|plugin_pane| plugin_pane.plugin_control_mut())
+        {
+            plugin.show_cursor(client_id, cursor_position);
         }
     }
     pub fn start_plugin_loading_indication(
@@ -3795,7 +3820,9 @@ impl Tab {
         self.overlay_panes.update_agent_theme_mapping(mapping);
         self.tiled_panes.update_agent_theme_mapping(mapping);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            pane.update_agent_theme_mapping(mapping);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_agent_theme_mapping(mapping);
+            }
         }
     }
     /// Store the server-owned color-query baseline on every pane, including
@@ -3809,7 +3836,9 @@ impl Tab {
         self.overlay_panes.update_application_baseline(baseline);
         self.tiled_panes.update_application_baseline(baseline);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            pane.update_application_baseline(baseline);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_application_baseline(baseline);
+            }
         }
     }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
@@ -3819,7 +3848,9 @@ impl Tab {
         self.overlay_panes.update_terminal_theme(theme);
         self.tiled_panes.update_terminal_theme(theme);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            pane.update_terminal_theme(theme);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_terminal_theme(theme);
+            }
         }
     }
     pub fn update_theme(&mut self, theme: Styling) {
@@ -3895,7 +3926,9 @@ impl Tab {
         self.tiled_panes
             .update_pane_kitty_keyboard_protocol_disabled(disabled);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            pane.update_kitty_keyboard_protocol_disabled(disabled);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_kitty_keyboard_protocol_disabled(disabled);
+            }
         }
     }
     pub fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
@@ -3915,7 +3948,9 @@ impl Tab {
         self.overlay_panes.update_pane_sixel_host_support(supported);
         self.tiled_panes.update_pane_sixel_host_support(supported);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            pane.update_sixel_host_support(supported);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_sixel_host_support(supported);
+            }
         }
     }
     pub fn update_default_shell(&mut self, mut default_shell: Option<PathBuf>) {
@@ -4515,8 +4550,8 @@ impl Tab {
         self.pane_being_resized_with_mouse = None;
         for id in self.get_all_pane_ids() {
             if let PaneId::Terminal(pid) = id {
-                if let Some(pane) = self.get_pane_with_id_mut(id) {
-                    pane.clear_scroll();
+                if let Some(term) = self.get_terminal_mut(id) {
+                    term.clear_scroll();
                 }
                 self.process_pending_vte_events(pid)
                     .context("drain scrolled terminal for session update")?;

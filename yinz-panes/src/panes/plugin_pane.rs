@@ -6,7 +6,7 @@ use yinz_types::internal_ids::{PluginId, SessionName};
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
-use crate::pane::{AdjustedInput, Pane, PluginPaneControl};
+use crate::pane::{AdjustedInput, Pane, PaneGeometry, PluginPaneControl, TiledGridPane};
 use crate::panes::{
     grid::Grid,
     kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece},
@@ -134,6 +134,20 @@ pub struct PluginPane {
 }
 
 impl PluginPane {
+    fn send_event(&self, event: Event, client_id: Option<ClientId>) -> Result<()> {
+        self.send_plugin_instructions
+            .send(PluginInstruction::Update(vec![(
+                Some(self.pid),
+                client_id,
+                event,
+            )]))
+            .with_context(|| {
+                format!(
+                    "failed to deliver input to plugin {} for client {client_id:?}",
+                    self.pid
+                )
+            })
+    }
     fn tab_bar_rows(&self) -> usize {
         usize::from(
             self.pane_tabs.is_some()
@@ -242,6 +256,143 @@ impl ClientLoad {
 }
 
 impl PluginPaneControl for PluginPane {
+    fn handle_plugin_bytes(&mut self, client_id: ClientId, bytes: VteBytes) {
+        self.set_client_should_render(client_id, true);
+
+        let vte_bytes = bytes;
+
+        let grid = get_or_create_grid!(self, client_id);
+
+        // this is part of the plugin contract, whenever we update the plugin and call its render function, we delete the existing viewport
+        // and scroll, reset the cursor position and make sure all the viewport is rendered
+        grid.delete_viewport_and_scroll();
+        grid.reset_cursor_position();
+        grid.render_full_viewport();
+
+        let vte_parser = self.vte_parsers.entry(client_id).or_default();
+        let interceptor = self
+            .kitty_interceptors
+            .entry(client_id)
+            .or_insert_with(KittyApcInterceptor::new);
+
+        // Kitty graphics arrive as APC, which vte parses into its ignore-string state and drops,
+        // so - exactly as `TerminalPane::handle_pty_bytes` does - the bytes are run past an
+        // interceptor first and the captured commands handed to the grid directly. None of the
+        // pause/forward machinery from that method applies here: a plugin pane has no pty, so
+        // there is nothing to forward a query to and nothing to replay afterwards.
+        let mut forwarded: Cow<'_, [u8]> = Cow::Borrowed(&[]);
+        for piece in interceptor.split(&vte_bytes) {
+            match piece {
+                Piece::Run(run) if forwarded.is_empty() => forwarded = Cow::Borrowed(run),
+                Piece::Run(run) => forwarded.to_mut().extend_from_slice(run),
+                Piece::Forward(fwd) => forwarded.to_mut().extend_from_slice(fwd.as_slice()),
+                Piece::CaptureStarted => {
+                    // Everything before the command has to reach the grid first: a placement is
+                    // positioned by where the cursor is when it arrives.
+                    if !forwarded.is_empty() {
+                        vte_parser.advance(grid, &forwarded);
+                        forwarded = Cow::Borrowed(&[]);
+                    }
+                },
+                Piece::Captured(command) => {
+                    if let Some(Err(error)) = grid.handle_kitty_apc(&command) {
+                        log::warn!(
+                            "plugin kitty command failed: plugin={} client={} image={:?} placement={:?} code={:?} message={} cell={:?} host={:?} images={} bytes={}",
+                            self.pid, client_id, error.image_id, error.placement_id,
+                            error.code, error.message, *self.character_cell_size.borrow(),
+                            self.kitty_host_support, self.kitty_image_store.borrow().image_count(),
+                            self.kitty_image_store.borrow().total_bytes(),
+                        );
+                    }
+                    // A plugin has no pty to answer on, so a reply or a forwarded query has
+                    // nowhere to go and would otherwise accumulate for the life of the pane.
+                    // Plugins should pass `q=2`; this is the belt for the ones that do not.
+                    grid.pending_messages_to_pty.clear();
+                    grid.pending_forwarded_queries.clear();
+                },
+            }
+        }
+        if !forwarded.is_empty() {
+            vte_parser.advance(grid, &forwarded);
+        }
+
+        // Plugin frames have no clipboard-write consumer. Unlike terminal output, these
+        // grids persist across renders without draining writes, so discard their payloads.
+        grid.pending_clipboard_updates.clear();
+
+        self.should_render.insert(client_id, true);
+    }
+    fn show_cursor(&mut self, client_id: ClientId, cursor_position: Option<(usize, usize)>) {
+        self.cursor_visibility.insert(client_id, cursor_position);
+        self.should_render.insert(client_id, true);
+    }
+    fn set_should_be_suppressed(&mut self, should_be_suppressed: bool) {
+        self.should_be_suppressed = should_be_suppressed;
+    }
+    fn query_should_be_suppressed(&self) -> bool {
+        self.should_be_suppressed
+    }
+    fn set_mouse_selection_support(&mut self, selection_support: bool) {
+        self.supports_mouse_selection = selection_support;
+        if !selection_support {
+            let client_ids_with_grids: Vec<ClientId> = self.grids.keys().copied().collect();
+            for client_id in client_ids_with_grids {
+                self.reset_selection(Some(client_id));
+            }
+        }
+    }
+    fn adjust_input_to_plugin(
+        &mut self,
+        key_with_modifier: &Option<KeyWithModifier>,
+        mut raw_input_bytes: Vec<u8>,
+        client_id: Option<ClientId>,
+    ) -> Option<AdjustedInput> {
+        if client_id
+            .and_then(|c| self.grids.get(&c))
+            .is_some_and(|g| g.has_selection())
+        {
+            // The next input clears a mouse selection's highlight, and only a bare Esc stops
+            // there: it is how you let go of a selection, and passing it on as well would close
+            // whatever the plugin has open. Anything else still reaches the plugin - swallowing
+            // it lost the key after every copy, and for a paste it lost the bracketed-paste
+            // opener, so the text arrived as keystrokes the plugin acted on one by one.
+            self.reset_selection(client_id);
+            let bare_esc = match key_with_modifier {
+                Some(key) => key.bare_key == BareKey::Esc && key.has_no_modifiers(),
+                None => raw_input_bytes == [27],
+            };
+            if bare_esc {
+                return None;
+            }
+        }
+        if let Some(key_with_modifier) = key_with_modifier {
+            Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier.clone()))
+        } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_BEGIN {
+            self.text_being_pasted.insert(client_id, vec![]);
+            None
+        } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_END {
+            if let Some(text_being_pasted) = self.text_being_pasted.remove(&client_id) {
+                match String::from_utf8(text_being_pasted) {
+                    Ok(pasted_text) => {
+                        self.send_event(Event::PastedText(pasted_text), client_id)
+                            .non_fatal();
+                    },
+                    Err(e) => {
+                        log::error!("Failed to convert pasted bytes as utf8 {:?}", e);
+                    },
+                }
+            }
+            None
+        } else if let Some(pasted_text) = self.text_being_pasted.get_mut(&client_id) {
+            pasted_text.append(&mut raw_input_bytes);
+            None
+        } else {
+            Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes))
+        }
+    }
+    fn send_mouse(&self, mouse: Mouse, client_id: Option<ClientId>) -> Result<()> {
+        self.send_event(Event::Mouse(mouse), client_id)
+    }
     fn update_plugin_location(&mut self, location: RunPluginLocation) {
         let plugin = match &mut self.invoked_with {
             Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin))) => Some(plugin),
@@ -343,21 +494,24 @@ impl PluginPaneControl for PluginPane {
     }
 }
 
-impl Pane for PluginPane {
-    fn plugin_control_mut(&mut self) -> Option<&mut dyn PluginPaneControl> {
-        Some(self)
+impl PaneGeometry for PluginPane {
+    fn pid(&self) -> PaneId {
+        PaneId::Plugin(self.pid)
     }
-    fn host_colors(&self) -> (PaletteColor, PaletteColor) {
-        let palette = self.terminal_emulator_colors.borrow();
-        (palette.fg, palette.bg)
+    fn position_and_size(&self) -> PaneGeom {
+        self.geom
     }
-    fn content_header_rows(&self) -> usize {
-        self.subtitle_rows() + self.tab_bar_rows()
+    fn geom_override(&self) -> Option<PaneGeom> {
+        self.geom_override
     }
-    fn reset_size_and_position_override(&mut self) {
-        self.geom_override = None;
-        self.resize_grids();
-        self.set_should_render(true);
+    fn max_content_width(&self) -> usize {
+        self.max_content_width
+    }
+    fn render_width(&self) -> Option<(usize, usize)> {
+        self.render_width
+    }
+    fn get_content_offset(&self) -> Offset {
+        self.content_offset
     }
     fn set_geom(&mut self, position_and_size: PaneGeom) {
         let is_pinned = self.geom.is_pinned;
@@ -370,6 +524,87 @@ impl Pane for PluginPane {
         self.geom_override = Some(pane_geom);
         self.resize_grids();
         self.set_should_render(true);
+    }
+    fn reset_size_and_position_override(&mut self) {
+        self.geom_override = None;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
+    fn reduce_height(&mut self, percent: f64) {
+        if let Some(p) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(p - percent);
+            self.resize_grids();
+            self.set_should_render(true);
+        }
+    }
+    fn increase_height(&mut self, percent: f64) {
+        if let Some(p) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(p + percent);
+            self.resize_grids();
+            self.set_should_render(true);
+        }
+    }
+    fn reduce_width(&mut self, percent: f64) {
+        if let Some(p) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(p - percent);
+            self.resize_grids();
+            self.set_should_render(true);
+        }
+    }
+    fn increase_width(&mut self, percent: f64) {
+        if let Some(p) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(p + percent);
+            self.resize_grids();
+            self.set_should_render(true);
+        }
+    }
+    fn push_down(&mut self, count: usize) {
+        self.geom.y += count;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
+    fn push_right(&mut self, count: usize) {
+        self.geom.x += count;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
+    fn pull_left(&mut self, count: usize) {
+        self.geom.x -= count;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
+    fn pull_up(&mut self, count: usize) {
+        self.geom.y -= count;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
+}
+
+impl TiledGridPane for PluginPane {
+    fn selectable(&self) -> bool {
+        self.selectable
+    }
+    fn active_at(&self) -> Instant {
+        self.active_at
+    }
+    fn borderless(&self) -> bool {
+        self.borderless
+    }
+}
+
+impl Pane for PluginPane {
+    fn plugin_control(&self) -> Option<&dyn PluginPaneControl> {
+        Some(self)
+    }
+    fn plugin_control_mut(&mut self) -> Option<&mut dyn PluginPaneControl> {
+        Some(self)
+    }
+    fn host_colors(&self) -> (PaletteColor, PaletteColor) {
+        let palette = self.terminal_emulator_colors.borrow();
+        (palette.fg, palette.bg)
+    }
+    fn content_header_rows(&self) -> usize {
+        self.subtitle_rows() + self.tab_bar_rows()
     }
     fn set_layout(
         &mut self,
@@ -392,72 +627,6 @@ impl Pane for PluginPane {
         }
         self.render_full_viewport();
         self.set_should_render(true);
-    }
-    fn handle_plugin_bytes(&mut self, client_id: ClientId, bytes: VteBytes) {
-        self.set_client_should_render(client_id, true);
-
-        let vte_bytes = bytes;
-
-        let grid = get_or_create_grid!(self, client_id);
-
-        // this is part of the plugin contract, whenever we update the plugin and call its render function, we delete the existing viewport
-        // and scroll, reset the cursor position and make sure all the viewport is rendered
-        grid.delete_viewport_and_scroll();
-        grid.reset_cursor_position();
-        grid.render_full_viewport();
-
-        let vte_parser = self.vte_parsers.entry(client_id).or_default();
-        let interceptor = self
-            .kitty_interceptors
-            .entry(client_id)
-            .or_insert_with(KittyApcInterceptor::new);
-
-        // Kitty graphics arrive as APC, which vte parses into its ignore-string state and drops,
-        // so - exactly as `TerminalPane::handle_pty_bytes` does - the bytes are run past an
-        // interceptor first and the captured commands handed to the grid directly. None of the
-        // pause/forward machinery from that method applies here: a plugin pane has no pty, so
-        // there is nothing to forward a query to and nothing to replay afterwards.
-        let mut forwarded: Cow<'_, [u8]> = Cow::Borrowed(&[]);
-        for piece in interceptor.split(&vte_bytes) {
-            match piece {
-                Piece::Run(run) if forwarded.is_empty() => forwarded = Cow::Borrowed(run),
-                Piece::Run(run) => forwarded.to_mut().extend_from_slice(run),
-                Piece::Forward(fwd) => forwarded.to_mut().extend_from_slice(fwd.as_slice()),
-                Piece::CaptureStarted => {
-                    // Everything before the command has to reach the grid first: a placement is
-                    // positioned by where the cursor is when it arrives.
-                    if !forwarded.is_empty() {
-                        vte_parser.advance(grid, &forwarded);
-                        forwarded = Cow::Borrowed(&[]);
-                    }
-                },
-                Piece::Captured(command) => {
-                    if let Some(Err(error)) = grid.handle_kitty_apc(&command) {
-                        log::warn!(
-                            "plugin kitty command failed: plugin={} client={} image={:?} placement={:?} code={:?} message={} cell={:?} host={:?} images={} bytes={}",
-                            self.pid, client_id, error.image_id, error.placement_id,
-                            error.code, error.message, *self.character_cell_size.borrow(),
-                            self.kitty_host_support, self.kitty_image_store.borrow().image_count(),
-                            self.kitty_image_store.borrow().total_bytes(),
-                        );
-                    }
-                    // A plugin has no pty to answer on, so a reply or a forwarded query has
-                    // nowhere to go and would otherwise accumulate for the life of the pane.
-                    // Plugins should pass `q=2`; this is the belt for the ones that do not.
-                    grid.pending_messages_to_pty.clear();
-                    grid.pending_forwarded_queries.clear();
-                },
-            }
-        }
-        if !forwarded.is_empty() {
-            vte_parser.advance(grid, &forwarded);
-        }
-
-        // Plugin frames have no clipboard-write consumer. Unlike terminal output, these
-        // grids persist across renders without draining writes, so discard their payloads.
-        grid.pending_clipboard_updates.clear();
-
-        self.should_render.insert(client_id, true);
     }
     fn set_initial_contents(&mut self, contents: &str) {
         self.handle_plugin_bytes_for_all_clients(format!("{contents}\n\r").into_bytes());
@@ -499,67 +668,6 @@ impl Pane for PluginPane {
         } else {
             None
         }
-    }
-    fn adjust_input_to_terminal(
-        &mut self,
-        key_with_modifier: &Option<KeyWithModifier>,
-        mut raw_input_bytes: Vec<u8>,
-        _raw_input_bytes_are_kitty: bool,
-        client_id: Option<ClientId>,
-    ) -> Option<AdjustedInput> {
-        if client_id
-            .and_then(|c| self.grids.get(&c))
-            .is_some_and(|g| g.has_selection())
-        {
-            // The next input clears a mouse selection's highlight, and only a bare Esc stops
-            // there: it is how you let go of a selection, and passing it on as well would close
-            // whatever the plugin has open. Anything else still reaches the plugin - swallowing
-            // it lost the key after every copy, and for a paste it lost the bracketed-paste
-            // opener, so the text arrived as keystrokes the plugin acted on one by one.
-            self.reset_selection(client_id);
-            let bare_esc = match key_with_modifier {
-                Some(key) => key.bare_key == BareKey::Esc && key.has_no_modifiers(),
-                None => raw_input_bytes == [27],
-            };
-            if bare_esc {
-                return None;
-            }
-        }
-        if let Some(key_with_modifier) = key_with_modifier {
-            Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier.clone()))
-        } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_BEGIN {
-            self.text_being_pasted.insert(client_id, vec![]);
-            None
-        } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_END {
-            if let Some(text_being_pasted) = self.text_being_pasted.remove(&client_id) {
-                match String::from_utf8(text_being_pasted) {
-                    Ok(pasted_text) => {
-                        let _ = self
-                            .send_plugin_instructions
-                            .send(PluginInstruction::Update(vec![(
-                                Some(self.pid),
-                                client_id,
-                                Event::PastedText(pasted_text),
-                            )]));
-                    },
-                    Err(e) => {
-                        log::error!("Failed to convert pasted bytes as utf8 {:?}", e);
-                    },
-                }
-            }
-            None
-        } else if let Some(pasted_text) = self.text_being_pasted.get_mut(&client_id) {
-            pasted_text.append(&mut raw_input_bytes);
-            None
-        } else {
-            Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes))
-        }
-    }
-    fn position_and_size(&self) -> PaneGeom {
-        self.geom
-    }
-    fn geom_override(&self) -> Option<PaneGeom> {
-        self.geom_override
     }
     fn add_client(&mut self, client_id: ClientId) {
         if !self.grids.contains_key(&client_id) {
@@ -619,15 +727,8 @@ impl Pane for PluginPane {
             grid.render_full_viewport();
         }
     }
-    fn selectable(&self) -> bool {
-        self.selectable
-    }
     fn set_selectable(&mut self, selectable: bool) {
         self.selectable = selectable;
-    }
-    fn show_cursor(&mut self, client_id: ClientId, cursor_position: Option<(usize, usize)>) {
-        self.cursor_visibility.insert(client_id, cursor_position);
-        self.should_render.insert(client_id, true);
     }
     fn render(
         &mut self,
@@ -724,7 +825,6 @@ impl Pane for PluginPane {
         self.should_render.insert(client_id, false);
         Ok(Some(rendered))
     }
-
     fn render_frame(
         &mut self,
         client_id: ClientId,
@@ -788,13 +888,6 @@ impl Pane for PluginPane {
         self.frame.insert(client_id, frame);
         Ok(Some(frame_output))
     }
-    fn render_fake_cursor(
-        &mut self,
-        _cursor_color: PaletteColor,
-        _text_color: PaletteColor,
-    ) -> Option<CharacterChunk> {
-        None
-    }
     fn render_terminal_title(
         &mut self,
         input_mode: InputMode,
@@ -824,104 +917,11 @@ impl Pane for PluginPane {
         }
         self.set_should_render(true);
     }
-    fn pid(&self) -> PaneId {
-        PaneId::Plugin(self.pid)
-    }
-    fn reduce_height(&mut self, percent: f64) {
-        if let Some(p) = self.geom.rows.as_percent() {
-            self.geom.rows.set_percent(p - percent);
-            self.resize_grids();
-            self.set_should_render(true);
-        }
-    }
-    fn increase_height(&mut self, percent: f64) {
-        if let Some(p) = self.geom.rows.as_percent() {
-            self.geom.rows.set_percent(p + percent);
-            self.resize_grids();
-            self.set_should_render(true);
-        }
-    }
-    fn reduce_width(&mut self, percent: f64) {
-        if let Some(p) = self.geom.cols.as_percent() {
-            self.geom.cols.set_percent(p - percent);
-            self.resize_grids();
-            self.set_should_render(true);
-        }
-    }
-    fn increase_width(&mut self, percent: f64) {
-        if let Some(p) = self.geom.cols.as_percent() {
-            self.geom.cols.set_percent(p + percent);
-            self.resize_grids();
-            self.set_should_render(true);
-        }
-    }
-    fn push_down(&mut self, count: usize) {
-        self.geom.y += count;
-        self.resize_grids();
-        self.set_should_render(true);
-    }
-    fn push_right(&mut self, count: usize) {
-        self.geom.x += count;
-        self.resize_grids();
-        self.set_should_render(true);
-    }
-    fn pull_left(&mut self, count: usize) {
-        self.geom.x -= count;
-        self.resize_grids();
-        self.set_should_render(true);
-    }
-    fn pull_up(&mut self, count: usize) {
-        self.geom.y -= count;
-        self.resize_grids();
-        self.set_should_render(true);
-    }
     fn dump_screen(&self, full: bool, client_id: Option<ClientId>) -> String {
         client_id
             .and_then(|c| self.grids.get(&c))
             .map(|g| g.dump_screen(full))
             .unwrap_or_else(|| "".to_owned())
-    }
-    fn scroll_up(&mut self, count: usize, client_id: Option<ClientId>) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                client_id,
-                Event::Mouse(Mouse::ScrollUp(count)),
-            )]))
-            .unwrap();
-    }
-    fn scroll_down(&mut self, count: usize, client_id: Option<ClientId>) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                client_id,
-                Event::Mouse(Mouse::ScrollDown(count)),
-            )]))
-            .unwrap();
-    }
-    fn scroll_left(&mut self, count: usize, client_id: ClientId) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::ScrollLeft(count)),
-            )]))
-            .unwrap();
-    }
-    fn scroll_right(&mut self, count: usize, client_id: ClientId) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::ScrollRight(count)),
-            )]))
-            .unwrap();
-    }
-    fn clear_screen(&mut self) {
-        // do nothing
-    }
-    fn clear_scroll(&mut self) {
-        // noop
     }
     fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {
         for grid in self.grids.values_mut() {
@@ -935,13 +935,6 @@ impl Pane for PluginPane {
             grid.start_selection(start);
             self.set_should_render(true);
         }
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::LeftClick(start.line.get(), start.column.get())),
-            )]))
-            .unwrap();
     }
     fn update_selection(&mut self, position: &Position, client_id: ClientId) {
         if self.supports_mouse_selection
@@ -950,13 +943,6 @@ impl Pane for PluginPane {
             grid.update_selection(position);
             self.set_should_render(true);
         }
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::Hold(position.line.get(), position.column.get())),
-            )]))
-            .unwrap();
     }
     fn end_selection(&mut self, end: &Position, client_id: ClientId) {
         if self.supports_mouse_selection
@@ -968,13 +954,6 @@ impl Pane for PluginPane {
             // `update_selection` to do it.
             self.set_should_render(true);
         }
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::Release(end.line(), end.column())),
-            )]))
-            .unwrap();
     }
     fn reset_selection(&mut self, client_id: Option<ClientId>) {
         if let Some(grid) = client_id.and_then(|c| self.grids.get_mut(&c)) {
@@ -1027,7 +1006,6 @@ impl Pane for PluginPane {
     fn supports_mouse_selection(&self) -> bool {
         self.supports_mouse_selection
     }
-
     fn get_selected_text(&self, client_id: ClientId) -> Option<String> {
         if let Some(grid) = self.grids.get(&client_id) {
             grid.get_selected_text()
@@ -1035,22 +1013,11 @@ impl Pane for PluginPane {
             None
         }
     }
-    fn is_scrolled(&self) -> bool {
-        false
-    }
-
-    fn active_at(&self) -> Instant {
-        self.active_at
-    }
-
     fn set_active_at(&mut self, time: Instant) {
         self.active_at = time;
     }
-    fn set_frame(&mut self, _frame: bool) {
+    fn invalidate_all_frames(&mut self) {
         self.frame.clear();
-    }
-    fn render_width(&self) -> Option<(usize, usize)> {
-        self.render_width
     }
     fn set_render_width(&mut self, width: Option<(usize, usize)>) -> bool {
         let before = self.render_geom();
@@ -1061,9 +1028,6 @@ impl Pane for PluginPane {
         self.resize_grids();
         self.render_full_viewport();
         true
-    }
-    fn max_content_width(&self) -> usize {
-        self.max_content_width
     }
     fn set_max_content_width(&mut self, width: usize) -> bool {
         let before = self.render_geom();
@@ -1079,7 +1043,6 @@ impl Pane for PluginPane {
         self.content_offset = offset;
         self.resize_grids();
     }
-
     fn set_subtitle(&mut self, subtitle: Option<String>) {
         let subtitle = subtitle
             .map(|text| yinz_types::text::clean_string_from_control_and_linebreak(&text))
@@ -1145,11 +1108,6 @@ impl Pane for PluginPane {
     fn subtitle_enabled(&self) -> bool {
         self.subtitle_enabled
     }
-
-    fn get_content_offset(&self) -> Offset {
-        self.content_offset
-    }
-
     fn store_pane_name(&mut self) {
         if self.pane_name != self.prev_pane_name {
             self.prev_pane_name = self.pane_name.clone()
@@ -1161,7 +1119,6 @@ impl Pane for PluginPane {
             self.set_should_render(true);
         }
     }
-
     fn set_borderless(&mut self, should_be_borderless: bool) {
         self.set_borderless_with_content_offset(
             should_be_borderless,
@@ -1175,9 +1132,6 @@ impl Pane for PluginPane {
     fn set_borderless_with_content_offset(&mut self, borderless: bool, offset: Offset) {
         self.borderless = borderless;
         self.set_content_offset(offset);
-    }
-    fn borderless(&self) -> bool {
-        self.borderless
     }
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool) {
         self.exclude_from_sync = exclude_from_sync;
@@ -1307,12 +1261,6 @@ impl Pane for PluginPane {
             self.set_should_render(true);
         }
     }
-    fn set_should_be_suppressed(&mut self, should_be_suppressed: bool) {
-        self.should_be_suppressed = should_be_suppressed;
-    }
-    fn query_should_be_suppressed(&self) -> bool {
-        self.should_be_suppressed
-    }
     fn toggle_pinned(&mut self) {
         self.set_pinned(!self.geom.is_pinned);
     }
@@ -1337,41 +1285,6 @@ impl Pane for PluginPane {
     }
     fn reset_logical_position(&mut self) {
         self.geom.logical_position = None;
-    }
-    fn mouse_event(&self, event: &MouseEvent, client_id: ClientId) -> Option<String> {
-        let (line, column) = (event.position.line(), event.position.column());
-        let mouse = match event.event_type {
-            MouseEventType::Motion
-                if !event.left
-                    && !event.right
-                    && !event.middle
-                    && !event.wheel_up
-                    && !event.wheel_down =>
-            {
-                Mouse::Hover(line, column)
-            },
-            // The tab sends a right press here only on the focused pane's content, and only when
-            // no context menu opened for it. The release and any drag that follow are not clicks.
-            MouseEventType::Press if event.right => Mouse::RightClick(line, column),
-            _ => return None,
-        };
-        let _ = self
-            .send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(mouse),
-            )]));
-        None
-    }
-    fn set_mouse_selection_support(&mut self, selection_support: bool) {
-        self.supports_mouse_selection = selection_support;
-        if !selection_support {
-            let client_ids_with_grids: Vec<ClientId> = self.grids.keys().copied().collect();
-            for client_id in client_ids_with_grids {
-                self.reset_selection(Some(client_id));
-            }
-        }
     }
     fn pane_contents(
         &self,

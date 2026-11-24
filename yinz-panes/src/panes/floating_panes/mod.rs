@@ -392,8 +392,8 @@ impl FloatingPanes {
         is_first_run: bool,
         run_command: RunCommand,
     ) {
-        if let Some(p) = self.panes.get_mut(&pane_id) {
-            p.hold(exit_status, is_first_run, run_command);
+        if let Some(term) = self.panes.get_mut(&pane_id).and_then(|p| p.terminal_mut()) {
+            term.hold(exit_status, is_first_run, run_command);
         }
     }
     pub fn get(&self, pane_id: &PaneId) -> Option<&Box<dyn Pane>> {
@@ -585,7 +585,6 @@ impl FloatingPanes {
     pub fn set_force_render(&mut self) {
         for pane in self.panes.values_mut() {
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
     }
@@ -601,7 +600,6 @@ impl FloatingPanes {
                 continue;
             }
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
     }
@@ -625,7 +623,7 @@ impl FloatingPanes {
                 pane_frame_style.draws_full_frames() || pane_frame_style.draws_titles(),
             );
             if no_ui_fullscreen_pane_id == Some(pane.pid()) {
-                pane.set_frame(false);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::default());
                 resize_pty!(pane, os_api, self.senders, self.character_cell_size)
                     .with_context(|| err_context(&pane.pid()))?;
@@ -633,16 +631,16 @@ impl FloatingPanes {
             }
             if regular_fullscreen_pane_id == Some(pane.pid()) {
                 if pane.borderless() {
-                    pane.set_frame(false);
+                    pane.invalidate_all_frames();
                     pane.set_content_offset(Offset::default());
                 } else if pane_frame_style.draws_full_frames() {
-                    pane.set_frame(true);
+                    pane.invalidate_all_frames();
                     pane.set_content_offset(Offset::frame(1));
                 } else if pane_frame_style.draws_titles() {
-                    pane.set_frame(false);
+                    pane.invalidate_all_frames();
                     pane.set_content_offset(Offset::shift_right_top_and_bottom(0, 1, 0));
                 } else {
-                    pane.set_frame(false);
+                    pane.invalidate_all_frames();
                     pane.set_content_offset(Offset::default());
                 }
                 resize_pty!(pane, os_api, self.senders, self.character_cell_size)
@@ -651,7 +649,7 @@ impl FloatingPanes {
             }
             // floating panes should always have a frame unless explicitly set otherwise
             if !pane.borderless() {
-                pane.set_frame(true);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::frame(1));
             } else {
                 pane.set_content_offset(Offset::default());
@@ -751,7 +749,9 @@ impl FloatingPanes {
             let show_help_text = active_panes.iter().any(|(client_id, pane_id)| {
                 pane_id == &pane.pid() && help_text_visible.get(client_id).copied().unwrap_or(false)
             });
-            let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
+            let pane_has_guest_modal = pane
+                .terminal()
+                .is_some_and(|term| term.has_guest_modal_for_any_client());
             let pane_is_regular_fullscreen =
                 regular_fullscreen && Some(**kind) == fullscreen_pane_id;
             let should_draw_pane_frames = if pane_is_regular_fullscreen {
@@ -1537,16 +1537,16 @@ impl FloatingPanes {
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             // a pane covering the UI, or a borderless pane: no frame either way
             if covers_ui || pane.borderless() {
-                pane.set_frame(false);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::default());
             } else if pane_frame_style.draws_full_frames() {
-                pane.set_frame(true);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::frame(1));
             } else if pane_frame_style.draws_titles() {
-                pane.set_frame(false);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::shift_right_top_and_bottom(0, 1, 0));
             } else {
-                pane.set_frame(false);
+                pane.invalidate_all_frames();
                 pane.set_content_offset(Offset::default());
             }
         }
@@ -1563,7 +1563,7 @@ impl FloatingPanes {
             if let Some(pane) = self.panes.get_mut(&fullscreen_pane_id) {
                 pane.reset_size_and_position_override();
                 if !pane.borderless() {
-                    pane.set_frame(true);
+                    pane.invalidate_all_frames();
                     pane.set_content_offset(Offset::frame(1));
                 } else {
                     pane.set_content_offset(Offset::default());
@@ -1951,7 +1951,9 @@ impl FloatingPanes {
     ) {
         self.style.agent_theme_mapping = mapping;
         for pane in self.panes.values_mut() {
-            pane.update_agent_theme_mapping(mapping);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_agent_theme_mapping(mapping);
+            }
         }
     }
     pub fn update_application_baseline(
@@ -1960,13 +1962,17 @@ impl FloatingPanes {
     ) {
         self.style.application = baseline;
         for pane in self.panes.values_mut() {
-            pane.update_application_baseline(baseline);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_application_baseline(baseline);
+            }
         }
     }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for pane in self.panes.values_mut() {
-            pane.update_terminal_theme(theme);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_terminal_theme(theme);
+            }
         }
     }
     pub fn update_pane_themes(&mut self, theme: Styling) {
@@ -1987,7 +1993,9 @@ impl FloatingPanes {
     }
     pub fn update_pane_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
         for pane in self.panes.values_mut() {
-            pane.update_kitty_keyboard_protocol_disabled(disabled);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_kitty_keyboard_protocol_disabled(disabled);
+            }
         }
     }
     pub fn set_session_is_mirrored(&mut self, session_is_mirrored: bool) {
@@ -2000,7 +2008,9 @@ impl FloatingPanes {
     }
     pub fn update_pane_sixel_host_support(&mut self, supported: bool) {
         for pane in self.panes.values_mut() {
-            pane.update_sixel_host_support(supported);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_sixel_host_support(supported);
+            }
         }
     }
     pub fn update_pane_rounded_corners(&mut self, rounded_corners: bool) {

@@ -1,5 +1,7 @@
 //! Semantic checks across PTY ingestion, pane diffs, and host serialization.
 use super::TerminalPane;
+use crate::pane::PaneGeometry;
+use crate::pane::TerminalPaneOps;
 use crate::pane::{Pane, TerminalPaneIo};
 use crate::panes::{KittyImageStore, LinkHandler, SixelImageStore};
 use hegel::generators;
@@ -671,12 +673,16 @@ fn multiplayer_cursors_are_painted_after_shared_pane_contents() {
         let mut surface = Surface::new(&[geom(3, 2, 8, 3)]);
         let mut pane: Box<dyn Pane> = Box::new(surface.panes.remove(0));
         let focus = HashMap::from([(CLIENT, pane.pid())]);
-        pane.handle_pty_bytes(b"ab\x1b[1;1H".to_vec());
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"ab\x1b[1;1H".to_vec());
         let mut native = HashMap::from([(viewer, NativeRenderState::default())]);
         let mut host = Surface::new(&[geom(0, 0, 16, 8)]);
         for column in [0, 1] {
             if column == 1 {
-                pane.handle_pty_bytes(b"\x1b[1;2H".to_vec());
+                pane.terminal_mut()
+                    .unwrap()
+                    .handle_pty_bytes(b"\x1b[1;2H".to_vec());
             }
             let mut output = Output::default();
             output.add_clients(&clients, surface.links.clone(), None);

@@ -613,12 +613,16 @@ fn automatic_pane_titles_are_lent_without_becoming_explicit() {
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Titles);
     screen.with_pane(pane_id, |pane| {
-        pane.set_title_prefix(Some("yinz:topic".to_owned()));
+        pane.terminal_mut()
+            .unwrap()
+            .set_title_prefix(Some("yinz:topic".to_owned()));
         assert!(!pane.has_explicit_title());
     });
     assert_eq!(name_of(&screen, tab_id), "[1] yinz:topic");
     screen.with_pane(pane_id, |pane| {
-        pane.set_running_program(Some("/bin/zsh".to_owned()))
+        pane.terminal_mut()
+            .unwrap()
+            .set_running_program(Some("/bin/zsh".to_owned()))
     });
     assert_eq!(name_of(&screen, tab_id), "[1] yinz:topic: zsh");
     screen
@@ -626,7 +630,9 @@ fn automatic_pane_titles_are_lent_without_becoming_explicit() {
         .unwrap()
         .rename_by_user("my tab".to_owned());
     screen.with_pane(pane_id, |pane| {
-        pane.set_running_program(Some("/usr/bin/vim".to_owned()))
+        pane.terminal_mut()
+            .unwrap()
+            .set_running_program(Some("/usr/bin/vim".to_owned()))
     });
     assert_eq!(name_of(&screen, tab_id), "[1] my tab");
     screen
@@ -650,8 +656,12 @@ fn a_lone_agent_panes_full_title_outranks_the_project() {
         .set_pane_frames(PaneFrameStyle::Titles);
     screen
         .with_pane(pane_id, |pane| {
-            pane.handle_pty_bytes(b"\x1b]0;codex\x07".to_vec());
-            pane.set_title_prefix(Some("agent:topic".to_owned()));
+            pane.terminal_mut()
+                .unwrap()
+                .handle_pty_bytes(b"\x1b]0;codex\x07".to_vec());
+            pane.terminal_mut()
+                .unwrap()
+                .set_title_prefix(Some("agent:topic".to_owned()));
         })
         .expect("TEST");
 
@@ -912,7 +922,9 @@ fn a_long_lent_pane_title_keeps_the_width_limit_and_exit_marker() {
     screen
         .with_pane(pane_id, |pane| {
             pane.rename("界".repeat(40).into_bytes());
-            pane.set_title_prefix(Some("agent:topic".to_owned()));
+            pane.terminal_mut()
+                .unwrap()
+                .set_title_prefix(Some("agent:topic".to_owned()));
         })
         .expect("TEST");
 

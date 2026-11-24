@@ -1,4 +1,5 @@
 use super::*;
+use crate::pane::PaneGeometry;
 
 #[test]
 fn gutter_edges_preserve_existing_symbols_and_colors() {

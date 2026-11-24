@@ -53,7 +53,11 @@ pub(super) fn replay_pending_pane_event(
             apply_pane_foreground_command(screen, terminal_id, command, program);
         },
         ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix) => {
-            screen.with_pane(pane_id, |pane| pane.set_title_prefix(prefix));
+            screen.with_pane(pane_id, |pane| {
+                if let Some(term) = pane.terminal_mut() {
+                    term.set_title_prefix(prefix);
+                }
+            });
         },
         ScreenInstruction::PtyBytes(pid, bytes) => {
             screen

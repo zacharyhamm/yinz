@@ -19,9 +19,11 @@ impl Screen {
         let pane = self
             .tab_containing_pane_mut(pane_id)?
             .get_pane_with_id_mut(pane_id)?;
-        let previous = pane.agent_info().cloned();
-        pane.set_launch_command(command);
-        let current = pane.agent_info().cloned();
+        let previous = pane.terminal().and_then(|term| term.agent_info()).cloned();
+        if let Some(term) = pane.terminal_mut() {
+            term.set_launch_command(command);
+        }
+        let current = pane.terminal().and_then(|term| term.agent_info()).cloned();
         self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
         Some(size)
     }
@@ -203,7 +205,7 @@ impl Screen {
                     .unwrap_or_else(|| yinz_types::internal_ids::TabId::new(usize::MAX)),
             )
             .and_then(|tab| tab.get_pane_with_id(spawned.pane_id))
-            .is_none_or(|pane| pane.exited())
+            .is_none_or(|pane| pane.terminal().is_some_and(|term| term.exited()))
         {
             return false;
         }

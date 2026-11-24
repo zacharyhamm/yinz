@@ -18,6 +18,7 @@ use std::str;
 use std::time::Instant;
 use yinz_panes::pane::HoldForCommand;
 use yinz_panes::pane::Pane;
+use yinz_panes::pane::TerminalPaneOps;
 use yinz_panes::resize_pty;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::Event;
@@ -642,7 +643,9 @@ impl Tab {
         pane.update_name("\0");
         pane.update_name(&layout.name.unwrap_or_default());
         pane.set_borderless(layout.borderless.unwrap_or(false));
-        pane.set_pane_default_colors(layout.default_fg, layout.default_bg);
+        if let Some(term) = pane.terminal_mut() {
+            term.set_pane_default_colors(layout.default_fg, layout.default_bg);
+        }
         self.park_new_pane(pane).context("park warp companion")?;
         let pane = self
             .get_pane_with_id_mut(id)
@@ -650,8 +653,10 @@ impl Tab {
         if let Some(contents) = layout.pane_initial_contents {
             pane.set_initial_contents(&contents);
         }
-        if let Some(command) = held_command {
-            pane.hold(None, true, command);
+        if let Some(command) = held_command
+            && let Some(term) = pane.terminal_mut()
+        {
+            term.hold(None, true, command);
         }
         Ok(())
     }
@@ -671,8 +676,10 @@ impl Tab {
             let mut pane = self
                 .build_pane(pane_id, None, Some(Run::Command(command)), None)
                 .context("failed to retain an adopted terminal after layout rejection")?;
-            if let Some(command) = held_command {
-                pane.hold(None, true, command);
+            if let Some(command) = held_command
+                && let Some(term) = pane.terminal_mut()
+            {
+                term.hold(None, true, command);
             }
             let show_pane = self.tiled_panes.get_panes().next().is_none();
             let geom = if show_pane {

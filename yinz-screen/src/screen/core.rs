@@ -31,9 +31,11 @@ impl ScreenCore {
 impl AgentHost for ScreenCore {
     fn restore_terminal_state(&mut self, pane: PaneId, state: &str) {
         for tab in self.tabs.values_mut() {
-            if let Some(terminal) = tab.get_pane_with_id_mut(pane) {
-                terminal
-                    .restore_terminal_state(state)
+            if let Some(target) = tab.get_pane_with_id_mut(pane) {
+                target
+                    .terminal_mut()
+                    .ok_or_else(|| "this pane has no semantic terminal state".to_owned())
+                    .and_then(|terminal| terminal.restore_terminal_state(state))
                     .map_err(|e| anyhow!("{e}"))
                     .context("restore adopted terminal state")
                     .non_fatal();
@@ -50,8 +52,8 @@ impl AgentHost for ScreenCore {
 
     fn agent_enter_revision(&self, pane: PaneId) -> u64 {
         self.tab_containing_pane(pane)
-            .and_then(|tab| tab.get_pane_with_id(pane))
-            .map_or(0, |p| p.agent_enter_revision())
+            .and_then(|tab| tab.get_terminal(pane))
+            .map_or(0, |term| term.agent_enter_revision())
     }
 
     fn instance_id(&self) -> uuid::Uuid {
@@ -59,9 +61,9 @@ impl AgentHost for ScreenCore {
     }
     fn held_agent_conversation(&self, pane: PaneId) -> Option<Option<&str>> {
         self.tab_containing_pane(pane)?
-            .get_pane_with_id(pane)
-            .filter(|p| p.is_held() && p.exited() && p.was_an_agent())
-            .map(|p| p.last_agent_session_id())
+            .get_terminal(pane)
+            .filter(|t| t.is_held() && t.exited() && t.was_an_agent())
+            .map(|t| t.last_agent_session_id())
     }
     fn pane_is_agent(&self, pane: PaneId) -> bool {
         self.tab_containing_pane(pane)
@@ -133,14 +135,14 @@ impl AgentHost for ScreenCore {
         after: Option<&str>,
     ) -> Option<yinz_types::agent::control::TerminalFrame> {
         self.tab_containing_pane_mut(pane)?
-            .get_pane_with_id_mut(pane)?
+            .get_terminal_mut(pane)?
             .web_terminal_frame(after)
     }
 
     fn clear_web_terminal_snapshot(&mut self, pane: PaneId) {
         if let Some(target) = self
             .tab_containing_pane_mut(pane)
-            .and_then(|tab| tab.get_pane_with_id_mut(pane))
+            .and_then(|tab| tab.get_terminal_mut(pane))
         {
             target.clear_web_terminal_snapshot();
         }
@@ -160,8 +162,8 @@ impl AgentHost for ScreenCore {
             .context("write web terminal input")?;
         if count_input
             && tab
-                .get_pane_with_id_mut(pane)
-                .is_some_and(|target| target.record_agent_input(enter))
+                .get_terminal_mut(pane)
+                .is_some_and(|term| term.record_agent_input(enter))
         {
             tab.senders
                 .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins)
@@ -221,8 +223,9 @@ impl AgentHost for ScreenCore {
         self.tabs.values().flat_map(|tab| {
             tab.get_all_pane_ids().into_iter().filter_map(|id| {
                 let pane = tab.get_pane_with_id(id)?;
-                let agent = pane.agent_info()?;
-                if agent.state == AgentState::Exited || pane.exited()
+                let terminal = pane.terminal()?;
+                let agent = terminal.agent_info()?;
+                if agent.state == AgentState::Exited || terminal.exited()
                     || matches!(id, PaneId::Terminal(id) if self.terminal_hosts.contains_key(&id))
                     || matches!(pane.invoked_with(), Some(Run::Command(command)) if command.target.is_remote())
                 {
@@ -302,14 +305,16 @@ impl AgentHost for ScreenCore {
         let pane = tab.get_pane_with_id(pane_id)?;
         let command = tab.pane_run_command(pane_id);
         Some(PaneInput {
-            suspended: pane.is_suspended(),
+            suspended: pane.terminal().is_some_and(|term| term.is_suspended()),
             sync_active: tab.is_sync_panes_active(),
             excluded_from_sync: pane.exclude_from_sync(),
             command_present: command.is_some(),
             command_kind: command.and_then(|run| {
                 yinz_types::agent::kind_from_program_and_args(&run.command, &run.args)
             }),
-            bracketed_paste: pane.supports_bracketed_paste(),
+            bracketed_paste: pane
+                .terminal()
+                .is_some_and(|term| term.supports_bracketed_paste()),
         })
     }
     fn viewport(
@@ -351,6 +356,7 @@ impl AgentHost for ScreenCore {
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.get_pane_with_id(pane_id))
             .ok_or("target pane does not exist")?;
+        let pane = pane.terminal().ok_or("target must be a terminal pane")?;
         let mut command = pane.agent_restart_command(session, prompt)?;
         let kind = pane
             .last_agent_kind()
@@ -409,8 +415,11 @@ impl AgentHost for ScreenCore {
         if !tab.run_command_in_pane_with_id(terminal_id, command, false) {
             return Err("agent pane could not accept the restart".into());
         }
-        if fresh && let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-            pane.clear_agent_session_id();
+        if fresh
+            && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
+            && let Some(term) = pane.terminal_mut()
+        {
+            term.clear_agent_session_id();
         }
         tab.set_pane_agent(pane_id, Some(current.clone()));
         Ok(())

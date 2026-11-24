@@ -4024,7 +4024,9 @@ impl Screen {
     ///
     pub fn set_pane_host(&mut self, terminal_id: TerminalId, host: Option<String>) -> Result<()> {
         self.with_pane(PaneId::Terminal(terminal_id), |pane| {
-            pane.set_remote_host(host.clone())
+            if let Some(term) = pane.terminal_mut() {
+                term.set_remote_host(host.clone());
+            }
         });
         let changed = match host {
             Some(host) => self.core.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
@@ -4262,7 +4264,10 @@ impl Screen {
                             p_id.and_then(|p_id| if p_id == pane_id { Some(*c_id) } else { None })
                         })
                         .collect();
-                    let (default_fg, default_bg) = p.get_pane_default_colors();
+                    let (default_fg, default_bg) = p
+                        .terminal()
+                        .map(|term| term.get_pane_default_colors())
+                        .unwrap_or_default();
                     let pane = PaneLayoutMetadata::new(
                         pane_id,
                         geom,
@@ -4271,7 +4276,9 @@ impl Screen {
                         p.custom_title(),
                         !focused_clients.is_empty(),
                         if with_contents {
-                            p.serialize(self.core.scrollback_lines_to_serialize)
+                            p.terminal().and_then(|term| {
+                                term.serialize(self.core.scrollback_lines_to_serialize)
+                            })
                         } else {
                             None
                         },
@@ -4280,7 +4287,10 @@ impl Screen {
                         default_bg,
                     )
                     .with_pane_tabs(p.pane_tabs());
-                    (pane_id, purpose.apply_agent(pane, p.agent_info()))
+                    (
+                        pane_id,
+                        purpose.apply_agent(pane, p.terminal().and_then(|term| term.agent_info())),
+                    )
                 })
                 .collect();
             let floating_panes: Vec<(PaneId, PaneLayoutMetadata)> = if for_warp {
@@ -4307,7 +4317,10 @@ impl Screen {
                         p_id.and_then(|p_id| if p_id == pane_id { Some(*c_id) } else { None })
                     })
                     .collect();
-                let (default_fg, default_bg) = p.get_pane_default_colors();
+                let (default_fg, default_bg) = p
+                    .terminal()
+                    .map(|term| term.get_pane_default_colors())
+                    .unwrap_or_default();
                 let pane = PaneLayoutMetadata::new(
                     pane_id,
                     geom,
@@ -4316,7 +4329,9 @@ impl Screen {
                     p.custom_title(),
                     !focused_clients.is_empty(),
                     if with_contents {
-                        p.serialize(self.core.scrollback_lines_to_serialize)
+                        p.terminal().and_then(|term| {
+                            term.serialize(self.core.scrollback_lines_to_serialize)
+                        })
                     } else {
                         None
                     },
@@ -4325,7 +4340,10 @@ impl Screen {
                     default_bg,
                 )
                 .with_pane_tabs(p.pane_tabs());
-                (pane_id, purpose.apply_agent(pane, p.agent_info()))
+                (
+                    pane_id,
+                    purpose.apply_agent(pane, p.terminal().and_then(|term| term.agent_info())),
+                )
             })
             .collect();
             (tiled_panes, floating_panes, hide_floating_panes)

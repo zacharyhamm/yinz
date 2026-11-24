@@ -84,7 +84,9 @@ fn initial_contents_seed_each_plugin_client_until_its_first_frame() {
             "restored λ\nsecond row"
         );
     }
-    pane.handle_plugin_bytes(first, b"live frame".to_vec());
+    pane.plugin_control_mut()
+        .unwrap()
+        .handle_plugin_bytes(first, b"live frame".to_vec());
     assert_eq!(
         pane.dump_screen(false, Some(first)).trim_end(),
         "live frame"
@@ -157,8 +159,7 @@ fn a_key_after_a_selection_clears_it_and_still_reaches_the_plugin() {
     let client_id = ClientId::new(1);
     let j = KeyWithModifier::new(BareKey::Char('j'));
 
-    let adjusted =
-        pane.adjust_input_to_terminal(&Some(j.clone()), b"j".to_vec(), false, Some(client_id));
+    let adjusted = pane.adjust_input_to_plugin(&Some(j.clone()), b"j".to_vec(), Some(client_id));
 
     assert!(
         matches!(&adjusted, Some(AdjustedInput::WriteKeyToPlugin(key)) if *key == j),
@@ -175,7 +176,7 @@ fn esc_after_a_selection_only_clears_it() {
         let (mut pane, _plugin_rx) = pane_with_a_selection();
         let client_id = ClientId::new(1);
 
-        let adjusted = pane.adjust_input_to_terminal(&key, vec![27], false, Some(client_id));
+        let adjusted = pane.adjust_input_to_plugin(&key, vec![27], Some(client_id));
 
         assert!(adjusted.is_none(), "{key:?}: {adjusted:?}");
         assert!(!pane.grids[&client_id].has_selection());
@@ -189,12 +190,8 @@ fn a_paste_after_a_selection_still_arrives_as_a_paste() {
     let (mut pane, _plugin_rx) = pane_with_a_selection();
     let client_id = ClientId::new(1);
 
-    let adjusted = pane.adjust_input_to_terminal(
-        &None,
-        BRACKETED_PASTE_BEGIN.to_vec(),
-        false,
-        Some(client_id),
-    );
+    let adjusted =
+        pane.adjust_input_to_plugin(&None, BRACKETED_PASTE_BEGIN.to_vec(), Some(client_id));
 
     assert!(adjusted.is_none(), "{adjusted:?}");
     assert_eq!(pane.text_being_pasted.get(&Some(client_id)), Some(&vec![]));
@@ -210,30 +207,30 @@ fn plugin_pastes_keep_each_clients_bytes_and_destination_separate() {
     for (client, text) in clients.into_iter().zip(texts) {
         for bytes in [BRACKETED_PASTE_BEGIN, &text.as_bytes()[..text.len() - 1]] {
             assert!(pane
-                .adjust_input_to_terminal(&None, bytes.to_vec(), false, client)
+                .adjust_input_to_plugin(&None, bytes.to_vec(), client)
                 .is_none());
         }
     }
 
     let other = Some(ClientId::new(3));
     assert!(matches!(
-        pane.adjust_input_to_terminal(&None, b"x".to_vec(), false, other),
+        pane.adjust_input_to_plugin(&None, b"x".to_vec(), other),
         Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"x"
     ));
     let key = KeyWithModifier::new(BareKey::Enter);
     assert!(matches!(
-        pane.adjust_input_to_terminal(&Some(key.clone()), vec![13], false, other),
+        pane.adjust_input_to_plugin(&Some(key.clone()), vec![13], other),
         Some(AdjustedInput::WriteKeyToPlugin(actual)) if actual == key
     ));
     assert!(pane
-        .adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, other)
+        .adjust_input_to_plugin(&None, BRACKETED_PASTE_END.to_vec(), other)
         .is_none());
     assert!(plugin_rx.try_recv().is_err());
 
     for (client, text) in clients.into_iter().zip(texts).rev() {
         for bytes in [&text.as_bytes()[text.len() - 1..], BRACKETED_PASTE_END] {
             assert!(pane
-                .adjust_input_to_terminal(&None, bytes.to_vec(), false, client)
+                .adjust_input_to_plugin(&None, bytes.to_vec(), client)
                 .is_none());
         }
         let (instruction, _) = plugin_rx.try_recv().unwrap();
@@ -252,19 +249,19 @@ fn removing_a_plugin_client_discards_only_its_unfinished_paste() {
     let staying = Some(ClientId::new(2));
     for client in [Some(leaving), staying, None] {
         for bytes in [BRACKETED_PASTE_BEGIN, b"pending"] {
-            pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, client);
+            pane.adjust_input_to_plugin(&None, bytes.to_vec(), client);
         }
     }
     pane.remove_client(leaving);
     pane.add_client(leaving);
-    pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, Some(leaving));
+    pane.adjust_input_to_plugin(&None, BRACKETED_PASTE_END.to_vec(), Some(leaving));
     assert!(plugin_rx.try_recv().is_err());
     assert!(matches!(
-        pane.adjust_input_to_terminal(&None, b"fresh".to_vec(), false, Some(leaving)),
+        pane.adjust_input_to_plugin(&None, b"fresh".to_vec(), Some(leaving)),
         Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"fresh"
     ));
     for client in [staying, None] {
-        pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, client);
+        pane.adjust_input_to_plugin(&None, BRACKETED_PASTE_END.to_vec(), client);
         let (instruction, _) = plugin_rx.try_recv().unwrap();
         assert!(matches!(instruction, PluginInstruction::Update(events)
             if events == vec![(Some(pane.pid), client, Event::PastedText("pending".into()))]));
@@ -280,23 +277,23 @@ fn restarted_or_invalid_plugin_pastes_leave_other_clients_untouched() {
     let second = Some(ClientId::new(2));
     for client in [first, second] {
         for bytes in [BRACKETED_PASTE_BEGIN, b"old"] {
-            pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, client);
+            pane.adjust_input_to_plugin(&None, bytes.to_vec(), client);
         }
     }
     for bytes in [BRACKETED_PASTE_BEGIN, &[0xff], BRACKETED_PASTE_END] {
-        pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, first);
+        pane.adjust_input_to_plugin(&None, bytes.to_vec(), first);
     }
     assert!(plugin_rx.try_recv().is_err());
     assert!(matches!(
-        pane.adjust_input_to_terminal(&None, b"key".to_vec(), false, first),
+        pane.adjust_input_to_plugin(&None, b"key".to_vec(), first),
         Some(AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"key"
     ));
-    pane.adjust_input_to_terminal(&None, BRACKETED_PASTE_END.to_vec(), false, second);
+    pane.adjust_input_to_plugin(&None, BRACKETED_PASTE_END.to_vec(), second);
     let (instruction, _) = plugin_rx.try_recv().unwrap();
     assert!(matches!(instruction, PluginInstruction::Update(events)
         if events == vec![(Some(pane.pid), second, Event::PastedText("old".into()))]));
     for bytes in [BRACKETED_PASTE_BEGIN, b"new", BRACKETED_PASTE_END] {
-        pane.adjust_input_to_terminal(&None, bytes.to_vec(), false, first);
+        pane.adjust_input_to_plugin(&None, bytes.to_vec(), first);
     }
     let (instruction, _) = plugin_rx.try_recv().unwrap();
     assert!(matches!(instruction, PluginInstruction::Update(events)
@@ -376,13 +373,31 @@ fn test_plugin_pane_with_cell_size(
     test_plugin_pane_and_plugin_receiver(rows, cols, content_offset, cell_size).0
 }
 
-/// Also hands back the plugin thread's receiver, for a test that drives a path which
-/// sends to it (the mouse handlers `unwrap` that send).
+/// Capture the updates addressed to the plugin worker.
 pub(super) fn test_plugin_pane_and_plugin_receiver(
     rows: usize,
     cols: usize,
     content_offset: Offset,
     cell_size: Option<SizeInPixels>,
+) -> (
+    PluginPane,
+    channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+) {
+    plugin_receiver_with_shutdown(
+        rows,
+        cols,
+        content_offset,
+        cell_size,
+        &channels::Shutdown::default(),
+    )
+}
+
+fn plugin_receiver_with_shutdown(
+    rows: usize,
+    cols: usize,
+    content_offset: Offset,
+    cell_size: Option<SizeInPixels>,
+    shutdown: &channels::Shutdown,
 ) -> (
     PluginPane,
     channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
@@ -396,7 +411,7 @@ pub(super) fn test_plugin_pane_and_plugin_receiver(
     let mut pane = PluginPane::new(
         PluginId::new(1),
         geom,
-        SenderWithContext::new(plugin_tx),
+        shutdown.sender(plugin_tx),
         "test".to_owned(),
         "test".to_owned(),
         Rc::new(RefCell::new(SixelImageStore::default())),
@@ -1016,4 +1031,52 @@ fn a_client_attaching_mid_load_shows_only_its_own_loading_indication() {
         "{}",
         screen_of(&pane, attaching)
     );
+}
+
+#[test]
+fn plugin_pointer_delivery_receiver_lifecycle() {
+    let shutdown = channels::Shutdown::default();
+    let (mut pane, receiver) =
+        plugin_receiver_with_shutdown(5, 40, Offset::default(), None, &shutdown);
+    let client = Some(ClientId::new(2));
+    let events = [
+        Mouse::ScrollUp(3),
+        Mouse::ScrollDown(2),
+        Mouse::ScrollLeft(5),
+        Mouse::ScrollRight(4),
+        Mouse::LeftClick(2, 5),
+        Mouse::Hold(-1, 6),
+        Mouse::Release(3, 7),
+    ];
+    for target in [client, None] {
+        for mouse in events {
+            pane.send_mouse(mouse, target).unwrap();
+            let (PluginInstruction::Update(updates), _) = receiver.try_recv().unwrap() else {
+                panic!("missing pointer update");
+            };
+            assert_eq!(
+                updates,
+                [(Some(PluginId::new(1)), target, Event::Mouse(mouse))]
+            );
+        }
+    }
+    assert!(receiver.try_recv().is_err());
+    drop(receiver);
+    for mouse in events {
+        assert!(pane
+            .send_mouse(mouse, client)
+            .unwrap_err()
+            .to_string()
+            .contains("plugin 1"));
+    }
+    for bytes in [BRACKETED_PASTE_BEGIN, b"paste", BRACKETED_PASTE_END] {
+        assert!(pane
+            .adjust_input_to_plugin(&None, bytes.to_vec(), client)
+            .is_none());
+    }
+    assert!(!pane.text_being_pasted.contains_key(&client));
+    shutdown.begin();
+    for mouse in events {
+        pane.send_mouse(mouse, client).unwrap();
+    }
 }

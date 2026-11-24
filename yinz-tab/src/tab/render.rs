@@ -46,8 +46,8 @@ impl Tab {
             .filter(|id| {
                 self.pane_is_agent(*id)
                     || self
-                        .get_pane_with_id(*id)
-                        .is_some_and(|pane| pane.is_detected_agent())
+                        .get_terminal(*id)
+                        .is_some_and(|term| term.is_detected_agent())
             })
             .collect();
         // A pane tab's plugin view shares the agent terminal's presentation.
@@ -184,7 +184,7 @@ impl Tab {
                 .keys()
                 .filter_map(|(client, pane)| (*pane == pane_id).then_some(*client))
                 .collect();
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+            if let Some(pane) = self.get_terminal_mut(pane_id) {
                 pane.set_pending_agent_escape_clients(clients);
             }
         }
@@ -921,7 +921,10 @@ impl Tab {
                 if pane.selectable() {
                     flags |= PANE_SELECTABLE;
                 }
-                if pane.terminal_emulator_wants_mouse() {
+                if pane
+                    .terminal()
+                    .is_some_and(|term| term.terminal_emulator_wants_mouse())
+                {
                     flags |= PANE_WANTS_MOUSE;
                 }
                 if matches!(id, PaneId::Plugin(_)) && !pane.supports_mouse_selection() {

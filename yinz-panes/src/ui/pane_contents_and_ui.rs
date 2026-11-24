@@ -154,7 +154,11 @@ impl<'a> PaneContentsAndUi<'a> {
 
         // here we drop the fake cursors so that their lines will be updated
         // and we can clear them from the UI below
-        drop(self.pane.drain_fake_cursors());
+        drop(
+            self.pane
+                .terminal_mut()
+                .and_then(|term| term.drain_fake_cursors()),
+        );
 
         let clients: Vec<ClientId> = clients.collect();
         if let Some(rendered) = self.pane.render(None).context(err_context)? {
@@ -281,24 +285,33 @@ impl<'a> PaneContentsAndUi<'a> {
         Ok(())
     }
     pub fn client_has_guest_modal(&self, client_id: ClientId) -> bool {
-        self.pane.guest_modal_selection(client_id).is_some()
+        self.pane
+            .terminal()
+            .and_then(|term| term.guest_modal_selection(client_id))
+            .is_some()
     }
     pub fn drain_pane_render_state(&mut self) {
-        drop(self.pane.drain_fake_cursors());
+        drop(
+            self.pane
+                .terminal_mut()
+                .and_then(|term| term.drain_fake_cursors()),
+        );
         let _ = self.pane.render(None);
     }
     pub fn render_guest_modal_for_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to render guest modal for client {client_id}");
-        let selection = self.pane.guest_modal_selection(client_id).unwrap_or(0);
-        let session_name = self
-            .pane
+        let Some(terminal) = self.pane.terminal() else {
+            return Ok(());
+        };
+        let selection = terminal.guest_modal_selection(client_id).unwrap_or(0);
+        let session_name = terminal
             .guest_session_name()
             .unwrap_or_else(|| String::from("unknown").into());
         let columns = self.pane.get_content_columns();
         let rows = self.pane.get_content_rows();
         let content_x = self.pane.get_content_x();
         let content_y = self.pane.get_content_y();
-        let shortcuts = self.pane.guest_modal_shortcuts();
+        let shortcuts = terminal.guest_modal_shortcuts();
         let chunks = crate::panes::nested_session_modal::guest_modal_chunks(
             columns,
             rows,
@@ -354,7 +367,10 @@ impl<'a> PaneContentsAndUi<'a> {
                     })
                     .unwrap_or(false);
                 if cursor_is_visible
-                    && let Some(cursor) = self.pane.render_fake_cursor(colors.0, colors.1)
+                    && let Some(cursor) = self
+                        .pane
+                        .terminal_mut()
+                        .and_then(|term| term.render_fake_cursor(colors.0, colors.1))
                 {
                     self.output
                         .add_character_chunks_to_client(client_id, vec![cursor], self.z_index)
@@ -415,7 +431,10 @@ impl<'a> PaneContentsAndUi<'a> {
         let use_frame_color_for_title =
             color_state.has_title_color_effect(client_mode, session_is_mirrored);
         let frame_color = frame_color(&self.style, color_state, client_mode, session_is_mirrored);
-        let highlight_tooltip = self.pane.cached_hover_tooltip();
+        let highlight_tooltip = self
+            .pane
+            .terminal()
+            .and_then(|term| term.cached_hover_tooltip());
         let focused_client = if pane_focused_for_client_id {
             Some(client_id)
         } else if pane_focused_for_differet_client {
@@ -445,7 +464,10 @@ impl<'a> PaneContentsAndUi<'a> {
                     && !pane_focused_for_client_id),
         });
         let frame_is_dimmed = self.frame_is_dimmed_for_client(client_id);
-        let guest_choice_indicator = self.pane.guest_choice_indicator(client_id);
+        let guest_choice_indicator = self
+            .pane
+            .terminal()
+            .and_then(|term| term.guest_choice_indicator(client_id));
         let frame_params = if session_is_mirrored {
             FrameParams {
                 focused_client,

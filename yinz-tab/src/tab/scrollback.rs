@@ -9,21 +9,26 @@ use crate::route::NotificationEnd;
 use crate::ClientId;
 use yinz_bus::scrollback_dump::{new_scrollback_dump_path, remove_scrollback_dump};
 use yinz_panes::pane::Pane;
+use yinz_panes::pane::TerminalPaneOps;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::data::Mouse;
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::PaneGeom;
 use yinz_types::position::Position;
 
 impl Tab {
     pub fn clear_active_terminal_screen(&mut self, client_id: ClientId) -> Result<()> {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.clear_screen();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.clear_screen();
         }
         Ok(())
     }
     pub fn clear_screen_for_pane_id(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_screen();
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_screen();
         }
     }
     pub fn dump_active_terminal_screen(
@@ -53,7 +58,10 @@ impl Tab {
             || format!("failed to dump active terminal screen for client {client_id}");
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            let dump = active_pane.dump_screen_with_ansi(full, Some(client_id));
+            let dump = active_pane
+                .terminal()
+                .map(|term| term.dump_screen_with_ansi(full, Some(client_id)))
+                .unwrap_or_default();
             self.os_api
                 .write_to_file(dump, file)
                 .with_context(err_context)?;
@@ -79,7 +87,10 @@ impl Tab {
         full: bool,
     ) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id(pane_id) {
-            let dump = pane.dump_screen_with_ansi(full, None);
+            let dump = pane
+                .terminal()
+                .map(|term| term.dump_screen_with_ansi(full, None))
+                .unwrap_or_default();
             self.os_api.write_to_file(dump, file).non_fatal()
         }
         Ok(())
@@ -97,7 +108,10 @@ impl Tab {
         full: bool,
     ) -> String {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.dump_screen_with_ansi(full, Some(client_id))
+            active_pane
+                .terminal()
+                .map(|term| term.dump_screen_with_ansi(full, Some(client_id)))
+                .unwrap_or_default()
         } else {
             String::new()
         }
@@ -111,8 +125,11 @@ impl Tab {
         pane_id: PaneId,
         full: bool,
     ) -> Option<String> {
-        self.get_pane_with_id(pane_id)
-            .map(|pane| pane.dump_screen_with_ansi(full, None))
+        self.get_pane_with_id(pane_id).map(|pane| {
+            pane.terminal()
+                .map(|term| term.dump_screen_with_ansi(full, None))
+                .unwrap_or_default()
+        })
     }
     pub fn edit_scrollback(
         &mut self,
@@ -141,7 +158,7 @@ impl Tab {
         };
         let line_number = self
             .get_active_pane(client_id)
-            .and_then(|a_t| a_t.get_line_number());
+            .and_then(|a_t| a_t.terminal()?.get_line_number());
         self.open_scrollback_in_editor(
             dump,
             line_number,
@@ -182,7 +199,7 @@ impl Tab {
         }
         .unwrap_or_default();
         let line_number = self
-            .get_pane_with_id(pane_id)
+            .get_terminal(pane_id)
             .and_then(|a_t| a_t.get_line_number());
         self.open_scrollback_in_editor(
             dump,
@@ -231,7 +248,7 @@ impl Tab {
     }
     pub fn scroll_active_terminal_up(&mut self, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_up(1, Some(client_id));
+            scroll_up(&mut **active_pane, 1, Some(client_id));
         }
     }
 
@@ -239,7 +256,7 @@ impl Tab {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll up pane {pane_id:?}");
         let synthetic_position = Position::new(0, 0);
-        let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
+        let (mouse_sgr, is_alt) = match self.get_terminal(pane_id) {
             Some(pane) => (
                 pane.mouse_scroll_up(&synthetic_position),
                 pane.is_alternate_mode_active(),
@@ -253,7 +270,7 @@ impl Tab {
             self.write_to_pane_id(&None, b"\x1b[A".to_vec(), false, pane_id, None, None)
                 .with_context(err_context)?;
         } else if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_up(1, None);
+            scroll_up(&mut **pane, 1, None);
         }
         Ok(())
     }
@@ -261,14 +278,11 @@ impl Tab {
     pub fn scroll_active_terminal_down(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to scroll down active pane for client {client_id}");
 
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_down(1, Some(client_id));
-            if !active_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = active_pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd)
-                    .with_context(err_context)?;
-            }
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id)
+            && let Some(raw_fd) = scroll_down(&mut **active_pane, 1, Some(client_id))
+        {
+            self.process_pending_vte_events(raw_fd)
+                .with_context(err_context)?;
         }
         Ok(())
     }
@@ -277,7 +291,7 @@ impl Tab {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll down pane {pane_id:?}");
         let synthetic_position = Position::new(0, 0);
-        let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
+        let (mouse_sgr, is_alt) = match self.get_terminal(pane_id) {
             Some(pane) => (
                 pane.mouse_scroll_down(&synthetic_position),
                 pane.is_alternate_mode_active(),
@@ -292,8 +306,7 @@ impl Tab {
                 .with_context(err_context)?;
         } else {
             let needs_flush = if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.scroll_down(1, None);
-                !pane.is_scrolled()
+                scroll_down(&mut **pane, 1, None).is_some()
             } else {
                 false
             };
@@ -309,16 +322,15 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             // prevent overflow when row == 0
             let scroll_rows = active_pane.rows().max(1).saturating_sub(1);
-            active_pane.scroll_up(scroll_rows, Some(client_id));
+            scroll_up(&mut **active_pane, scroll_rows, Some(client_id));
         }
     }
 
     pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            // Terminal panes ignore the client ID required by the shared Pane interface.
             // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
-            terminal_pane.scroll_up(scroll_rows, None);
+            scroll_up(&mut **terminal_pane, scroll_rows, None);
         }
     }
 
@@ -328,10 +340,7 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = active_pane.get_content_rows();
-            active_pane.scroll_down(scroll_rows, Some(client_id));
-            if !active_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = active_pane.pid()
-            {
+            if let Some(raw_fd) = scroll_down(&mut **active_pane, scroll_rows, Some(client_id)) {
                 self.process_pending_vte_events(raw_fd)
                     .with_context(err_context)?;
             }
@@ -341,12 +350,8 @@ impl Tab {
 
     pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            // Terminal panes ignore the client ID required by the shared Pane interface.
             let scroll_rows = terminal_pane.get_content_rows();
-            terminal_pane.scroll_down(scroll_rows, None);
-            if !terminal_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = terminal_pane.pid()
-            {
+            if let Some(raw_fd) = scroll_down(&mut **terminal_pane, scroll_rows, None) {
                 self.process_pending_vte_events(raw_fd).non_fatal()
             }
         }
@@ -356,7 +361,7 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             // prevent overflow when row == 0
             let scroll_rows = (active_pane.rows().max(1).saturating_sub(1)) / 2;
-            active_pane.scroll_up(scroll_rows, Some(client_id));
+            scroll_up(&mut **active_pane, scroll_rows, Some(client_id));
         }
     }
 
@@ -366,10 +371,7 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = (active_pane.rows().max(1) - 1) / 2;
-            active_pane.scroll_down(scroll_rows, Some(client_id));
-            if !active_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = active_pane.pid()
-            {
+            if let Some(raw_fd) = scroll_down(&mut **active_pane, scroll_rows, Some(client_id)) {
                 self.process_pending_vte_events(raw_fd)
                     .with_context(err_context)?;
             }
@@ -378,47 +380,42 @@ impl Tab {
     }
 
     pub fn scroll_active_terminal_to_bottom(&mut self, client_id: ClientId) -> Result<()> {
-        let err_context =
-            || format!("failed to scroll to bottom in active pane for client {client_id}");
-
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.clear_scroll();
-            if !active_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = active_pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd)
-                    .with_context(err_context)?;
-            }
+        if let Some(id) = self.get_active_pane_id(client_id) {
+            self.clear_terminal_scroll(id)?;
         }
         Ok(())
     }
 
     pub fn scroll_terminal_to_bottom(&mut self, terminal_pane_id: TerminalId) {
-        if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            terminal_pane.clear_scroll();
-            if !terminal_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = terminal_pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd).non_fatal();
-            }
-        }
+        self.clear_terminal_scroll(PaneId::Terminal(terminal_pane_id))
+            .map(|_| ())
+            .non_fatal();
     }
 
     pub fn scroll_active_terminal_to_previous_prompt(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_to_previous_prompt(client_id);
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.scroll_to_previous_prompt(client_id);
         }
     }
 
     pub fn scroll_active_terminal_to_next_prompt(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_to_next_prompt(client_id);
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.scroll_to_next_prompt(client_id);
         }
     }
 
     pub fn select_command_at_scroll_position(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.select_command_at_scroll_position(client_id);
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.select_command_at_scroll_position(client_id);
         }
     }
 
@@ -474,53 +471,39 @@ impl Tab {
     // --- Pane-targeting CLI methods ---
     pub fn scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_up(1, None);
+            scroll_up(&mut **pane, 1, None);
         }
     }
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_down(1, None);
-            if !pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd)?;
-            }
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id)
+            && let Some(raw_fd) = scroll_down(&mut **pane, 1, None)
+        {
+            self.process_pending_vte_events(raw_fd)?;
         }
         Ok(())
     }
     pub fn scroll_to_top_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_scroll();
-            if let Some(size) = pane.get_line_number() {
-                pane.scroll_up(size, None);
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_scroll();
+            if let Some(size) = term.get_line_number() {
+                term.scroll_up(size);
             }
         }
         Ok(())
     }
     pub fn scroll_to_bottom_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_scroll();
-            if !pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd)?;
-            }
-        }
-        Ok(())
+        self.clear_terminal_scroll(pane_id).map(|_| ())
     }
     pub fn page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.rows().max(1).saturating_sub(1);
-            pane.scroll_up(scroll_rows, None);
+            scroll_up(&mut **pane, scroll_rows, None);
         }
     }
     pub fn page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
-            pane.scroll_down(scroll_rows, None);
-            if !pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = pane.pid()
-            {
+            if let Some(raw_fd) = scroll_down(&mut **pane, scroll_rows, None) {
                 self.process_pending_vte_events(raw_fd)?;
             }
         }
@@ -529,19 +512,44 @@ impl Tab {
     pub fn half_page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
-            pane.scroll_up(scroll_rows, None);
+            scroll_up(&mut **pane, scroll_rows, None);
         }
     }
     pub fn half_page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
-            pane.scroll_down(scroll_rows, None);
-            if !pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = pane.pid()
-            {
+            if let Some(raw_fd) = scroll_down(&mut **pane, scroll_rows, None) {
                 self.process_pending_vte_events(raw_fd)?;
             }
         }
         Ok(())
     }
+}
+
+fn scroll_up(pane: &mut dyn Pane, count: usize, client: Option<ClientId>) {
+    if let Some(terminal) = pane.terminal_mut() {
+        terminal.scroll_up(count);
+    } else if let Some(plugin) = pane.plugin_control() {
+        plugin
+            .send_mouse(Mouse::ScrollUp(count), client)
+            .non_fatal();
+    }
+}
+
+/// A terminal at the bottom can consume its queued PTY output.
+fn scroll_down(pane: &mut dyn Pane, count: usize, client: Option<ClientId>) -> Option<TerminalId> {
+    let id = pane.pid();
+    if let Some(terminal) = pane.terminal_mut() {
+        terminal.scroll_down(count);
+        if !terminal.is_scrolled()
+            && let PaneId::Terminal(id) = id
+        {
+            return Some(id);
+        }
+    } else if let Some(plugin) = pane.plugin_control() {
+        plugin
+            .send_mouse(Mouse::ScrollDown(count), client)
+            .non_fatal();
+    }
+    None
 }

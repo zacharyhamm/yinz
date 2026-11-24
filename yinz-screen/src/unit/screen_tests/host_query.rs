@@ -358,17 +358,44 @@ fn suspend_nested_guest_preserves_choices_for_later_revival() {
     let (mut screen, _capture) = create_new_screen_with_forward_capture(size);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(7));
     let client_id = ClientId::new(1);
-    screen.nested.nested_guest_choices.insert(
-        (client_id, pane_id),
-        super::super::NestedGuestChoice::Descend,
-    );
+    let other = ClientId::new(2);
+    let tab = TabId::new(0);
+    new_tab(&mut screen, 1, tab);
+    add_pane_to_tab(&mut screen, tab, pane_id, false);
     screen
-        .nested
-        .nested_guest_tracker
-        .on_announce(pane_id, std::time::Instant::now());
+        .core
+        .connected_clients
+        .borrow_mut()
+        .extend([client_id, other]);
+    screen.nested.nested_session_handling = yinz_types::input::options::NestedSessionHandling::Ask;
+    screen.handle_nested_session_message_from_pane(pane_id, guest_announce_message());
+    screen.handle_guest_modal_choice(
+        client_id,
+        pane_id,
+        yinz_bus::screen::GuestModalOutcome::Descend,
+    );
+    let terminal = screen
+        .tab_containing_pane(pane_id)
+        .unwrap()
+        .get_terminal(pane_id)
+        .unwrap();
+    assert!(terminal.is_nested_guest());
+    assert!(terminal.guest_session_name().is_some());
+    assert!(terminal.guest_modal_selection(client_id).is_none());
+    assert!(terminal.guest_modal_selection(other).is_some());
+    assert_eq!(
+        terminal.guest_choice_indicator(client_id),
+        Some(crate::tab::GuestChoiceIndicator::Descended)
+    );
 
     screen.suspend_nested_guest(pane_id);
 
+    let terminal = screen
+        .tab_containing_pane(pane_id)
+        .unwrap()
+        .get_terminal(pane_id)
+        .unwrap();
+    assert!(!terminal.has_guest_modal_for_any_client());
     assert!(
         screen
             .nested.nested_guest_choices
@@ -376,6 +403,26 @@ fn suspend_nested_guest_preserves_choices_for_later_revival() {
         "suspend must preserve the client's descend choice so a re-announcing guest can be revived \
          into the exact prior state"
     );
+    screen.handle_nested_session_message_from_pane(pane_id, guest_announce_message());
+    let terminal = screen
+        .tab_containing_pane(pane_id)
+        .unwrap()
+        .get_terminal(pane_id)
+        .unwrap();
+    assert_eq!(
+        terminal.guest_choice_indicator(client_id),
+        Some(crate::tab::GuestChoiceIndicator::Descended)
+    );
+    assert_eq!(terminal.guest_choice_indicator(other), None);
+    screen.clear_nested_guest(pane_id);
+    let terminal = screen
+        .tab_containing_pane(pane_id)
+        .unwrap()
+        .get_terminal(pane_id)
+        .unwrap();
+    assert!(!terminal.is_nested_guest());
+    assert!(!terminal.has_guest_modal_for_any_client());
+    assert_eq!(terminal.guest_choice_indicator(client_id), None);
 }
 
 #[test]
@@ -820,6 +867,8 @@ fn codex_palette_observes_and_retains_local_override_and_baseline_color_answers(
             .unwrap()
             .get_pane_with_id_mut(pane_id)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .handle_pty_bytes(format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").into_bytes());
         // A viewer's host colors never reach the agent palette.
         screen.update_terminal_foreground_color("rgb:ffff/ffff/ffff".into());
@@ -846,7 +895,11 @@ fn codex_palette_observes_and_retains_local_override_and_baseline_color_answers(
             .unwrap()
             .get_pane_with_id_mut(pane_id)
             .unwrap();
-        let (_, metadata) = pane.serialize_handoff(None, 100_000).unwrap();
+        let (_, metadata) = pane
+            .terminal()
+            .unwrap()
+            .serialize_handoff(None, 100_000)
+            .unwrap();
         let metadata = metadata.unwrap();
         let snapshot = &metadata.snapshots[metadata.active.unwrap().palette];
         assert!(snapshot
@@ -870,7 +923,7 @@ fn codex_palette_observes_and_retains_local_override_and_baseline_color_answers(
         assert_eq!(updates.len(), 2);
         assert_eq!(updates[1].snapshot.as_ref(), Some(snapshot));
         assert!(pane
-            .terminal_io_mut()
+            .terminal_mut()
             .unwrap()
             .drain_agent_theme_updates()
             .is_empty());

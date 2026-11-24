@@ -20,7 +20,10 @@ use tiled_pane_grid::{split, TiledPaneGrid, RESIZE_PERCENT};
 use crate::{
     os_input_output::ServerOsApi,
     output::Output,
-    pane::{pane_info_for_pane, Pane, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH},
+    pane::{
+        pane_info_for_pane, Pane, PaneGeometry, TiledGridPane, MIN_TERMINAL_HEIGHT,
+        MIN_TERMINAL_WIDTH,
+    },
     panes::{ActivePanes, PaneId},
     plugins::PluginInstruction,
     thread_bus::ThreadSenders,
@@ -106,7 +109,7 @@ fn display_area_viewport(display_area: &Rc<RefCell<Size>>) -> Viewport {
 /// out of the viewport just like a non-selectable pane - we cannot rely on selectability alone here,
 /// because a plugin only reports it once it has loaded, and until then we'd be calculating (and
 /// sending to the pty) wrong sizes for the other panes in this tab.
-pub fn is_ui_pane(pane: &dyn Pane) -> bool {
+pub fn is_ui_pane(pane: &(impl TiledGridPane + ?Sized)) -> bool {
     !pane.selectable() || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)))
 }
 
@@ -815,7 +818,7 @@ impl TiledPanes {
             .values()
             .filter_map(|p| {
                 let geom = p.position_and_size();
-                if is_ui_pane(&**p) && is_inside_viewport(&self.viewport.borrow(), p) {
+                if is_ui_pane(&**p) && is_inside_viewport(&self.viewport.borrow(), p.as_ref()) {
                     Some(geom.into())
                 } else {
                     None
@@ -1438,7 +1441,6 @@ impl TiledPanes {
     pub fn set_force_render(&mut self) {
         for pane in self.panes.values_mut() {
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
         self.reset_boundaries();
@@ -1457,7 +1459,6 @@ impl TiledPanes {
             }
             hit = true;
             pane.set_should_render(true);
-            pane.set_should_render_boundaries(true);
             pane.render_full_viewport();
         }
         if hit {
@@ -1568,7 +1569,9 @@ impl TiledPanes {
                 } else {
                     None
                 };
-                let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
+                let pane_has_guest_modal = pane
+                    .terminal()
+                    .is_some_and(|term| term.has_guest_modal_for_any_client());
                 let pane_has_subtitle = pane.subtitle_rows() > 0;
                 let mut pane_contents_and_ui = PaneContentsAndUi::new(
                     pane,
@@ -1895,10 +1898,10 @@ impl TiledPanes {
                     ),
                 }
             };
-            let resize_horizontally = |pane_grid: &mut TiledPaneGrid| -> bool {
+            let resize_horizontally = |pane_grid: &mut TiledPaneGrid<dyn Pane>| -> bool {
                 laid_out(pane_grid.layout(SplitDirection::Horizontal, cols))
             };
-            let resize_vertically = |pane_grid: &mut TiledPaneGrid| -> bool {
+            let resize_vertically = |pane_grid: &mut TiledPaneGrid<dyn Pane>| -> bool {
                 laid_out(pane_grid.layout(SplitDirection::Vertical, rows))
             };
 
@@ -3012,8 +3015,8 @@ impl TiledPanes {
         is_first_run: bool,
         run_command: RunCommand,
     ) {
-        if let Some(p) = self.panes.get_mut(&pane_id) {
-            p.hold(exit_status, is_first_run, run_command)
+        if let Some(term) = self.panes.get_mut(&pane_id).and_then(|p| p.terminal_mut()) {
+            term.hold(exit_status, is_first_run, run_command);
         }
     }
     pub fn panes_to_hide_contains(&self, pane_id: PaneId) -> bool {
@@ -3034,12 +3037,11 @@ impl TiledPanes {
             for pane_id in panes_to_hide {
                 if let Some(pane) = self.get_pane_mut(pane_id) {
                     pane.set_should_render(true);
-                    pane.set_should_render_boundaries(true);
                 }
             }
             let viewport = *self.viewport.borrow();
             for pane in self.panes.values_mut() {
-                if !is_inside_viewport(&viewport, pane) {
+                if !is_inside_viewport(&viewport, pane.as_ref()) {
                     pane.reset_size_and_position_override();
                 }
             }
@@ -3123,7 +3125,8 @@ impl TiledPanes {
         self.panes
             .iter()
             .filter(|(id, pane)| {
-                **id != fullscreen_pane_id && (covers_ui || is_inside_viewport(&viewport, pane))
+                **id != fullscreen_pane_id
+                    && (covers_ui || is_inside_viewport(&viewport, pane.as_ref()))
             })
             .map(|(id, _)| *id)
             .collect()
@@ -3132,7 +3135,7 @@ impl TiledPanes {
     fn pin_panes_outside_viewport_in_place(&mut self) {
         let viewport = *self.viewport.borrow();
         for pane in self.panes.values_mut() {
-            if !is_inside_viewport(&viewport, pane) {
+            if !is_inside_viewport(&viewport, pane.as_ref()) {
                 pane.set_geom_override(pane.position_and_size());
             }
         }
@@ -3345,7 +3348,9 @@ impl TiledPanes {
     ) {
         self.style.agent_theme_mapping = mapping;
         for pane in self.panes.values_mut() {
-            pane.update_agent_theme_mapping(mapping);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_agent_theme_mapping(mapping);
+            }
         }
     }
     pub fn update_application_baseline(
@@ -3354,13 +3359,17 @@ impl TiledPanes {
     ) {
         self.style.application = baseline;
         for pane in self.panes.values_mut() {
-            pane.update_application_baseline(baseline);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_application_baseline(baseline);
+            }
         }
     }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for pane in self.panes.values_mut() {
-            pane.update_terminal_theme(theme);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_terminal_theme(theme);
+            }
         }
     }
     pub fn update_pane_themes(&mut self, theme: Styling) {
@@ -3381,7 +3390,9 @@ impl TiledPanes {
     }
     pub fn update_pane_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
         for pane in self.panes.values_mut() {
-            pane.update_kitty_keyboard_protocol_disabled(disabled);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_kitty_keyboard_protocol_disabled(disabled);
+            }
         }
     }
     pub fn set_session_is_mirrored(&mut self, session_is_mirrored: bool) {
@@ -3394,7 +3405,9 @@ impl TiledPanes {
     }
     pub fn update_pane_sixel_host_support(&mut self, supported: bool) {
         for pane in self.panes.values_mut() {
-            pane.update_sixel_host_support(supported);
+            if let Some(term) = pane.terminal_mut() {
+                term.update_sixel_host_support(supported);
+            }
         }
     }
     pub fn update_pane_rounded_corners(&mut self, rounded_corners: bool) {
@@ -3495,12 +3508,12 @@ impl FrameContext {
 fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
     pane.set_subtitle_enabled(ctx.draws_full_frames || ctx.draws_titles);
     if ctx.no_ui_fullscreen_pane_id == Some(pane.pid()) {
-        pane.set_frame(false);
+        pane.invalidate_all_frames();
         pane.set_content_offset(Offset::default());
         return;
     }
     if !pane.borderless() {
-        pane.set_frame(ctx.draws_full_frames);
+        pane.invalidate_all_frames();
     }
 
     let reserved_rows = ctx.reserved_top_rows.get(&pane.pid()).copied().unwrap_or(0);
@@ -3527,7 +3540,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
     } else if ctx.draws_full_frames && !pane.borderless() {
         pane.set_content_offset(Offset::frame(1));
     } else if (ctx.draws_full_frames && pane.borderless())
-        || !is_inside_viewport(&ctx.viewport, pane)
+        || !is_inside_viewport(&ctx.viewport, pane.as_ref())
     {
         pane.set_content_offset(Offset::default());
     } else {
@@ -3562,11 +3575,7 @@ fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
     }
 }
 
-#[expect(
-    clippy::borrowed_box,
-    reason = "pane containers pass their boxed entries directly to this shared geometry check"
-)]
-pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
+pub fn is_inside_viewport(viewport: &Viewport, pane: &(impl PaneGeometry + ?Sized)) -> bool {
     let pane_position_and_size = pane.current_geom();
     pane_position_and_size.y >= viewport.y
         && pane_position_and_size.y + pane_position_and_size.rows.as_usize()

@@ -329,3 +329,53 @@ fn accept_extracted_pane_hands_the_pane_back_when_the_tab_is_full() {
     }
     assert!(!destination.has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(2))));
 }
+
+#[test]
+fn suspended_input_resumes_only_the_addressed_terminal() {
+    use crate::pty::PtyInstruction;
+    use yinz_runtime::channels;
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        true,
+    );
+    let id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.new_pane(
+        id,
+        None,
+        None,
+        false,
+        false,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let writer = install_pty_writer_capture(&mut tab);
+    let (tx, pty) = channels::unbounded();
+    tab.senders.to_pty = Some(SenderWithContext::new(tx));
+    let (tx, screen) = channels::unbounded();
+    tab.senders.to_screen = Some(SenderWithContext::new(tx));
+    tab.set_pane_suspended(id, true).unwrap();
+    for byte in *b"x\r " {
+        tab.write_to_pane_id(&None, vec![byte], false, id, Some(client), None)
+            .unwrap();
+        if byte != b'x' {
+            assert!(
+                matches!(pty.try_recv().unwrap().0, PtyInstruction::ResumeSuspendedPane(target) if target == id)
+            );
+        }
+        assert!(
+            pty.try_recv().is_err() && writer.try_recv().is_err() && screen.try_recv().is_err()
+        );
+    }
+    tab.set_pane_suspended(id, false).unwrap();
+    tab.write_to_pane_id(&None, vec![b'x'], false, id, Some(client), None)
+        .unwrap();
+    assert!(
+        matches!(writer.try_recv().unwrap().0, PtyWriteInstruction::Write(bytes, target, _) if bytes == b"x" && PaneId::Terminal(target) == id)
+    );
+}

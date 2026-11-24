@@ -73,7 +73,10 @@ impl Tab {
             return Ok(());
         };
         let pane_id = active_pane.pid();
-        let Some(output) = active_pane.copy_last_command_output() else {
+        let Some(output) = active_pane
+            .terminal_mut()
+            .and_then(|term| term.copy_last_command_output())
+        else {
             return Ok(());
         };
         self.copy_text_to_clipboard(&output)
@@ -85,27 +88,29 @@ impl Tab {
     }
 
     pub fn clear_command_output_flash(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.clear_command_output_flash();
+        if let Some(term) = self.get_terminal_mut(pane_id) {
+            term.clear_command_output_flash();
         }
     }
 
     pub fn scroll_active_terminal_to_top(&mut self, client_id: ClientId) -> Result<()> {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.clear_scroll();
-            if let Some(size) = active_pane.get_line_number() {
-                active_pane.scroll_up(size, Some(client_id));
+        if let Some(terminal) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|p| p.terminal_mut())
+        {
+            terminal.clear_scroll();
+            if let Some(size) = terminal.get_line_number() {
+                terminal.scroll_up(size);
             }
         }
         Ok(())
     }
 
     pub fn scroll_terminal_to_top(&mut self, terminal_pane_id: TerminalId) {
-        if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            terminal_pane.clear_scroll();
-            if let Some(size) = terminal_pane.get_line_number() {
-                // Terminal panes ignore the client ID required by the shared Pane interface.
-                terminal_pane.scroll_up(size, None);
+        if let Some(terminal) = self.get_terminal_mut(PaneId::Terminal(terminal_pane_id)) {
+            terminal.clear_scroll();
+            if let Some(size) = terminal.get_line_number() {
+                terminal.scroll_up(size);
             }
         }
     }
@@ -122,16 +127,14 @@ impl Tab {
     pub fn clear_terminal_scroll(&mut self, pane_id: PaneId) -> Result<bool> {
         let err_context = || format!("failed to clear scroll in pane {pane_id}");
 
-        let mut was_scrolled = false;
-        if let Some(active_pane) = self.get_pane_with_id_mut(pane_id) {
-            was_scrolled = active_pane.is_scrolled();
-            active_pane.clear_scroll();
-            if !active_pane.is_scrolled()
-                && let PaneId::Terminal(raw_fd) = active_pane.pid()
-            {
-                self.process_pending_vte_events(raw_fd)
-                    .with_context(err_context)?;
-            }
+        let Some(terminal) = self.get_terminal_mut(pane_id) else {
+            return Ok(false);
+        };
+        let was_scrolled = terminal.is_scrolled();
+        terminal.clear_scroll();
+        if let PaneId::Terminal(pid) = pane_id {
+            self.process_pending_vte_events(pid)
+                .with_context(err_context)?;
         }
         Ok(was_scrolled)
     }
@@ -378,45 +381,63 @@ impl Tab {
             let is_updatable = s
                 .chars()
                 .all(|c| !c.is_control() || matches!(c, '\0' | '\u{8}' | '\u{7f}'));
-            if is_updatable {
-                active_pane.update_search_term(s);
+            if is_updatable && let Some(term) = active_pane.terminal_mut() {
+                term.update_search_term(s);
             }
         }
     }
 
     pub fn search_down(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.search_down();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.search_down();
         }
     }
 
     pub fn search_up(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.search_up();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.search_up();
         }
     }
 
     pub fn toggle_search_case_sensitivity(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.toggle_search_case_sensitivity();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.toggle_search_case_sensitivity();
         }
     }
 
     pub fn toggle_search_wrap(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.toggle_search_wrap();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.toggle_search_wrap();
         }
     }
 
     pub fn toggle_search_whole_words(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.toggle_search_whole_words();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.toggle_search_whole_words();
         }
     }
 
     pub fn clear_search(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.clear_search();
+        if let Some(term) = self
+            .get_active_pane_or_floating_pane_mut(client_id)
+            .and_then(|active_pane| active_pane.terminal_mut())
+        {
+            term.clear_search();
         }
     }
 }

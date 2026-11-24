@@ -570,7 +570,9 @@ pub(super) fn set_mouse_selection_support(
 ) -> Result<()> {
     if screen
         .with_pane(pid, |pane| {
-            pane.set_mouse_selection_support(selection_support)
+            if let Some(plugin) = pane.plugin_control_mut() {
+                plugin.set_mouse_selection_support(selection_support);
+            }
         })
         .is_none()
     {

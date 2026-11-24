@@ -270,7 +270,7 @@ fn web_agents_snapshot_tracks_moves_renames_and_project_group_names() {
     let pane = PaneId::Terminal(TerminalId::new(4));
     for id in [1, 3, 4] {
         screen.with_pane(PaneId::Terminal(TerminalId::new(id)), |pane| {
-            pane.set_agent_info(Some(AgentInfo {
+            pane.terminal_mut().unwrap().set_agent_info(Some(AgentInfo {
                 kind: "codex".into(),
                 state: AgentState::Idle,
                 source: AgentSource::Reported,
@@ -1002,8 +1002,10 @@ fn closing_group_syncs_scroll_mode_for_every_relocated_client() {
                 .unwrap()
                 .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id as u32 + 1)))
                 .unwrap();
-            pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
-            pane.scroll_up(5, Some(CLIENT));
+            pane.terminal_mut()
+                .unwrap()
+                .handle_pty_bytes(b"scrollback\r\n".repeat(100));
+            pane.terminal_mut().unwrap().scroll_up(5);
         }
         let (before, after) = if destination_scrolled {
             (InputMode::Normal, InputMode::Scroll)
@@ -1525,9 +1527,11 @@ fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
                         .unwrap()
                         .get_pane_with_id_mut(pane)
                         .unwrap();
-                    pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
+                    pane.terminal_mut()
+                        .unwrap()
+                        .handle_pty_bytes(b"scrollback\r\n".repeat(100));
                     if scrolled {
-                        pane.scroll_up(5, Some(CLIENT));
+                        pane.terminal_mut().unwrap().scroll_up(5);
                     }
                 }
                 screen.change_mode(mode, None, CLIENT).unwrap();
@@ -1543,6 +1547,8 @@ fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
                     assert_eq!(
                         screen.core.tabs[&destination]
                             .get_pane_with_id(pane)
+                            .unwrap()
+                            .terminal()
                             .unwrap()
                             .scroll_position()
                             .0,

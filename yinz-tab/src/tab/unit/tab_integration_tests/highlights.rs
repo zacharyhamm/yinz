@@ -33,6 +33,8 @@ fn leaving_a_hover_highlight_for_a_nonselectable_pane_requests_a_render() {
     assert!(tab
         .get_pane_with_id_mut(source)
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .set_hover_position(Some(Position::new(0, 1))));
     tab.mouse_hover_pane_id.insert(client, source);
     tab.render(&mut Output::default(), None).unwrap();
@@ -48,6 +50,8 @@ fn leaving_a_hover_highlight_for_a_nonselectable_pane_requests_a_render() {
     );
     assert!(!tab
         .get_pane_with_id_mut(source)
+        .unwrap()
+        .terminal_mut()
         .unwrap()
         .set_hover_position(None));
 }

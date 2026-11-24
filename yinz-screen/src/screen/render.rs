@@ -300,8 +300,8 @@ impl Screen {
         let watched_tab_id = self.watched_tab_id();
         for (tab_id, tab) in &mut self.core.tabs {
             for id in tab.get_all_pane_ids() {
-                if let Some(pane) = tab.get_pane_with_id_mut(id) {
-                    pane.set_agent_hook_flash(flashing_titles.contains(&id));
+                if let Some(term) = tab.get_terminal_mut(id) {
+                    term.set_agent_hook_flash(flashing_titles.contains(&id));
                 }
             }
             tab.sample_overlay_ripples(now, self.core.pane_animations);
@@ -618,7 +618,7 @@ impl Screen {
 
                     let current_osc7 = tab
                         .get_active_pane(*client_id)
-                        .and_then(|pane| pane.osc7_payload());
+                        .and_then(|pane| pane.terminal()?.osc7_payload());
                     let last = self
                         .core
                         .last_forwarded_osc7

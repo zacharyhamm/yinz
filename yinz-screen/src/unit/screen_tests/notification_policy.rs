@@ -297,6 +297,8 @@ fn arrivals_are_observable_and_resolutions_commit_in_order_without_blocking_rend
         .unwrap()
         .get_active_pane_mut(ClientId::new(1))
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .handle_pty_bytes(b"screen remains responsive".to_vec());
     screen.render_to_clients().unwrap();
     assert!(
@@ -865,10 +867,8 @@ fn osc99_base64_and_read_boundaries_arrive_as_one_complete_notification() {
                 .unwrap()
                 .get_active_pane_mut(ClientId::new(1))
                 .unwrap();
-            pane.handle_pty_bytes(read.to_vec());
-            pane.terminal_io_mut()
-                .unwrap()
-                .drain_desktop_notifications()
+            pane.terminal_mut().unwrap().handle_pty_bytes(read.to_vec());
+            pane.terminal_mut().unwrap().drain_desktop_notifications()
         };
         screen
             .receive_desktop_notifications(notifications, TerminalId::new(1))

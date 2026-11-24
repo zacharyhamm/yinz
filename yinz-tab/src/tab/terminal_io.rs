@@ -27,8 +27,8 @@ impl Tab {
     pub fn terminal_output_paused(&self, pane_id: PaneId) -> bool {
         matches!(pane_id, PaneId::Terminal(pid) if self.pending_vte_events.contains_key(&pid))
             || self
-                .get_pane_with_id(pane_id)
-                .is_some_and(|pane| pane.is_scrolled())
+                .get_terminal(pane_id)
+                .is_some_and(|term| term.is_scrolled())
     }
 
     pub fn handle_pty_bytes(&mut self, pid: TerminalId, bytes: VteBytes) -> Result<()> {
@@ -41,15 +41,15 @@ impl Tab {
         let pane_id = PaneId::Terminal(pid);
         // A scrolled pane buffers its vte events, so what the user is reading stays put
         let pane_is_scrolled = self
-            .get_pane_with_id(pane_id)
-            .is_some_and(|pane| pane.is_scrolled());
+            .get_terminal(pane_id)
+            .is_some_and(|term| term.is_scrolled());
         if pane_is_scrolled {
             let pending = self.pending_vte_events.entry(pid).or_default();
             pending.push(bytes);
             // Reset scroll - and process all pending events for this pane
             if pending.len() >= MAX_PENDING_VTE_EVENTS {
-                if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                    pane.clear_scroll();
+                if let Some(term) = self.get_terminal_mut(pane_id) {
+                    term.clear_scroll();
                 }
                 self.process_pending_vte_events(pid)
                     .with_context(err_context)?;
@@ -65,8 +65,8 @@ impl Tab {
         // loading screen over the live terminal, and leaving the scroll set would
         // keep the command's own output buffering behind it.
         self.pending_vte_events.remove(&pid);
-        if let Some(pane) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
-            pane.clear_scroll();
+        if let Some(term) = self.get_terminal_mut(PaneId::Terminal(pid)) {
+            term.clear_scroll();
         }
         self.pids_waiting_resize.insert(pid);
         self.process_pty_bytes(pid, b"\x1b[3J\x1b[2J\x1b[H".to_vec())
@@ -77,14 +77,15 @@ impl Tab {
         client_id: ClientId,
         bytes: VteBytes,
     ) -> Result<()> {
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
+        if let Some(control) = self
+            .get_pane_with_id_mut(PaneId::Plugin(pid))
+            .and_then(|pane| pane.plugin_control_mut())
+        {
             let mut loading = LoadingIndication::default();
             loading.ended = true;
-            if let Some(control) = plugin_pane.plugin_control_mut() {
-                control.update_loading_indication(loading);
-                control.end_client_loading_indication(client_id);
-            }
-            plugin_pane.handle_plugin_bytes(client_id, bytes);
+            control.update_loading_indication(loading);
+            control.end_client_loading_indication(client_id);
+            control.handle_plugin_bytes(client_id, bytes);
         }
         Ok(())
     }
@@ -105,8 +106,8 @@ impl Tab {
         if !self.pending_vte_events.contains_key(&pid) {
             return Ok(());
         }
-        if let Some(pane) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
-            pane.clear_scroll();
+        if let Some(term) = self.get_terminal_mut(PaneId::Terminal(pid)) {
+            term.clear_scroll();
         }
         self.process_pending_vte_events(pid)
             .with_context(|| format!("failed to flush queued output of pane {pid}"))
@@ -139,8 +140,7 @@ impl Tab {
         // Forwarded replies can teach a color without producing any buffered
         // output. Retain that observation before letting the app use the reply.
         let updates = self
-            .get_pane_with_id_mut(PaneId::Terminal(pid))
-            .and_then(|pane| pane.terminal_io_mut())
+            .get_terminal_mut(PaneId::Terminal(pid))
             .map(|terminal| terminal.drain_agent_theme_updates())
             .unwrap_or_default();
         for event in updates {
@@ -158,10 +158,7 @@ impl Tab {
         }
         // Clear the pause and pull out any bytes that were buffered
         // while it waited for the host reply.
-        let buffered = if let Some(terminal_output) = self
-            .get_pane_with_id_mut(PaneId::Terminal(pid))
-            .and_then(|pane| pane.terminal_io_mut())
-        {
+        let buffered = if let Some(terminal_output) = self.get_terminal_mut(PaneId::Terminal(pid)) {
             terminal_output.clear_forward_pause();
             terminal_output.drain_pending_pty_input()
         } else {
@@ -199,6 +196,9 @@ impl Tab {
                 )
                 .with_context(err_context)?;
             }
+            let Some(terminal_output) = terminal_output.terminal_mut() else {
+                return Ok(());
+            };
             let previous_status = terminal_output.program_status_revision();
             terminal_output.handle_pty_bytes(bytes);
             // All delivery paths, including scrollback and forwarded-query replay,
@@ -208,9 +208,6 @@ impl Tab {
                     .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins)
                     .context("publish parsed program status")?;
             }
-            let Some(terminal_output) = terminal_output.terminal_io_mut() else {
-                return Ok(());
-            };
             let messages_to_pty = terminal_output.drain_messages_to_pty();
             let agent_theme_updates = terminal_output.drain_agent_theme_updates();
             let forwarded_queries = terminal_output.drain_forwarded_queries();
@@ -444,14 +441,14 @@ impl Tab {
 
     /// Changes only for input delivered to the terminal, not terminal query replies.
     pub fn agent_input_revision(&self, pane_id: PaneId) -> u64 {
-        self.get_pane_with_id(pane_id)
-            .map(|pane| pane.agent_input_revision())
+        self.get_terminal(pane_id)
+            .map(|terminal| terminal.agent_input_revision())
             .unwrap_or(0)
     }
 
     /// When the input counted by [`Tab::agent_input_revision`] last arrived.
     pub fn agent_input_at(&self, pane_id: PaneId) -> Option<Instant> {
-        self.get_pane_with_id(pane_id)
+        self.get_terminal(pane_id)
             .and_then(|pane| pane.agent_input_at())
     }
 
@@ -556,14 +553,14 @@ impl Tab {
         }
 
         if self.agent_double_escape
-            && matches!(pane_id, PaneId::Terminal(_))
+            && let Some(terminal) = active_pane.terminal()
             && let (Some(client_id), Some(key)) = (client_id, key_with_modifier)
         {
             let target = (client_id, pane_id);
-            if active_pane.agent_info().is_some()
-                && !active_pane.is_held()
-                && !active_pane.is_suspended()
-                && active_pane.guest_modal_selection(client_id).is_none()
+            if terminal.agent_info().is_some()
+                && !terminal.is_held()
+                && !terminal.is_suspended()
+                && terminal.guest_modal_selection(client_id).is_none()
                 && key.bare_key == yinz_types::keys::BareKey::Esc
                 && key.has_no_modifiers()
             {
@@ -587,12 +584,15 @@ impl Tab {
         for raw_input_bytes in input_chunks {
             match pane_id {
                 PaneId::Terminal(active_terminal_id) => {
-                    match active_pane.adjust_input_to_terminal(
-                        key_with_modifier,
-                        raw_input_bytes,
-                        raw_input_bytes_are_kitty,
-                        client_id,
-                    ) {
+                    match active_pane
+                        .terminal_mut()
+                        .context("missing terminal input target")?
+                        .adjust_input_to_terminal(
+                            key_with_modifier,
+                            raw_input_bytes,
+                            raw_input_bytes_are_kitty,
+                            client_id,
+                        ) {
                         Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
                             if let Some(input) = &mut terminal_input {
                                 input.extend(adjusted_input);
@@ -670,12 +670,11 @@ impl Tab {
                         None => {},
                     }
                 },
-                PaneId::Plugin(pid) => match active_pane.adjust_input_to_terminal(
-                    key_with_modifier,
-                    raw_input_bytes,
-                    raw_input_bytes_are_kitty,
-                    client_id,
-                ) {
+                PaneId::Plugin(pid) => match active_pane
+                    .plugin_control_mut()
+                    .context("missing plugin input target")?
+                    .adjust_input_to_plugin(key_with_modifier, raw_input_bytes, client_id)
+                {
                     Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier)) => {
                         self.senders
                             .send_to_plugin(PluginInstruction::Update(vec![(
@@ -725,10 +724,11 @@ impl Tab {
                 ))
                 .with_context(err_context)?;
             if record_input {
-                should_update_ui |=
-                    active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(|key| {
+                should_update_ui |= active_pane.terminal_mut().is_some_and(|term| {
+                    term.record_agent_input(key_with_modifier.as_ref().is_some_and(|key| {
                         key.is_key_without_modifier(yinz_types::keys::BareKey::Enter)
-                    }));
+                    }))
+                });
             }
         }
         Ok(should_update_ui)

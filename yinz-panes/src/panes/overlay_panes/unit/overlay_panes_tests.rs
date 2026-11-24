@@ -3048,7 +3048,9 @@ fn assert_composition_preserves_contents(alternate_screen: bool) {
         let before = children.map(|child| {
             let pane = panes.get_mut(&child).unwrap();
             if alternate_screen {
-                pane.handle_pty_bytes(b"\x1b[?1049h".to_vec());
+                pane.terminal_mut()
+                    .unwrap()
+                    .handle_pty_bytes(b"\x1b[?1049h".to_vec());
             }
             // Fill the viewport and, on the normal screen, leave history above it. Composition
             // keeps each child's 38 x 22 content area, so neither reflow nor cursor motion is due.
@@ -3056,7 +3058,9 @@ fn assert_composition_preserves_contents(alternate_screen: bool) {
                 .map(|row| char::from(b'A' + row % 26).to_string().repeat(38))
                 .collect::<Vec<_>>()
                 .join("\r\n");
-            pane.handle_pty_bytes(format!("{content}\x1b[H").into_bytes());
+            pane.terminal_mut()
+                .unwrap()
+                .handle_pty_bytes(format!("{content}\x1b[H").into_bytes());
             assert_eq!(pane.cursor_coordinates(None), Some((1, 1, true)));
             (pane.dump_screen(false, None), pane.dump_screen(true, None))
         });
@@ -3087,7 +3091,7 @@ fn assert_composition_preserves_contents(alternate_screen: bool) {
                 Some((0, 0, true)),
                 "{direction:?}"
             );
-            pane.handle_pty_bytes(b"!".to_vec());
+            pane.terminal_mut().unwrap().handle_pty_bytes(b"!".to_vec());
             assert_eq!(
                 pane.dump_screen(false, None),
                 format!("!{}", &viewport[1..])
@@ -3177,7 +3181,9 @@ fn multipane_frame_refresh_and_replacement_preserve_terminal_contents() {
                     .map(|row| char::from(b'A' + row as u8).to_string().repeat(cols))
                     .collect::<Vec<_>>()
                     .join("\r\n");
-                pane.handle_pty_bytes(format!("{contents}\x1b[H").into_bytes());
+                pane.terminal_mut()
+                    .unwrap()
+                    .handle_pty_bytes(format!("{contents}\x1b[H").into_bytes());
                 assert_eq!(pane.cursor_coordinates(None), Some((0, 0, true)));
                 (
                     pane.dump_screen(false, None),

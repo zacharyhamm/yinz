@@ -1068,7 +1068,9 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
         .expect("TEST");
     screen
         .with_pane(PaneId::Plugin(crate::PluginId::new(7)), |pane| {
-            pane.set_mouse_selection_support(true)
+            pane.plugin_control_mut()
+                .unwrap()
+                .set_mouse_selection_support(true)
         })
         .expect("the dialog is in the tab");
     let (content_x, content_y) = screen
@@ -1087,27 +1089,21 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     let events: Vec<_> = plugin_rx
         .try_iter()
         .flat_map(|(instruction, _)| match instruction {
-            PluginInstruction::Update(updates) => updates
-                .into_iter()
-                .filter_map(|(plugin_id, _, event)| {
-                    (plugin_id == Some(crate::PluginId::new(7))).then_some(event)
-                })
-                .collect::<Vec<_>>(),
+            PluginInstruction::Update(updates) => updates,
             _ => vec![],
         })
+        .filter_map(|(plugin, client, event)| match event {
+            Event::Mouse(mouse) => Some((plugin, client, mouse)),
+            _ => None,
+        })
         .collect();
-
-    // Content-relative, so the press lands one row and two columns in.
-    assert!(
-        events.contains(&Event::Mouse(Mouse::LeftClick(1, 2))),
-        "{events:?}"
-    );
-    assert!(
-        events.contains(&Event::Mouse(Mouse::Hold(2, 3))),
-        "{events:?}"
-    );
-    assert!(
-        events.contains(&Event::Mouse(Mouse::Release(2, 3))),
-        "{events:?}"
+    assert_eq!(
+        events,
+        [
+            Mouse::LeftClick(1, 2),
+            Mouse::Hold(2, 3),
+            Mouse::Release(2, 3)
+        ]
+        .map(|mouse| (Some(crate::PluginId::new(7)), Some(client_id), mouse))
     );
 }

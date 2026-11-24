@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use yinz_server::output::{CharacterChunk, FloatingPanesStack, HostKittyState, Output};
-use yinz_server::pane::Pane;
+use yinz_server::pane::{Pane, PaneGeometry, TerminalPaneOps};
 use yinz_server::panes::{KittyImageStore, LinkHandler, SixelImageStore, TerminalPane};
 use yinz_terminal::{panes::TerminalCharacter, ui::damage::CellRect};
 

@@ -132,7 +132,9 @@ impl ActivePanes {
     }
     fn unfocus_pane(&self, pane_id: PaneId, panes: &impl PaneLookup) {
         if let PaneId::Terminal(terminal_id) = pane_id
-            && let Some(focus_event) = panes.pane(&pane_id).and_then(|p| p.unfocus_event())
+            && let Some(focus_event) = panes
+                .pane(&pane_id)
+                .and_then(|p| p.terminal()?.unfocus_event())
         {
             let _ = self
                 .os_api
@@ -141,7 +143,9 @@ impl ActivePanes {
     }
     fn focus_pane(&self, pane_id: PaneId, panes: &impl PaneLookup) {
         if let PaneId::Terminal(terminal_id) = pane_id
-            && let Some(focus_event) = panes.pane(&pane_id).and_then(|p| p.focus_event())
+            && let Some(focus_event) = panes
+                .pane(&pane_id)
+                .and_then(|p| p.terminal()?.focus_event())
         {
             let _ = self
                 .os_api

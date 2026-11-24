@@ -375,8 +375,10 @@ impl Tab {
     pub(super) fn close_stack_list_member(&mut self, id: PaneId, exit_status: Option<i32>) -> bool {
         match self.remove_stack_list_member(id) {
             StackListRemoval::Removed(removed) => {
-                if let (Some(exit_status), Some(mut removed)) = (exit_status, removed) {
-                    removed.update_exit_status(exit_status);
+                if let (Some(exit_status), Some(mut removed)) = (exit_status, removed)
+                    && let Some(term) = removed.terminal_mut()
+                {
+                    term.update_exit_status(exit_status);
                 }
                 true
             },

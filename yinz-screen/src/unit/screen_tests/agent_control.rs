@@ -312,7 +312,11 @@ fn readiness_reports_each_failed_gate_without_writing_input() {
             tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
         }
         if matches!(case, "suspended" | "multiple") {
-            tab.get_pane_with_id_mut(PANE).unwrap().set_suspended(true);
+            tab.get_pane_with_id_mut(PANE)
+                .unwrap()
+                .terminal_mut()
+                .unwrap()
+                .set_suspended(true);
         }
         if case == "sync" {
             tab.toggle_sync_panes_is_active();
@@ -476,8 +480,8 @@ fn hand_started_agent_width_tracks_foreground_command_without_lifecycle_changes(
         .get_pane_with_id(PANE)
         .unwrap();
     assert_eq!(pane.get_content_columns(), 80);
-    assert!(pane.agent_info().is_none());
-    assert!(!pane.was_an_agent());
+    assert!(pane.terminal().unwrap().agent_info().is_none());
+    assert!(!pane.terminal().unwrap().was_an_agent());
     assert!(!reported_lifecycle(&screen, "codex", "conversation"));
     assert!(apply_pane_foreground_command(
         &mut screen,
@@ -1036,16 +1040,20 @@ fn respawn_restores_readiness_without_consuming_a_new_draft() {
                     let command = tab.pane_run_command(PANE).unwrap();
                     tab.hold_pane(PANE, Some(0), false, command.clone());
                     let pane = tab.get_pane_with_id_mut(PANE).unwrap();
-                    pane.handle_pty_bytes(b"saved scrollback\x1b[?2004l".to_vec());
+                    pane.terminal_mut()
+                        .unwrap()
+                        .handle_pty_bytes(b"saved scrollback\x1b[?2004l".to_vec());
                     assert!(pane
+                        .terminal_mut()
+                        .unwrap()
                         .respawn(replace.then_some(command), keep_scrollback)
                         .is_some());
-                    assert_eq!(pane.agent_input_revision(), 0);
+                    assert_eq!(pane.terminal().unwrap().agent_input_revision(), 0);
                     assert_eq!(
                         pane.dump_screen(true, None).contains("saved scrollback"),
                         keep_scrollback
                     );
-                    assert!(!pane.supports_bracketed_paste());
+                    assert!(!pane.terminal().unwrap().supports_bracketed_paste());
                     tab.handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
                         .unwrap();
                     if draft {
@@ -1137,7 +1145,7 @@ fn agent_read_returns_the_latest_lines_even_when_scrolled_up() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap();
-        pane.scroll_up(scroll, Some(CLIENT));
+        pane.terminal_mut().unwrap().scroll_up(scroll);
         pane.start_selection(&Position::new(1, 0), CLIENT);
         pane.end_selection(&Position::new(2, 2), CLIENT);
         let selection = pane.get_selected_text(CLIENT);
@@ -3833,6 +3841,8 @@ fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
         .unwrap()
         .get_pane_with_id_mut(PANE)
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .set_suspended(true);
     finish_paste(&writes);
     permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), false);
@@ -3842,6 +3852,8 @@ fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
         .tab_containing_pane_mut(PANE)
         .unwrap()
         .get_pane_with_id_mut(PANE)
+        .unwrap()
+        .terminal_mut()
         .unwrap()
         .set_suspended(false);
     new_tab(&mut screen, 2, TabId::new(1));
@@ -8661,6 +8673,8 @@ fn warp_replay_restores_paste_mode_and_buffered_output_wins() {
                         .unwrap()
                         .get_pane_with_id(PANE)
                         .unwrap()
+                        .terminal()
+                        .unwrap()
                         .supports_bracketed_paste(),
                     buffered.unwrap_or(enabled)
                 );
@@ -10242,7 +10256,9 @@ fn live_hook_recency_is_shared_repeated_and_excludes_replay_and_display_updates(
         "SubagentStart",
     ] {
         // A sentinel avoids relying on clock resolution or sleeping between identical hooks.
-        screen.with_pane(PANE, |pane| pane.set_last_hook_at_ms(1));
+        screen.with_pane(PANE, |pane| {
+            pane.terminal_mut().unwrap().set_last_hook_at_ms(1)
+        });
         report(&mut screen, hook(name));
         let info = screen.get_pane_info(PANE).unwrap();
         let at = info.last_hook_at_ms.unwrap();
@@ -11807,6 +11823,8 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .set_suspended(true);
         permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
         assert_eq!(
@@ -11817,6 +11835,8 @@ fn notification_permission_wait_clears_only_after_delivered_enter() {
             .tab_containing_pane_mut(PANE)
             .unwrap()
             .get_pane_with_id_mut(PANE)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .set_suspended(false);
         let worker = HookEvent {
@@ -15613,6 +15633,8 @@ fn claude_provider_adoption_requires_live_local_native_authority() {
                 .unwrap()
                 .get_pane_with_id_mut(PANE)
                 .unwrap()
+                .terminal_mut()
+                .unwrap()
                 .hold(Some(0), true, RunCommand::default()),
             "foreign" => {
                 // A foreign detached notice cannot claim this lifecycle.
@@ -17310,7 +17332,9 @@ fn web_agents_move_and_close_restore_nested_key_routing_for_the_affected_client(
             .unwrap();
         tab.get_pane_with_id_mut(guest)
             .unwrap()
-            .scroll_up(5, Some(viewer));
+            .terminal_mut()
+            .unwrap()
+            .scroll_up(5);
         let mode = screen.base_input_mode();
         screen.core.mode_info.entry(viewer).or_default().mode = mode;
         let server = screen_wired_to_server(&mut screen);
@@ -18170,9 +18194,9 @@ fn web_agents_snapshot_matches_palette_and_supports_detached_peers_and_exited_ex
         Err(yinz_bus::web::WebFocusError::NoTerminal)
     );
     screen.with_pane(PANE, |pane| {
-        let mut a = pane.agent_info().unwrap().clone();
+        let mut a = pane.terminal().unwrap().agent_info().unwrap().clone();
         a.state = AgentState::Exited;
-        pane.set_agent_info(Some(a));
+        pane.terminal_mut().unwrap().set_agent_info(Some(a));
     });
     let remaining = web_agents_snapshot(&mut screen);
     assert_eq!(remaining.len(), 4);
@@ -18617,9 +18641,32 @@ fn web_terminal_guarded_cursor_limit_precedes_snapshot_and_follows_identity_chec
 #[test]
 fn web_terminal_expires_idle_snapshot_even_if_the_pane_produces_no_output() {
     use crate::screen::agent_control::Reply;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use yinz_agent_control::host::AgentHost;
     use yinz_types::agent::control::WebAgentAction;
     let (mut screen, messages, _) = setup("codex");
     report(&mut screen, hook("SessionStart"));
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), b"initial contents".to_vec())
+        .unwrap();
+    let native = screen.core.web_terminal_frame(PANE, None).unwrap();
+    assert!(native.snapshot && !native.snapshot_continues);
+    let snapshot = String::from_utf8(STANDARD.decode(native.data).unwrap()).unwrap();
+    assert!(snapshot.contains("initial contents"));
+    let bytes = b"\x1b[3;4Hdelta";
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), bytes.to_vec())
+        .unwrap();
+    let delta = screen
+        .core
+        .web_terminal_frame(PANE, Some(&native.cursor))
+        .unwrap();
+    assert!(!delta.snapshot);
+    assert_eq!(STANDARD.decode(delta.data).unwrap(), bytes);
     let row = format!(
         "{}\r\n",
         "\x1b[38;2;201;202;203mA\x1b[38;2;204;205;206mB".repeat(36)
@@ -18647,11 +18694,8 @@ fn web_terminal_expires_idle_snapshot_even_if_the_pane_produces_no_output() {
     );
     screen.refresh_agent_controls_at(deadline);
     let restarted = screen
-        .tab_containing_pane_mut(PANE)
-        .unwrap()
-        .get_pane_with_id_mut(PANE)
-        .unwrap()
-        .web_terminal_frame(Some(&first.cursor))
+        .core
+        .web_terminal_frame(PANE, Some(&first.cursor))
         .unwrap();
     assert!(restarted.snapshot && restarted.snapshot_continues);
     assert_ne!(restarted.cursor, first.cursor);
@@ -18817,7 +18861,8 @@ fn web_terminal_input_encodes_negotiated_keys_and_tracks_plain_enter() {
             .get_pane_with_id(PANE)
             .unwrap();
         assert_eq!(
-            pane.agent_enter_revision() == pane.agent_input_revision(),
+            pane.terminal().unwrap().agent_enter_revision()
+                == pane.terminal().unwrap().agent_input_revision(),
             name == "Enter"
         );
     }
@@ -18904,7 +18949,11 @@ fn web_terminal_pauses_until_desktop_scrollback_is_drained() {
             let tab = screen.tab_containing_pane_mut(PANE).unwrap();
             tab.handle_pty_bytes(pid, b"new".to_vec()).unwrap();
             // Even after clearing the viewport, queued output must keep input paused.
-            tab.get_pane_with_id_mut(PANE).unwrap().clear_scroll();
+            tab.get_pane_with_id_mut(PANE)
+                .unwrap()
+                .terminal_mut()
+                .unwrap()
+                .clear_scroll();
         }
         for action in [read.clone(), raw.clone(), mouse.clone(), keys.clone()] {
             let response = request(&mut screen, action);
@@ -20497,6 +20546,8 @@ fn osc7501_correlated_completion_retires_status_after_removing_pending_control()
                     .unwrap()
                     .get_pane_with_id_mut(PANE)
                     .unwrap()
+                    .terminal_mut()
+                    .unwrap()
                     .handle_pty_bytes(
                         format!("\x1b]7501;state={state}:app={kind}\x07").into_bytes(),
                     );
@@ -20550,6 +20601,8 @@ fn osc7501_unaccepted_stops_preserve_status() {
                     .unwrap()
                     .get_pane_with_id_mut(PANE)
                     .unwrap()
+                    .terminal_mut()
+                    .unwrap()
                     .handle_pty_bytes(
                         format!("\x1b]7501;state={state}:app={kind}\x07").into_bytes(),
                     );
@@ -20594,6 +20647,8 @@ fn osc7501_correlated_prompt_submission_retires_status() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .handle_pty_bytes(format!("\x1b]7501;state=blocked:app={kind}\x07").into_bytes());
         let status = screen.get_pane_info(PANE).unwrap().program_status;
         report_kind(
@@ -20628,6 +20683,8 @@ fn osc7501_enter_publishes_retirement_without_pty_output() {
             tab.toggle_sync_panes_is_active();
         }
         tab.get_pane_with_id_mut(PANE)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .handle_pty_bytes(b"\x1b]7501;state=blocked:app=codex\x07".to_vec());
         screen.log_and_report_session_state().unwrap();
@@ -20701,13 +20758,18 @@ fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
         if forwarded {
             tab.get_pane_with_id_mut(PANE)
                 .unwrap()
-                .terminal_io_mut()
+                .terminal_mut()
                 .unwrap()
                 .arm_forward_pause();
         } else {
             tab.handle_pty_bytes(pid, b"line\r\n".repeat(60)).unwrap();
             tab.scroll_terminal_up(pid).unwrap();
-            assert!(tab.get_pane_with_id(PANE).unwrap().is_scrolled());
+            assert!(tab
+                .get_pane_with_id(PANE)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .is_scrolled());
         }
         tab.handle_pty_bytes(pid, b"\x1b]7501;state=blocked:app=codex\x07".to_vec())
             .unwrap();
@@ -20718,7 +20780,11 @@ fn osc_status_replay_requests_a_manifest_with_the_parsed_status() {
         if forwarded {
             screen.resume_pane_after_forward(PANE, vec![]).unwrap();
         } else {
-            tab.get_pane_with_id_mut(PANE).unwrap().clear_scroll();
+            tab.get_pane_with_id_mut(PANE)
+                .unwrap()
+                .terminal_mut()
+                .unwrap()
+                .clear_scroll();
             tab.process_pending_vte_events(pid).unwrap();
         }
         let mut published = false;
@@ -20779,6 +20845,8 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .handle_pty_bytes(b"\x1b]7501;state=blocked:app=codex\x07".to_vec());
         screen.log_and_report_session_state().unwrap();
         plugins.try_iter().for_each(drop);
@@ -20794,6 +20862,8 @@ fn osc7501_programmatic_enter_publishes_retirement_without_pty_output() {
             tab.senders.should_silently_fail = true;
             assert!(tab
                 .get_pane_with_id(PANE)
+                .unwrap()
+                .terminal()
                 .unwrap()
                 .program_status()
                 .current

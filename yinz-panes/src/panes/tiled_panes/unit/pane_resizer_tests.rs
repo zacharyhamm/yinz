@@ -201,7 +201,16 @@ fn fixtures() -> Vec<Fixture> {
             specs: {
                 let one = spec(1, 0, 0, dim_pct(50.0, 40), dim_pct(100.0, 10));
                 let two = spec(2, 40, 0, dim_pct(50.0, 40), dim_pct(100.0, 10));
-                vec![one, with_override(two, two.geom())]
+                vec![
+                    one,
+                    with_override(
+                        two,
+                        PaneGeom {
+                            is_pinned: true,
+                            ..two.geom()
+                        },
+                    ),
+                ]
             },
             direction: h,
             space: 100,
@@ -826,6 +835,7 @@ fn override_pane_updates_override_only() {
         "pane 2 geom",
     );
     let override_geom = two.geom_override.expect("pane 2 lost its geom_override");
+    assert!(override_geom.is_pinned);
     assert_eq!(override_geom.x, 50);
     assert_eq!(override_geom.cols.as_usize(), 50);
     assert_geom_field_eq(&two.current, &override_geom, "pane 2 current");

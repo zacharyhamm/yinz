@@ -1351,7 +1351,7 @@ fn a_remote_pane_that_becomes_ready_forgets_the_loading_screen_it_buffered() {
     tab.scroll_active_terminal_up(client_id);
     assert!(
         tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
-            .map(|pane| pane.is_scrolled())
+            .map(|pane| pane.terminal().unwrap().is_scrolled())
             .unwrap_or(false),
         "the pane is scrolled before the connection completes"
     );
@@ -1374,7 +1374,7 @@ fn a_remote_pane_that_becomes_ready_forgets_the_loading_screen_it_buffered() {
     );
     assert!(
         !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
-            .map(|pane| pane.is_scrolled())
+            .map(|pane| pane.terminal().unwrap().is_scrolled())
             .unwrap_or(true),
         "the pane starts the live command unscrolled, so its output is not buffered"
     );

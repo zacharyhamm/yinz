@@ -315,7 +315,9 @@ fn host_theme_reports_write_no_dsr_into_opted_in_panes() {
         .unwrap()
         .get_pane_with_id_mut(pane_id)
         .unwrap();
-    pane.handle_pty_bytes(b"\x1b[?2031h".to_vec());
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"\x1b[?2031h".to_vec());
     let _ = capture.drain_pty_writes();
 
     for mode in [
@@ -751,8 +753,10 @@ fn terminal_background_reply(screen: &mut Screen, tab: TabId, id: u32) -> Vec<Ve
         .unwrap()
         .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
         .unwrap();
-    pane.handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
-    pane.terminal_io_mut().unwrap().drain_messages_to_pty()
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
+    pane.terminal_mut().unwrap().drain_messages_to_pty()
 }
 
 #[test]
@@ -852,6 +856,22 @@ fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
             terminal_background_reply(&mut screen, tab, id),
             vec![b"\x1b]11;rgb:f0f0/f0f0/f0f0\x07".to_vec()]
         );
+        let pane = screen
+            .core
+            .tabs
+            .get_mut(&tab)
+            .unwrap()
+            .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
+            .unwrap();
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"content".to_vec());
+        let (chunks, _, _, _) = pane.render(Some(CLIENT_1)).unwrap().unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|chunk| chunk.pane_default_bg
+            == Some(yinz_terminal::panes::terminal_character::AnsiCode::RgbCode(
+                light.background
+            ))));
     }
     screen
         .core

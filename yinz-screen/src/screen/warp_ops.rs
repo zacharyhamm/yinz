@@ -161,11 +161,11 @@ impl Screen {
         held: &yinz_types::data::HeldTerminal,
     ) -> bool {
         for tab in self.core.tabs.values_mut() {
-            if let Some(pane) = tab.get_pane_with_id_mut(id) {
-                // This restores an already-held snapshot; a newly observed exit uses HoldPane.
-                let agent = pane.agent_info().cloned();
-                pane.hold(held.exit_status, held.first_run, held.command.clone());
-                pane.set_agent_info(agent);
+            if let Some(terminal) = tab.get_terminal_mut(id) {
+                // Reinstating a held snapshot preserves its agent identity across the hold.
+                let agent = terminal.agent_info().cloned();
+                terminal.hold(held.exit_status, held.first_run, held.command.clone());
+                terminal.set_agent_info(agent);
                 return true;
             }
         }
@@ -186,7 +186,7 @@ impl Screen {
                 .tabs
                 .values()
                 .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(*id)))
-                && let Some(state) = pane.held_for_warp()
+                && let Some(state) = pane.terminal().and_then(|term| term.held_for_warp())
             {
                 if !supported {
                     return Err(format!("terminal_{id} ({:?}, held): destination does not support held terminal transfers", pane.current_title()));
@@ -196,8 +196,8 @@ impl Screen {
         }
         for id in ids {
             for tab in self.core.tabs.values_mut() {
-                if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(*id)) {
-                    pane.set_warp_pending(true);
+                if let Some(term) = tab.get_terminal_mut(PaneId::Terminal(*id)) {
+                    term.set_warp_pending(true);
                 }
             }
         }
@@ -214,7 +214,11 @@ impl Screen {
             Some(pane) => format!(
                 "terminal_{id} ({:?}, {}): {reason}",
                 pane.current_title(),
-                if pane.is_held() { "held" } else { "live" }
+                if pane.terminal().is_some_and(|term| term.is_held()) {
+                    "held"
+                } else {
+                    "live"
+                }
             ),
             None => format!("terminal_{id}: {reason}"),
         }
@@ -226,7 +230,7 @@ impl Screen {
                 .core
                 .tabs
                 .values()
-                .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(id)))
+                .find_map(|tab| tab.get_terminal(PaneId::Terminal(id)))
                 .and_then(|pane| pane.held_for_warp());
             if current.as_ref() != Some(held) {
                 return Err(
@@ -244,8 +248,10 @@ impl Screen {
             let pane_id = PaneId::Terminal(id);
             let pending = self.tab_containing_pane_mut(pane_id).and_then(|tab| {
                 if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                    pane.set_warp_pending(false);
-                    if pane.is_held() {
+                    if let Some(term) = pane.terminal_mut() {
+                        term.set_warp_pending(false);
+                    }
+                    if pane.terminal().is_some_and(|term| term.is_held()) {
                         return tab.take_pending_respawn(pane_id);
                     }
                 }
@@ -1033,7 +1039,8 @@ impl Screen {
         let (contents, agent_theme) = pane
             // Session-save limits must not truncate a live pane being moved. The
             // handoff's byte budget already bounds how much history can travel.
-            .serialize_handoff(Some(0), Self::WARP_CONTENTS_BUDGET)
+            .terminal()
+            .and_then(|term| term.serialize_handoff(Some(0), Self::WARP_CONTENTS_BUDGET))
             .map(|(c, m)| (Some(c), m))
             .unwrap_or_default();
         let (terminal_state, terminal_state_warning) =
@@ -1052,10 +1059,12 @@ impl Screen {
             caption: default_caption(pane),
             contents,
             borderless: pane.borderless(),
-            bracketed_paste: pane.supports_bracketed_paste(),
+            bracketed_paste: pane
+                .terminal()
+                .is_some_and(|term| term.supports_bracketed_paste()),
             agent_input,
             agent_tracking,
-            agent: pane.agent_info().cloned(),
+            agent: pane.terminal().and_then(|term| term.agent_info()).cloned(),
         });
         let removed = tab.extract_warp_panes(&[pane_id]);
         if !removed.is_empty() {
@@ -1332,7 +1341,7 @@ impl Screen {
             }
             .unwrap_or_default();
             let (contents, agent_theme) = tab
-                .get_pane_with_id(*pane_id)
+                .get_terminal(*pane_id)
                 .and_then(|p| p.serialize_handoff(Some(0), budget))
                 .map(|(c, m)| (Some(c), m))
                 .unwrap_or_default();
@@ -1357,8 +1366,8 @@ impl Screen {
                 title: None,
                 caption: tab.get_pane_with_id(*pane_id).and_then(default_caption),
                 bracketed_paste: tab
-                    .get_pane_with_id(*pane_id)
-                    .is_some_and(|pane| pane.supports_bracketed_paste()),
+                    .get_terminal(*pane_id)
+                    .is_some_and(|term| term.supports_bracketed_paste()),
                 agent_input: tracking.get(pane_id).and_then(|(input, _)| input.clone()),
                 agent_tracking: tracking
                     .get(pane_id)
@@ -1369,7 +1378,7 @@ impl Screen {
                 // user asked for by name.
                 contents,
                 agent: tab
-                    .get_pane_with_id(*pane_id)
+                    .get_terminal(*pane_id)
                     .and_then(|pane| pane.agent_info().cloned()),
             }
         };
@@ -2056,15 +2065,19 @@ pub(super) fn capture_terminal_for_warp(
     pane: &dyn Pane,
     budget: usize,
 ) -> (Option<String>, Option<String>) {
-    match pane.terminal_state().and_then(|state| {
-        if state.len() > budget {
-            Err(format!(
-                "semantic snapshot exceeds the {budget}-byte transfer budget"
-            ))
-        } else {
-            Ok(state)
-        }
-    }) {
+    match pane
+        .terminal()
+        .ok_or_else(|| "this pane has no semantic terminal state".to_owned())
+        .and_then(|terminal| terminal.terminal_state())
+        .and_then(|state| {
+            if state.len() > budget {
+                Err(format!(
+                    "semantic snapshot exceeds the {budget}-byte transfer budget"
+                ))
+            } else {
+                Ok(state)
+            }
+        }) {
         Ok(state) => (Some(state), None),
         Err(reason) => (
             None,

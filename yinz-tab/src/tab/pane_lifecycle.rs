@@ -110,8 +110,10 @@ impl Tab {
         // complete surviving restoration link, or stay parked if it had no successor.
         if !ignore_suppressed_panes && let Some(mut removed) = self.suppressed_panes.remove(&id) {
             self.reconnect_restoration_chain(id, removed.restored_by);
-            if let Some(exit_status) = exit_status {
-                removed.pane.update_exit_status(exit_status);
+            if let Some(exit_status) = exit_status
+                && let Some(term) = removed.pane.terminal_mut()
+            {
+                term.update_exit_status(exit_status);
             }
             self.announce_pane_closed(id);
             return;
@@ -167,7 +169,9 @@ impl Tab {
         if let Some(mut closed_pane) = closed_pane {
             if let Some(exit_status) = exit_status {
                 // in case we need to update on Drop
-                closed_pane.update_exit_status(exit_status);
+                if let Some(term) = closed_pane.terminal_mut() {
+                    term.update_exit_status(exit_status);
+                }
             }
             if !ignore_suppressed_panes {
                 self.announce_pane_closed(id);
@@ -366,13 +370,19 @@ impl Tab {
         if self.floating_panes.panes_contain(&id) {
             self.floating_panes
                 .hold_pane(id, exit_status, is_first_run, run_command);
-        } else if let Some(pane) = self.overlay_panes.get_mut(&id) {
-            pane.hold(exit_status, is_first_run, run_command);
+        } else if let Some(term) = self
+            .overlay_panes
+            .get_mut(&id)
+            .and_then(|pane| pane.terminal_mut())
+        {
+            term.hold(exit_status, is_first_run, run_command);
         } else if self.tiled_panes.panes_contain(&id) {
             self.tiled_panes
                 .hold_pane(id, exit_status, is_first_run, run_command);
-        } else if let Some(pane) = self.suppressed_panes.get_mut(&id) {
-            pane.pane.hold(exit_status, is_first_run, run_command);
+        } else if let Some(pane) = self.suppressed_panes.get_mut(&id)
+            && let Some(term) = pane.pane.terminal_mut()
+        {
+            term.hold(exit_status, is_first_run, run_command);
         }
         if let PaneId::Terminal(terminal_pane_id) = id {
             self.pending_command_respawns
@@ -402,8 +412,8 @@ impl Tab {
     /// that does not exist yet cannot have suspended, so there is nothing to
     /// replay.
     pub fn set_pane_suspended(&mut self, id: PaneId, suspended: bool) -> Result<()> {
-        if let Some(pane) = self.get_pane_with_id_mut(id) {
-            pane.set_suspended(suspended);
+        if let Some(term) = self.get_terminal_mut(id) {
+            term.set_suspended(suspended);
         }
         self.emit_hint_text_if_changed()?;
         Ok(())
@@ -1219,7 +1229,9 @@ impl Tab {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         match self.get_pane_with_id_mut(pane_id) {
             Some(pane_to_rerun) => {
-                if let Some(command_to_rerun) = pane_to_rerun.rerun() {
+                if let Some(command_to_rerun) =
+                    pane_to_rerun.terminal_mut().and_then(|term| term.rerun())
+                {
                     self.pids_waiting_resize.insert(terminal_pane_id);
                     let _ = self.senders.send_to_pty(PtyInstruction::ReRunCommandInPane(
                         pane_id,
@@ -1254,8 +1266,9 @@ impl Tab {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         match self.get_pane_with_id_mut(pane_id) {
             Some(pane) => {
-                if let Some(command_to_run) =
-                    pane.respawn(Some(run_command.clone()), keep_scrollback)
+                if let Some(command_to_run) = pane
+                    .terminal_mut()
+                    .and_then(|term| term.respawn(Some(run_command.clone()), keep_scrollback))
                 {
                     self.pending_command_respawns.remove(&pane_id);
                     self.pids_waiting_resize.insert(terminal_pane_id);

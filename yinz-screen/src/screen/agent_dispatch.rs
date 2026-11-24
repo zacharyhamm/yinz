@@ -191,9 +191,17 @@ impl yinz_agent_control::controller::dispatch::AgentSession for Screen {
         self.frame_now()
     }
     fn retire_program_status(&mut self, pane: PaneId) {
-        self.with_pane(pane, |p| p.retire_program_status());
+        self.with_pane(pane, |p| {
+            if let Some(term) = p.terminal_mut() {
+                term.retire_program_status();
+            }
+        });
     }
     fn set_last_hook(&mut self, pane: PaneId, at: i64) {
-        self.with_pane(pane, |p| p.set_last_hook_at_ms(at));
+        self.with_pane(pane, |p| {
+            if let Some(term) = p.terminal_mut() {
+                term.set_last_hook_at_ms(at);
+            }
+        });
     }
 }

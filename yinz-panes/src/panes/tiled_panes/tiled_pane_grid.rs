@@ -2,7 +2,7 @@ use super::is_inside_viewport;
 use super::pane_resizer::{self, PaneResizer};
 use super::stacked_panes::StackedPanes;
 use crate::pane::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
-use crate::{pane::Pane, panes::PaneId};
+use crate::{pane::TiledGridPane, panes::PaneId};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
 use yinz_runtime::errors::prelude::*;
@@ -25,15 +25,15 @@ fn no_pane_id(pane_id: &PaneId) -> String {
     format!("no tiled pane with ID {:?} found", pane_id)
 }
 
-pub struct TiledPaneGrid<'a> {
-    panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,
+pub struct TiledPaneGrid<'a, G: TiledGridPane + ?Sized> {
+    panes: Rc<RefCell<HashMap<PaneId, &'a mut G>>>,
     display_area: Viewport, // includes all panes (including eg. the status bar and tab bar in the default layout); a tab fills the screen, so its x/y is always (0, 0)
     viewport: Viewport,     // includes all non-UI panes
 }
 
-impl<'a> TiledPaneGrid<'a> {
+impl<'a, G: TiledGridPane + ?Sized> TiledPaneGrid<'a, G> {
     pub fn new(
-        panes: impl IntoIterator<Item = (&'a PaneId, &'a mut Box<dyn Pane>)>,
+        panes: impl IntoIterator<Item = (&'a PaneId, &'a mut Box<G>)>,
         panes_to_hide: &HashSet<PaneId>,
         display_area: Viewport,
         viewport: Viewport,
@@ -41,7 +41,7 @@ impl<'a> TiledPaneGrid<'a> {
         let panes: HashMap<_, _> = panes
             .into_iter()
             .filter(|(p_id, _)| !panes_to_hide.contains(p_id))
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.as_mut()))
             .collect();
         TiledPaneGrid {
             panes: Rc::new(RefCell::new(panes)),
@@ -593,10 +593,10 @@ impl<'a> TiledPaneGrid<'a> {
         let mut input = Vec::new();
         let mut ui = Vec::new();
         for pane in panes.values() {
-            if super::is_ui_pane(pane.as_ref()) {
+            if super::is_ui_pane(&**pane) {
                 ui.push(pane.current_geom());
             } else {
-                input.push(pane_resizer::agent_width_input(pane.as_ref()));
+                input.push(pane_resizer::agent_width_input(&**pane));
             }
         }
         drop(panes);
@@ -1056,14 +1056,14 @@ impl<'a> TiledPaneGrid<'a> {
         self.panes
             .borrow()
             .get(pane_id)
-            .map(|pane| is_inside_viewport(&self.viewport, pane))
+            .map(|pane| is_inside_viewport(&self.viewport, &**pane))
             .unwrap_or(false)
     }
 
     /// The selectable panes in focus-cycling order: top-to-bottom, then left-to-right.
     fn sorted_selectable_pane_ids(&self) -> Vec<PaneId> {
         let panes = self.panes.borrow();
-        let mut panes: Vec<(&PaneId, &&mut Box<dyn Pane>)> =
+        let mut panes: Vec<(&PaneId, &&mut G)> =
             panes.iter().filter(|(_, p)| p.selectable()).collect();
         panes.sort_by(|(_a_id, a_pane), (_b_id, b_pane)| {
             if a_pane.y() == b_pane.y() {
@@ -1109,7 +1109,7 @@ impl<'a> TiledPaneGrid<'a> {
     pub fn next_selectable_pane_id_to_the_left(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
@@ -1118,8 +1118,8 @@ impl<'a> TiledPaneGrid<'a> {
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_directly_left_of(Box::as_ref(current_pane))
-                    && c.horizontally_overlaps_with(Box::as_ref(current_pane))
+                c.is_directly_left_of(current_pane.current_geom())
+                    && c.horizontally_overlaps_with(current_pane.current_geom())
             })
             .max_by_key(|(_, (_, c))| c.active_at())
             .map(|(_, (_, pane))| pane);
@@ -1139,7 +1139,7 @@ impl<'a> TiledPaneGrid<'a> {
         let destination_pane_id_in_stack = {
             let panes = self.panes.borrow();
             let source_pane = panes.get(source_pane_id)?;
-            let pane_list: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+            let pane_list: Vec<(PaneId, &&mut G)> = panes
                 .iter()
                 .filter(|(_, p)| p.selectable())
                 .map(|(p_id, p)| (*p_id, p))
@@ -1155,9 +1155,9 @@ impl<'a> TiledPaneGrid<'a> {
                         source.x < candidate.x + candidate.cols.as_usize()
                             && candidate.x < source.x + source.cols.as_usize()
                     } else {
-                        c.vertically_overlaps_with(Box::as_ref(source_pane))
+                        c.vertically_overlaps_with(source_pane.current_geom())
                     };
-                    c.is_directly_above(Box::as_ref(source_pane))
+                    c.is_directly_above(source_pane.current_geom())
                         && overlaps
                         && c.current_geom().is_stacked()
                 })
@@ -1184,7 +1184,7 @@ impl<'a> TiledPaneGrid<'a> {
         let destination_pane_id_in_stack = {
             let panes = self.panes.borrow();
             let source_pane = panes.get(source_pane_id)?;
-            let pane_list: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+            let pane_list: Vec<(PaneId, &&mut G)> = panes
                 .iter()
                 .filter(|(_, p)| p.selectable())
                 .map(|(p_id, p)| (*p_id, p))
@@ -1200,9 +1200,9 @@ impl<'a> TiledPaneGrid<'a> {
                         source.x < candidate.x + candidate.cols.as_usize()
                             && candidate.x < source.x + source.cols.as_usize()
                     } else {
-                        c.vertically_overlaps_with(Box::as_ref(source_pane))
+                        c.vertically_overlaps_with(source_pane.current_geom())
                     };
-                    c.is_directly_below(Box::as_ref(source_pane))
+                    c.is_directly_below(source_pane.current_geom())
                         && overlaps
                         && c.current_geom().is_stacked()
                 })
@@ -1229,7 +1229,7 @@ impl<'a> TiledPaneGrid<'a> {
     ) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
@@ -1245,12 +1245,12 @@ impl<'a> TiledPaneGrid<'a> {
                     current.x < candidate.x + candidate.cols.as_usize()
                         && candidate.x < current.x + current.cols.as_usize()
                 } else {
-                    c.vertically_overlaps_with(Box::as_ref(current_pane))
+                    c.vertically_overlaps_with(current_pane.current_geom())
                 };
                 if include_panes_in_stack {
-                    c.is_directly_below(Box::as_ref(current_pane)) && overlaps
+                    c.is_directly_below(current_pane.current_geom()) && overlaps
                 } else {
-                    c.is_directly_below(Box::as_ref(current_pane))
+                    c.is_directly_below(current_pane.current_geom())
                         && overlaps
                         && !c.current_geom().is_stacked()
                 }
@@ -1261,7 +1261,7 @@ impl<'a> TiledPaneGrid<'a> {
     }
     pub fn pane_id_on_edge(&self, direction: Direction) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
@@ -1311,7 +1311,7 @@ impl<'a> TiledPaneGrid<'a> {
     ) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
@@ -1327,12 +1327,12 @@ impl<'a> TiledPaneGrid<'a> {
                     current.x < candidate.x + candidate.cols.as_usize()
                         && candidate.x < current.x + current.cols.as_usize()
                 } else {
-                    c.vertically_overlaps_with(Box::as_ref(current_pane))
+                    c.vertically_overlaps_with(current_pane.current_geom())
                 };
                 if include_panes_in_stack {
-                    c.is_directly_above(Box::as_ref(current_pane)) && overlaps
+                    c.is_directly_above(current_pane.current_geom()) && overlaps
                 } else {
-                    c.is_directly_above(Box::as_ref(current_pane))
+                    c.is_directly_above(current_pane.current_geom())
                         && overlaps
                         && !c.current_geom().is_stacked()
                 }
@@ -1344,7 +1344,7 @@ impl<'a> TiledPaneGrid<'a> {
     pub fn next_selectable_pane_id_to_the_right(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
@@ -1353,8 +1353,8 @@ impl<'a> TiledPaneGrid<'a> {
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_directly_right_of(Box::as_ref(current_pane))
-                    && c.horizontally_overlaps_with(Box::as_ref(current_pane))
+                c.is_directly_right_of(current_pane.current_geom())
+                    && c.horizontally_overlaps_with(current_pane.current_geom())
             })
             .max_by_key(|(_, (_, c))| c.active_at())
             .map(|(_, (_pid, pane))| pane)
@@ -1592,7 +1592,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .iter()
                 // UI panes (eg. the tab and status bars) are never split, even before their
                 // plugin has loaded and marked itself unselectable.
-                .filter(|(_, pane)| !super::is_ui_pane(pane.as_ref()))
+                .filter(|(_, pane)| !super::is_ui_pane(&***pane))
                 .map(|(id, pane)| {
                     (
                         *id,
@@ -1631,7 +1631,7 @@ impl<'a> TiledPaneGrid<'a> {
     }
     pub fn has_room_for_new_stacked_pane(&self) -> bool {
         let panes = self.panes.borrow();
-        let flexible_pane_in_stack: Vec<(&PaneId, &&mut Box<dyn Pane>)> = panes
+        let flexible_pane_in_stack: Vec<(&PaneId, &&mut G)> = panes
             .iter()
             .filter(|(_, p)| p.selectable() && p.current_geom().is_expanded_in_stack())
             .collect();

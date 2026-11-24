@@ -905,7 +905,7 @@ fn claiming_an_agent_launch_fires_start_only_when_installation_adds_identity() {
                 Some(Run::Command(command))
             }
         );
-        assert_eq!(pane.is_held(), rejected && !identified);
+        assert_eq!(pane.terminal().unwrap().is_held(), rejected && !identified);
         let fired: Vec<_> = plugins
             .try_iter()
             .filter_map(|(instruction, _)| match instruction {
@@ -1759,6 +1759,23 @@ fn agent_restart_rejects_missing_sessions_live_panes_and_unsafe_commands() {
     let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 2, TabId::new(0));
     let pane = PaneId::Terminal(TERMINAL_2);
+    for (target, error) in [
+        (
+            PaneId::Plugin(crate::PluginId::new(99)),
+            "target must be a terminal pane",
+        ),
+        (
+            PaneId::Terminal(TerminalId::new(99)),
+            "target pane does not exist",
+        ),
+    ] {
+        assert_eq!(
+            screen
+                .restart_agent_pane(target, None, AgentRestartSession::Fresh, None)
+                .unwrap_err(),
+            error
+        );
+    }
     assert!(screen
         .restart_agent_pane(pane, None, AgentRestartSession::Fresh, None)
         .unwrap_err()

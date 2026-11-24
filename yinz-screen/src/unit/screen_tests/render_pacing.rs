@@ -133,7 +133,12 @@ fn deferred_panes_deliver_bells_and_directory_updates_once_after_resuming() {
             assert!(rendered_by_client(&paced.to_server).is_empty());
             assert_eq!(paced.screen.core.last_forwarded_osc7, previous_osc7);
             let tab = paced.screen.core.tabs.get(&TabId::new(0)).unwrap();
-            assert!(tab.get_active_pane(CLIENT).unwrap().has_bell());
+            assert!(tab
+                .get_active_pane(CLIENT)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .has_bell());
         }
 
         paced.backlog.lock().unwrap().clear();
@@ -1203,7 +1208,9 @@ fn collapsed_stack_titles_wake_watchers_without_losing_hidden_content() {
         assert!(rendered_bytes(&paced.to_server).contains("osc-caption"));
         paced
             .screen
-            .with_pane(collapsed, |pane| pane.set_bell_notification(true))
+            .with_pane(collapsed, |pane| {
+                pane.terminal_mut().unwrap().set_bell_notification(true)
+            })
             .unwrap();
         paced_render(&mut paced.screen);
         let _ = rendered_bytes(&paced.to_server);
@@ -1949,6 +1956,8 @@ fn screensaver_wake_restores_graphics_overlays_and_cursor() {
             .get_active_tab_mut(CLIENT)
             .unwrap()
             .get_active_pane_mut(CLIENT)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .handle_pty_bytes(b"\x1b_Ga=T,q=2,f=24,s=2,v=2,m=0;////////////////\x1b\\".to_vec());
         open_menu(&mut paced.screen, CLIENT);

@@ -102,7 +102,7 @@ fn rejected_landing_retains_adopted_terminals_and_their_buffered_output() {
         for id in [TerminalId::new(2), TerminalId::new(3)] {
             let pane = tab.get_pane_with_id(PaneId::Terminal(id)).unwrap();
             assert_eq!(pane.invoked_with(), &Some(Run::Command(command.clone())));
-            assert_eq!(pane.is_held(), held);
+            assert_eq!(pane.terminal().unwrap().is_held(), held);
         }
         let focused = if has_existing_pane {
             original

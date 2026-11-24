@@ -1,5 +1,6 @@
-use super::super::pane_resizer_test_mock::{dim_pct, spec, MockPane, PaneSpec};
+use super::super::pane_resizer_test_mock::{dim_pct, spec, GridState, MockPane, PaneSpec};
 use super::*;
+use crate::pane::PaneGeometry;
 
 fn oriented(mut pane: PaneSpec, direction: Direction) -> PaneSpec {
     if matches!(direction, Direction::Left | Direction::Right) {
@@ -54,14 +55,9 @@ fn hole_filling_characterization() {
             if case == FixedHole {
                 input[2].rows = Dimension::fixed(50);
             }
-            let mut panes: HashMap<_, Box<dyn Pane>> = input
+            let mut panes: HashMap<_, Box<MockPane<GridState>>> = input
                 .iter()
-                .map(|s| {
-                    (
-                        s.id,
-                        Box::new(MockPane::from_spec(oriented(*s, direction))) as Box<dyn Pane>,
-                    )
-                })
+                .map(|s| (s.id, Box::new(MockPane::from_spec(oriented(*s, direction)))))
                 .collect();
             let mut grid = TiledPaneGrid::new(
                 panes.iter_mut(),
@@ -155,14 +151,14 @@ fn rejected_directional_stacking_does_not_change_any_geometry() {
                     pane.y = 70 - pane.y - pane.rows.as_usize();
                 }
             }
-            let mut panes: HashMap<_, Box<dyn Pane>> = specs
+            let mut panes: HashMap<_, Box<MockPane<GridState>>> = specs
                 .iter()
                 .map(|s| {
                     let mut pane = MockPane::from_spec(oriented(*s, direction));
                     pane.set_selectable(
                         s.id != PaneId::Terminal(crate::TerminalId::new(nonselectable)),
                     );
-                    (s.id, Box::new(pane) as Box<dyn Pane>)
+                    (s.id, Box::new(pane))
                 })
                 .collect();
             let mut grid = TiledPaneGrid::new(
@@ -197,9 +193,9 @@ fn stack_without_flexible_member_uses_complete_height_for_borders() {
     first.stacked = Some(9);
     let mut last = spec(2, 0, 4, dim_pct(100.0, 80), Dimension::fixed(2));
     last.stacked = Some(9);
-    let mut panes: HashMap<_, Box<dyn Pane>> = [first, last]
+    let mut panes: HashMap<_, Box<MockPane<GridState>>> = [first, last]
         .into_iter()
-        .map(|s| (s.id, Box::new(MockPane::from_spec(s)) as Box<dyn Pane>))
+        .map(|s| (s.id, Box::new(MockPane::from_spec(s))))
         .collect();
     let grid = TiledPaneGrid::new(
         &mut panes,
@@ -236,9 +232,9 @@ fn horizontal_resize_rejects_only_worsening_undersized_spans() {
             spec(3, 0, 20, dim_pct(50.0, 200), dim_pct(50.0, 20)),
             spec(4, 200, 20, dim_pct(50.0, 200), dim_pct(50.0, 20)),
         ];
-        let mut panes: HashMap<_, Box<dyn Pane>> = specs
+        let mut panes: HashMap<_, Box<MockPane<GridState>>> = specs
             .iter()
-            .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+            .map(|s| (s.id, Box::new(MockPane::from_spec(*s))))
             .collect();
         let viewport = Viewport {
             x: 0,
@@ -278,9 +274,9 @@ fn horizontal_resize_reports_rounding_without_changing_geometry() {
         spec(1, 0, 0, dim_pct(53.0, 6), dim_pct(100.0, 20)),
         spec(2, 6, 0, dim_pct(47.0, 6), dim_pct(100.0, 20)),
     ];
-    let mut panes: HashMap<_, Box<dyn Pane>> = specs
+    let mut panes: HashMap<_, Box<MockPane<GridState>>> = specs
         .iter()
-        .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+        .map(|s| (s.id, Box::new(MockPane::from_spec(*s))))
         .collect();
     let viewport = Viewport {
         x: 0,
@@ -312,9 +308,9 @@ fn undirected_resize_reports_rounding_without_changing_geometry() {
             spec(1, 0, 0, dim_pct(53.0, 6), rows),
             spec(2, 6, 0, dim_pct(47.0, 6), rows),
         ];
-        let mut panes: HashMap<_, Box<dyn Pane>> = specs
+        let mut panes: HashMap<_, Box<MockPane<GridState>>> = specs
             .iter()
-            .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+            .map(|s| (s.id, Box::new(MockPane::from_spec(*s))))
             .collect();
         let viewport = Viewport {
             x: 0,
@@ -342,7 +338,7 @@ fn undirected_resize_reports_rounding_without_changing_geometry() {
 
 #[test]
 fn missing_geometry_is_ignored_by_resize_and_border_checks() {
-    let mut panes = HashMap::new();
+    let mut panes: HashMap<_, Box<MockPane<GridState>>> = HashMap::new();
     let mut grid = TiledPaneGrid::new(
         &mut panes,
         &HashSet::new(),
@@ -372,9 +368,9 @@ fn closing_with_unavailable_neighbor_geometry_removes_only_the_grid_reference() 
         stacked: Some(9),
         ..neighbor.geom()
     });
-    let mut panes: HashMap<_, Box<dyn Pane>> = [closing, neighbor]
+    let mut panes: HashMap<_, Box<MockPane<GridState>>> = [closing, neighbor]
         .into_iter()
-        .map(|s| (s.id, Box::new(MockPane::from_spec(s)) as Box<dyn Pane>))
+        .map(|s| (s.id, Box::new(MockPane::from_spec(s))))
         .collect();
     let viewport = Viewport {
         x: 0,

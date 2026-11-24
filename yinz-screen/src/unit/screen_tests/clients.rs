@@ -1703,7 +1703,7 @@ fn retiring_a_followed_source_preserves_another_clients_hover() {
         }
         assert_eq!(tab.query_mouse_hover_pane_id().len(), 2);
         let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
-        pane.set_plugin_regex_highlights(
+        pane.terminal_mut().unwrap().set_plugin_regex_highlights(
             crate::PluginId::new(1),
             vec![RegexHighlight {
                 pattern: "test".into(),
@@ -1718,7 +1718,9 @@ fn retiring_a_followed_source_preserves_another_clients_hover() {
             }],
             &Default::default(),
         );
-        pane.set_hover_position(Some(position));
+        pane.terminal_mut()
+            .unwrap()
+            .set_hover_position(Some(position));
         screen.remove_client(source).unwrap();
         if commit {
             screen.add_client(remaining).unwrap();
@@ -1733,6 +1735,8 @@ fn retiring_a_followed_source_preserves_another_clients_hover() {
         );
         assert!(!tab
             .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .set_hover_position(Some(position)));
     }

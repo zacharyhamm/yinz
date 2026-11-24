@@ -342,6 +342,8 @@ fn palette_wheel_moves_selection_without_scrolling_terminal() {
         .unwrap()
         .get_active_pane_mut(CLIENT)
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .handle_pty_bytes(b"scrollback\r\n".repeat(100));
     screen.toggle_command_palette(CLIENT);
     screen.command_palette_handles_input(&None, b" ", false, CLIENT);
@@ -1885,8 +1887,10 @@ fn palette_moves_sync_scroll_mode_to_the_moved_pane() {
             .unwrap()
             .get_pane_with_id_mut(scrolled)
             .unwrap();
-        pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
-        pane.scroll_up(5, Some(CLIENT));
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"scrollback\r\n".repeat(100));
+        pane.terminal_mut().unwrap().scroll_up(5);
         let (before, after) = if moved_is_scrolled {
             (InputMode::Normal, InputMode::Scroll)
         } else {
@@ -4945,7 +4949,9 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
     let mut grid = grid_for_render_snapshot(SIZE);
     screen.with_pane(pane, |pane| {
         pane.update_name("shell");
-        pane.set_title_prefix(Some("project:branch".into()));
+        pane.terminal_mut()
+            .unwrap()
+            .set_title_prefix(Some("project:branch".into()));
     });
     palette_search(&mut screen, "state:waiting directory:\"café space\"");
     let result = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -5607,7 +5613,9 @@ fn palette_rename_keeps_raw_title() {
     let mut screen = screen();
     let pane = PaneId::Terminal(TerminalId::new(1));
     screen.with_pane(pane, |pane| {
-        pane.set_title_prefix(Some("project:branch".into()));
+        pane.terminal_mut()
+            .unwrap()
+            .set_title_prefix(Some("project:branch".into()));
         pane.update_name("shell");
     });
     let receiver = screen_wired_to_server(&mut screen);
@@ -9015,8 +9023,10 @@ fn live_agent_palette_resolves_osc_status_for_presentation_filtering_and_order()
         run_id: None,
     };
     screen.with_pane(pane_id, |pane| {
-        pane.set_agent_info(Some(agent.clone()));
-        pane.set_last_hook_at_ms(100);
+        pane.terminal_mut()
+            .unwrap()
+            .set_agent_info(Some(agent.clone()));
+        pane.terminal_mut().unwrap().set_last_hook_at_ms(100);
     });
     screen.log_and_report_session_state().unwrap();
     for (name, stamp, state) in [
@@ -9111,7 +9121,7 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
         let mut screen = screen();
         let pane_id = PaneId::Terminal(TerminalId::new(1));
         screen.with_pane(pane_id, |pane| {
-            pane.set_agent_info(Some(AgentInfo {
+            pane.terminal_mut().unwrap().set_agent_info(Some(AgentInfo {
                 kind: "codex".into(),
                 state: AgentState::Busy,
                 source: AgentSource::Reported,
@@ -9122,7 +9132,7 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
                 session_id: None,
                 run_id: None,
             }));
-            pane.set_last_hook_at_ms(100);
+            pane.terminal_mut().unwrap().set_last_hook_at_ms(100);
         });
         screen.log_and_report_session_state().unwrap();
         let older = warp_peer(&mut screen, "older");
@@ -9164,7 +9174,9 @@ fn live_agent_order_uses_peer_timestamps_and_refreshes_root_and_picker() {
         };
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_order(&frame, ["newer task", "local task", "older task"]);
-        screen.with_pane(pane_id, |pane| pane.set_last_hook_at_ms(300));
+        screen.with_pane(pane_id, |pane| {
+            pane.terminal_mut().unwrap().set_last_hook_at_ms(300)
+        });
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_order(&frame, ["local task", "newer task", "older task"]);
         // State wins over recency, and equal pane IDs are ordered by session on a tie.

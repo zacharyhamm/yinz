@@ -433,9 +433,11 @@ fn application_baseline_reaches_floating_suppressed_and_new_panes() {
             .unwrap()
             .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
             .unwrap();
-        pane.handle_pty_bytes(b"\x1b]11;?\x07\x1b]4;1;?\x07".to_vec());
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"\x1b]11;?\x07\x1b]4;1;?\x07".to_vec());
         assert_eq!(
-            pane.terminal_io_mut().unwrap().drain_messages_to_pty(),
+            pane.terminal_mut().unwrap().drain_messages_to_pty(),
             vec![
                 b"\x1b]11;rgb:f0f0/f1f1/f2f2\x07".to_vec(),
                 b"\x1b]4;1;rgb:6060/0101/6666\x07".to_vec(),

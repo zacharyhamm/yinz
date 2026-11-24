@@ -5384,6 +5384,79 @@ fn remote_detected_theme_changes_are_reported_without_output_and_only_once() {
     assert!(screen_rx.try_iter().any(|(msg, _)| matches!(msg, ScreenInstruction::UpdateDetectedAgentTheme(terminal, None) if terminal == id)));
 }
 
+fn migration_inventory() -> yinz_types::session_migration::SessionMigrationInventory {
+    use yinz_types::session_migration::{SessionMigrationInventory, SESSION_MIGRATION_FORMAT};
+    SessionMigrationInventory {
+        format: SESSION_MIGRATION_FORMAT,
+        session_name: yinz_types::internal_ids::SessionName::new("source"),
+        instance_id: uuid::Uuid::new_v4().to_string(),
+        tabs: vec![],
+        clients: vec![],
+        remote_hosts: vec![],
+        global_last_active_tab: TabId::new(0),
+        tab_group_preferences: vec![],
+        paneless_plugins: vec![],
+        display_size: None,
+    }
+}
+
+#[test]
+fn adoption_records_missing_terminal_state_before_taking_ownership() {
+    use yinz_bus::migration::{self, PtyRequest, ScreenRequest};
+    use yinz_types::session_migration::*;
+
+    let mock = MockOsApi::new();
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+    let operation = uuid::Uuid::new_v4().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("migration.json");
+    let id = PaneId::Terminal(TerminalId::new(23));
+    let snapshot = SessionMigrationSnapshot {
+        format: SESSION_MIGRATION_FORMAT,
+        operation: operation.clone(),
+        inventory: migration_inventory(),
+        phase: MigrationPhase::Released,
+        tabs: vec![MigrationTab {
+            source_tab_id: TabId::new(0),
+            slots: vec![id],
+            payload: WarpedTab {
+                tiled_panes: vec![WarpedPane::default()],
+                ..Default::default()
+            },
+            terminal_states: vec![],
+            local_replay: vec![],
+            state: TabState::default(),
+        }],
+        mapping: Default::default(),
+        errors: vec![],
+        ownership: vec![(id, MigrationOwnership::Released)],
+    };
+    let (reply, _) = crossbeam::channel::bounded(1);
+    pty.session_migration(PtyRequest::Adopt {
+        snapshot: Box::new(snapshot),
+        client: CLIENT_1,
+        path: path.clone(),
+        reply,
+    });
+    let (
+        ScreenInstruction::SessionMigration(ScreenRequest::Adopted {
+            result: Err(error), ..
+        }),
+        _,
+    ) = screen
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+    else {
+        panic!("expected a failed adoption");
+    };
+    let recovered = migration::load_snapshot(&path, &operation).unwrap();
+    assert_eq!(error, format!("missing migration state for {id}"));
+    assert_eq!(recovered.errors, [error]);
+    assert_eq!(recovered.phase, MigrationPhase::Recovery);
+    assert_eq!(recovered.ownership, [(id, MigrationOwnership::Released)]);
+    assert!(mock.release_attempts().is_empty());
+}
+
 #[test]
 fn migration_reconciles_partial_source_release_without_killing_or_releasing_absent_owners() {
     use yinz_bus::migration::{self, PtyRequest, ScreenRequest};
@@ -5403,18 +5476,7 @@ fn migration_reconciles_partial_source_release_without_killing_or_releasing_abse
     let snapshot = SessionMigrationSnapshot {
         format: SESSION_MIGRATION_FORMAT,
         operation: operation.clone(),
-        inventory: SessionMigrationInventory {
-            format: SESSION_MIGRATION_FORMAT,
-            session_name: yinz_types::internal_ids::SessionName::new("source"),
-            instance_id: uuid::Uuid::new_v4().to_string(),
-            tabs: vec![],
-            clients: vec![],
-            remote_hosts: vec![],
-            global_last_active_tab: TabId::new(0),
-            tab_group_preferences: vec![],
-            paneless_plugins: vec![],
-            display_size: None,
-        },
+        inventory: migration_inventory(),
         phase: MigrationPhase::Recovery,
         tabs: vec![MigrationTab {
             source_tab_id: TabId::new(0),

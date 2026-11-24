@@ -125,8 +125,7 @@ impl Screen {
                 pending.push(PreparationWork::TerminalPlacement);
             }
             if tab.get_all_pane_ids().iter().any(|id| {
-                tab.get_pane_with_id_mut(*id)
-                    .and_then(|pane| pane.terminal_io_mut())
+                tab.get_terminal_mut(*id)
                     .is_some_and(|pane| pane.is_forward_paused())
             }) && !pending.contains(&PreparationWork::HostReply)
             {
@@ -285,6 +284,9 @@ impl Screen {
                     .get_pane_with_id(*pane_id)
                     .context("missing migration pane")?;
                 if let PaneId::Terminal(terminal) = pane_id {
+                    let pane = pane
+                        .terminal()
+                        .with_context(|| format!("terminal_{terminal} has no terminal state"))?;
                     pane.validate_migration()
                         .map_err(|e| anyhow!("terminal_{terminal} cannot be migrated: {e}"))?;
                     if let Some(state) = pane.held_for_warp() {
@@ -405,7 +407,9 @@ impl Screen {
                     // A held pane went to the new server with its scrollback dump, if any.
                     let retire = match pane_id {
                         PaneId::Plugin(_) => Some(PtyInstruction::ClosePane(pane_id, None)),
-                        PaneId::Terminal(_) if pane.is_held() => {
+                        PaneId::Terminal(_)
+                            if pane.terminal().is_some_and(|term| term.is_held()) =>
+                        {
                             Some(PtyInstruction::CloseDepartedPane(pane_id))
                         },
                         PaneId::Terminal(_) => None,
@@ -988,8 +992,8 @@ impl Screen {
                         .context("resume migrated terminal output")?;
                     for tab in self.core.tabs.values_mut() {
                         for id in tab.get_all_pane_ids() {
-                            if let Some(pane) = tab.get_pane_with_id_mut(id) {
-                                pane.set_warp_pending(false);
+                            if let Some(term) = tab.get_terminal_mut(id) {
+                                term.set_warp_pending(false);
                             }
                         }
                     }
@@ -1366,25 +1370,32 @@ impl Screen {
                 "migrated layout slot count changed"
             );
             for (source_id, destination_id) in source.slots.iter().zip(slots) {
-                state
-                    .snapshot
-                    .mapping
-                    .panes
-                    .push((*source_id, *destination_id));
-                if let Some((_, saved)) = source
-                    .terminal_states
-                    .iter()
-                    .find(|(id, _)| id == source_id)
-                {
-                    self.core
-                        .tabs
-                        .get_mut(&tab_id)
-                        .and_then(|t| t.get_pane_with_id_mut(*destination_id))
-                        .context("adopted terminal was not placed")?
-                        .restore_migration_state(saved.clone())
-                        .map_err(|e| anyhow!("restore {source_id:?}: {e}"))?;
+                match (source_id, destination_id) {
+                    (PaneId::Plugin(_), PaneId::Plugin(_)) => {},
+                    (PaneId::Terminal(_), PaneId::Terminal(_)) => {
+                        let (_, saved) = source
+                            .terminal_states
+                            .iter()
+                            .find(|(id, _)| id == source_id)
+                            .with_context(|| format!("missing migration state for {source_id}"))?;
+                        self.core.tabs.get_mut(&tab_id)
+                            .and_then(|tab| tab.get_terminal_mut(*destination_id))
+                            .with_context(|| format!("destination {destination_id} for {source_id} has no placed terminal"))?
+                            .restore_migration_state(saved.clone())
+                            .map_err(|e| anyhow!("restore {source_id}: {e}"))?;
+                    },
+                    _ => {
+                        return Err(anyhow!(
+                        "migration slot {source_id} has wrong destination kind {destination_id}"
+                    ))
+                    },
                 }
             }
+            state
+                .snapshot
+                .mapping
+                .panes
+                .extend(source.slots.iter().copied().zip(slots.iter().copied()));
             self.core
                 .tabs
                 .get_mut(&tab_id)
@@ -1875,8 +1886,7 @@ impl super::ScreenCore {
     fn migration_output_pending(&mut self) -> bool {
         self.tabs.values_mut().any(|tab| {
             tab.get_all_pane_ids().iter().any(|id| {
-                tab.get_pane_with_id_mut(*id)
-                    .and_then(|pane| pane.terminal_io_mut())
+                tab.get_terminal_mut(*id)
                     .is_some_and(|pane| pane.is_forward_paused())
             })
         })
@@ -1901,7 +1911,10 @@ impl super::ScreenCore {
             let pane = tab
                 .get_pane_with_id(*pane_id)
                 .context("missing source terminal during snapshot")?;
-            let state = pane
+            let terminal_pane = pane
+                .terminal()
+                .with_context(|| format!("missing source terminal_{terminal}"))?;
+            let state = terminal_pane
                 .migration_state()
                 .map_err(|e| anyhow!("terminal_{terminal}: {e}"))?;
             terminal_states.push((*pane_id, state));
@@ -1919,12 +1932,8 @@ impl super::ScreenCore {
                 remote: address.remote,
                 caption: (!pane.has_explicit_title() && pane.custom_title().is_none())
                     .then(|| pane.current_title()),
-                bracketed_paste: pane.supports_bracketed_paste(),
-                agent: self
-                    .tabs
-                    .get(&id)
-                    .and_then(|tab| tab.get_pane_with_id(*pane_id))
-                    .and_then(|p| p.agent_info().cloned()),
+                bracketed_paste: terminal_pane.supports_bracketed_paste(),
+                agent: terminal_pane.agent_info().cloned(),
                 agent_input: agents.warped_agent_input(self, *pane_id),
                 agent_tracking: agents.migration_agent_tracking(self, *pane_id),
                 ..Default::default()

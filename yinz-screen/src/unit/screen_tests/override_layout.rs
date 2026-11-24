@@ -1016,7 +1016,7 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
                 let pane_id = PaneId::Terminal(id);
                 let pane = tab.get_pane_with_id(pane_id).unwrap();
                 assert_eq!(pane.invoked_with(), &Some(Run::Command(command.clone())));
-                assert_eq!(pane.is_held(), held);
+                assert_eq!(pane.terminal().unwrap().is_held(), held);
                 let info = tab
                     .pane_infos()
                     .into_iter()

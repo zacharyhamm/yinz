@@ -1432,7 +1432,7 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
             tab.handle_pty_bytes(TerminalId::new(1), b"\x1b[?1003h\x1b[?1006h".to_vec())
                 .unwrap();
             let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
-            pane.set_agent_info(Some(AgentInfo {
+            pane.terminal_mut().unwrap().set_agent_info(Some(AgentInfo {
                 kind: kind.into(),
                 state: AgentState::Busy,
                 source: AgentSource::Reported,
@@ -1498,6 +1498,8 @@ fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture()
                         .get_mut(&TabId::new(0))
                         .unwrap()
                         .get_pane_with_id_mut(pane_id)
+                        .unwrap()
+                        .terminal_mut()
                         .unwrap()
                         .set_agent_info(None);
                 }

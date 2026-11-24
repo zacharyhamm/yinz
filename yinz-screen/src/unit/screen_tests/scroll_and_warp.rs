@@ -40,11 +40,13 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
                 .unwrap();
             tab.get_pane_with_id_mut(pane_id)
                 .unwrap()
-                .scroll_up(3, None);
+                .terminal_mut()
+                .unwrap()
+                .scroll_up(3);
             tab.handle_pty_bytes(terminal, b"pending output\r\n".to_vec())
                 .unwrap();
             let pane = tab.get_pane_with_id(pane_id).unwrap();
-            assert!(pane.is_scrolled());
+            assert!(pane.terminal().unwrap().is_scrolled());
             assert!(!pane.dump_screen(true, None).contains("pending output"));
         }
         screen.core.mode_info.insert(
@@ -84,12 +86,12 @@ fn clearing_targeted_scroll_flushes_output_and_syncs_only_target_viewers() {
         let pane = screen.core.tabs[&target_tab]
             .get_pane_with_id(target)
             .unwrap();
-        assert!(!pane.is_scrolled());
+        assert!(!pane.terminal().unwrap().is_scrolled());
         assert!(pane.dump_screen(true, None).contains("pending output"));
         let pane = screen.core.tabs[&other_tab]
             .get_pane_with_id(other)
             .unwrap();
-        assert!(pane.is_scrolled());
+        assert!(pane.terminal().unwrap().is_scrolled());
         assert!(!pane.dump_screen(true, None).contains("pending output"));
         let mut changed_clients = server
             .try_iter()
@@ -2966,7 +2968,7 @@ fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
     assert_eq!(subject.current_title(), "held subject");
     assert_eq!(subject.invoked_with(), &Some(Run::Command(command)));
     assert!(subject.borderless());
-    assert!(subject.is_held());
+    assert!(subject.terminal().unwrap().is_held());
     tab.close_pane(PaneId::Plugin(crate::PluginId::new(20)), false, None);
     assert!(tab.has_non_suppressed_pane_with_pid(&hidden));
     tab.close_pane(visible, false, None);
@@ -3464,7 +3466,15 @@ fn floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection() {
                 .unwrap();
         }
         assert_eq!(tab.get_active_pane_id(client), Some(displayed));
-        assert!(tab.get_pane_with_id(displayed).unwrap().scroll_position().0 > 0);
+        assert!(
+            tab.get_pane_with_id(displayed)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .scroll_position()
+                .0
+                > 0
+        );
         for id in [2, 8].map(|id| PaneId::Terminal(TerminalId::new(id))) {
             assert!(tab.pane_is_hidden_stack_list_member(&id));
             assert_eq!(tab.get_pane_with_id(id).unwrap().get_content_rows(), 3);
@@ -3621,7 +3631,15 @@ fn fullscreen_floating_stack_content_targets_the_displayed_member() {
         assert!(hidden
             .iter()
             .all(|id| tab.pane_is_hidden_stack_list_member(id)));
-        assert!(tab.get_pane_with_id(displayed).unwrap().scroll_position().0 > 0);
+        assert!(
+            tab.get_pane_with_id(displayed)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .scroll_position()
+                .0
+                > 0
+        );
 
         if no_ui {
             tab.toggle_active_pane_no_ui_fullscreen(client_id);
@@ -3897,6 +3915,8 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                         .unwrap()
                         .get_pane_with_id_mut(id)
                         .unwrap()
+                        .terminal_mut()
+                        .unwrap()
                         .hold(Some(17), false, RunCommand::default());
                 }
                 let (tab_id, ids, prepared) = if group {
@@ -3914,6 +3934,8 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                     .filter_map(|id| {
                         screen.core.tabs[&tab_id]
                             .get_pane_with_id(PaneId::Terminal(*id))
+                            .unwrap()
+                            .terminal()
                             .unwrap()
                             .held_for_warp()
                             .map(|held| (*id, held))
@@ -3946,6 +3968,8 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                     tab.close_pane(PaneId::Terminal(held_id), false, None);
                 } else {
                     tab.get_pane_with_id_mut(PaneId::Terminal(held_id))
+                        .unwrap()
+                        .terminal_mut()
                         .unwrap()
                         .hold(Some(23), false, RunCommand::default());
                 }
@@ -3991,7 +4015,11 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                 let tab = &screen.core.tabs[&tab_id];
                 assert_eq!(tab.get_all_pane_ids(), remaining);
                 assert_eq!(
-                    tab.get_pane_with_id(preserved_id).unwrap().held_for_warp(),
+                    tab.get_pane_with_id(preserved_id)
+                        .unwrap()
+                        .terminal()
+                        .unwrap()
+                        .held_for_warp(),
                     Some(held[&TerminalId::new(3)].clone())
                 );
             }
@@ -4089,8 +4117,12 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                     expected.state = AgentState::Exited;
                     expected.detail = None;
                 }
-                assert!(pane.is_held());
-                assert_eq!(pane.agent_info(), Some(&expected), "{kind}");
+                assert!(pane.terminal().unwrap().is_held());
+                assert_eq!(
+                    pane.terminal().unwrap().agent_info(),
+                    Some(&expected),
+                    "{kind}"
+                );
             }
         }
     }
@@ -4121,10 +4153,16 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                 .unwrap()
                 .get_pane_with_id_mut(pane_id)
                 .unwrap();
-            pane.hold((!first_run).then_some(17), first_run, command.clone());
+            pane.terminal_mut().unwrap().hold(
+                (!first_run).then_some(17),
+                first_run,
+                command.clone(),
+            );
             pane.rename(b"saved task".to_vec());
-            pane.handle_pty_bytes(b"saved scrollback\r\n".to_vec());
-            let expected = pane.held_for_warp().unwrap();
+            pane.terminal_mut()
+                .unwrap()
+                .handle_pty_bytes(b"saved scrollback\r\n".to_vec());
+            let expected = pane.terminal().unwrap().held_for_warp().unwrap();
             let (to_pty, pty) = channels::unbounded();
             screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
             let payload = if kind == "pane" {
@@ -4156,6 +4194,8 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                         .get_mut(&TAB_0)
                         .unwrap()
                         .get_pane_with_id_mut(pane_id)
+                        .unwrap()
+                        .terminal_mut()
                         .unwrap()
                         .rerun()
                         .is_none(),
@@ -4308,9 +4348,15 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                         .unwrap()
                         .get_pane_with_id_mut(pane_id)
                         .unwrap();
-                    pane.hold((!first_run).then_some(17), first_run, RunCommand::default());
+                    pane.terminal_mut().unwrap().hold(
+                        (!first_run).then_some(17),
+                        first_run,
+                        RunCommand::default(),
+                    );
                     if !first_run {
-                        pane.handle_pty_bytes(b"saved scrollback\r\n".to_vec());
+                        pane.terminal_mut()
+                            .unwrap()
+                            .handle_pty_bytes(b"saved scrollback\r\n".to_vec());
                     }
                     let replacement = RunCommand {
                         command: "codex".into(),
@@ -4471,7 +4517,7 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                         assert_eq!(hooks, vec![HookPoint::AgentStart]);
                         let tab = screen.core.tabs.get_mut(&TAB_0).unwrap();
                         let pane = tab.get_pane_with_id(pane_id).unwrap();
-                        assert!(!pane.is_held());
+                        assert!(!pane.terminal().unwrap().is_held());
                         assert_eq!(
                             pane.dump_screen(true, None).contains("saved scrollback"),
                             keep_scrollback && !first_run,
@@ -4510,6 +4556,8 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
             .unwrap()
             .get_pane_with_id_mut(pane_id)
             .unwrap()
+            .terminal_mut()
+            .unwrap()
             .hold(None, true, RunCommand::default());
         let (to_pty, pty) = channels::unbounded();
         screen.core.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
@@ -4543,6 +4591,8 @@ fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
             .get_mut(&TAB_0)
             .unwrap()
             .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .terminal_mut()
             .unwrap()
             .rerun()
             .is_some());
@@ -4705,6 +4755,8 @@ fn pane_and_tab_warp_capture_actual_paste_mode() {
             assert_eq!(
                 screen.core.tabs[&TabId::new(0)]
                     .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+                    .unwrap()
+                    .terminal()
                     .unwrap()
                     .supports_bracketed_paste(),
                 enabled
@@ -4933,10 +4985,12 @@ fn pane_and_tab_warps_preserve_history_independently_of_session_save_settings() 
                     .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
                     .unwrap();
                 let history: String = (0..100).map(|i| format!("history-{i:03}\r\n")).collect();
-                pane.handle_pty_bytes(history.into_bytes());
+                pane.terminal_mut()
+                    .unwrap()
+                    .handle_pty_bytes(history.into_bytes());
                 assert!(!pane.dump_screen(false, None).contains("history-000"));
                 if scrolled {
-                    pane.scroll_up(40, None);
+                    pane.terminal_mut().unwrap().scroll_up(40);
                     assert!(!pane.dump_screen(false, None).contains("history-099"));
                 }
                 let release = || {
@@ -4971,10 +5025,12 @@ fn pane_and_tab_warps_preserve_history_independently_of_session_save_settings() 
                     .unwrap()
                     .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(2)))
                     .unwrap();
-                destination.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
-                    payload.contents.unwrap(),
-                    payload.agent_theme,
-                ));
+                destination.terminal_mut().unwrap().handle_pty_bytes(
+                    yinz_terminal::agent_theme::handoff_replay(
+                        payload.contents.unwrap(),
+                        payload.agent_theme,
+                    ),
+                );
                 let restored = destination.dump_screen(true, None);
                 let lines: Vec<_> = restored
                     .lines()
@@ -5071,13 +5127,25 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
             .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
             .unwrap();
         pane.update_theme(theme);
-        pane.handle_pty_bytes(b"\x1b[32mS".to_vec());
-        pane.handle_pty_bytes(history(Role::Success, "first", "\x1b[32mAAA"));
-        pane.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
-            "\x1b[32ms".into(),
-            Some(AgentThemeHandoff::default()),
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"\x1b[32mS".to_vec());
+        pane.terminal_mut().unwrap().handle_pty_bytes(history(
+            Role::Success,
+            "first",
+            "\x1b[32mAAA",
         ));
-        pane.handle_pty_bytes(history(Role::Error, "second", "\x1b[32mBBB"));
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
+                "\x1b[32ms".into(),
+                Some(AgentThemeHandoff::default()),
+            ));
+        pane.terminal_mut().unwrap().handle_pty_bytes(history(
+            Role::Error,
+            "second",
+            "\x1b[32mBBB",
+        ));
         check(pane.as_mut(), true);
         let release = || {
             Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
@@ -5124,16 +5192,24 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
             .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(2)))
             .unwrap();
         pane.update_theme(theme);
-        pane.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
-            payload.contents.unwrap(),
-            payload.agent_theme,
-        ));
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
+                payload.contents.unwrap(),
+                payload.agent_theme,
+            ));
         check(pane.as_mut(), true);
-        pane.update_agent_theme_mapping(AgentThemeMapping::Off);
+        pane.terminal_mut()
+            .unwrap()
+            .update_agent_theme_mapping(AgentThemeMapping::Off);
         check(pane.as_mut(), false);
-        pane.update_agent_theme_mapping(AgentThemeMapping::Semantic);
+        pane.terminal_mut()
+            .unwrap()
+            .update_agent_theme_mapping(AgentThemeMapping::Semantic);
         check(pane.as_mut(), true);
-        pane.handle_pty_bytes(b"\r\n\x1b[32mNEW".to_vec());
+        pane.terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(b"\r\n\x1b[32mNEW".to_vec());
         let chunks = pane.render(None).unwrap().unwrap().0;
         assert!(chunks
             .iter()
@@ -5158,7 +5234,9 @@ fn warp_snapshot_invalid_cursor_falls_back_before_transfer() {
         .unwrap()
         .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
         .unwrap();
-    pane.handle_pty_bytes(b"\x1b[?1049h\x1b[20;80H".to_vec());
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"\x1b[?1049h\x1b[20;80H".to_vec());
     let mut geom = pane.position_and_size();
     geom.cols.set_inner(40);
     geom.rows.set_inner(10);
@@ -5183,14 +5261,18 @@ fn warp_snapshot_budget_and_partial_parser_fall_back_without_truncating_state() 
         .unwrap()
         .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
         .unwrap();
-    pane.handle_pty_bytes(b"normal\x1b[?1049hfullscreen".to_vec());
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"normal\x1b[?1049hfullscreen".to_vec());
     let (state, warning) = capture_terminal_for_warp(pane.as_ref(), Screen::WARP_CONTENTS_BUDGET);
     assert!(state.is_some());
     assert!(warning.is_none());
     let (state, warning) = capture_terminal_for_warp(pane.as_ref(), 1);
     assert!(state.is_none());
     assert!(warning.unwrap().contains("terminal_1"));
-    pane.handle_pty_bytes(b"\x1b[31".to_vec());
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"\x1b[31".to_vec());
     let (state, warning) = capture_terminal_for_warp(pane.as_ref(), Screen::WARP_CONTENTS_BUDGET);
     assert!(state.is_none());
     assert!(warning.unwrap().contains("escape sequence"));

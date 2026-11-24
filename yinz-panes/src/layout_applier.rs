@@ -1,3 +1,5 @@
+use crate::pane::PaneGeometry;
+use crate::pane::TerminalPaneOps;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::TerminalId;

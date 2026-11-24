@@ -203,7 +203,7 @@ fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
         explicitly_disable_kitty_keyboard_protocol,
         pty_receiver,
         plugin_receiver,
-    ) = create_layout_applier_fixtures_with_receivers(Size { cols: 7, rows: 7 });
+    ) = create_layout_applier_fixtures_with_receivers(Size { cols: 12, rows: 7 });
     let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
     macro_rules! applier {
         () => {
@@ -233,18 +233,39 @@ fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
             )
         };
     }
-    let (initial, floating) = parse_kdl_layout(r#"layout { pane stacked=true { pane; pane; }; }"#);
+    let (initial, floating) =
+        parse_kdl_layout(r#"layout { pane stacked=true { pane; pane; pane; }; }"#);
     applier!()
         .apply_layout(
             initial,
             floating,
-            vec![(TerminalId::new(1), None), (TerminalId::new(2), None)],
+            vec![
+                (TerminalId::new(1), None),
+                (TerminalId::new(2), None),
+                (TerminalId::new(3), None),
+            ],
             vec![],
             HashMap::new(),
             ClientId::new(1),
         )
         .unwrap();
-    assert_eq!(tiled_panes.get_panes().count(), 2);
+    assert_eq!(tiled_panes.get_panes().count(), 3);
+    let ids = [1, 2, 3].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    for (id, text) in ids.iter().zip(["one", "two", "three"]) {
+        tiled_panes
+            .get_pane_mut(*id)
+            .unwrap()
+            .terminal_mut()
+            .unwrap()
+            .handle_pty_bytes(text.as_bytes().to_vec());
+    }
+    let contents =
+        |panes: &TiledPanes| ids.map(|id| panes.get_pane(id).unwrap().dump_screen(true, None));
+    let original_contents = contents(&tiled_panes);
+    assert!(original_contents
+        .iter()
+        .zip(["one", "two", "three"])
+        .all(|(screen, text)| screen.contains(text)));
     let before = take_pane_state_snapshot(
         &tiled_panes,
         &floating_panes,
@@ -258,7 +279,7 @@ fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
     let (replacement, _) = parse_kdl_layout(r#"layout { pane; }"#);
     let geometry = yinz_types::pane_size::PaneGeom::from(&*display_area.borrow());
     let positions = replacement
-        .position_panes_in_space(&geometry, Some(2), false, false)
+        .position_panes_in_space(&geometry, Some(3), false, false)
         .unwrap();
     assert_eq!(positions.len(), 1);
     let error = applier!()
@@ -267,7 +288,7 @@ fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
     assert!(
         error
             .to_string()
-            .contains("not enough room for retained pane"),
+            .contains(&format!("not enough room for retained pane {:?}", ids[2])),
         "{error:#}"
     );
     assert_eq!(
@@ -280,6 +301,7 @@ fn existing_pane_layout_preflight_refusal_preserves_panes_and_geometry() {
             &display_area,
         )
     );
+    assert_eq!(contents(&tiled_panes), original_contents);
     assert!(collect_close_pane_messages(&pty_receiver).is_empty());
     assert!(collect_unload_plugin_messages(&plugin_receiver).is_empty());
 }

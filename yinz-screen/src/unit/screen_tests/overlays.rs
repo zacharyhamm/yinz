@@ -7073,7 +7073,12 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
     );
     assert_eq!(tab.multipane_info(original).unwrap(), info);
     assert_eq!(tab.multipane_info(sibling).unwrap(), info);
-    assert!(!tab.get_pane_with_id(original).unwrap().is_held());
+    assert!(!tab
+        .get_pane_with_id(original)
+        .unwrap()
+        .terminal()
+        .unwrap()
+        .is_held());
 
     crate::screen::replay_pending_plugin_events(
         &mut screen,
@@ -7082,7 +7087,12 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
     .unwrap();
     let tab = &screen.core.tabs[&TabId::new(0)];
     assert_eq!(tab.multipane_info(original).unwrap(), info);
-    assert!(tab.get_pane_with_id(original).unwrap().is_held());
+    assert!(tab
+        .get_pane_with_id(original)
+        .unwrap()
+        .terminal()
+        .unwrap()
+        .is_held());
 }
 
 #[test]
@@ -7283,6 +7293,8 @@ fn multipane_rejected_adoption_changes_nothing_and_child_replacement_retains_the
     );
     assert!(screen.core.tabs[&TabId::new(0)]
         .get_pane_with_id(terminal)
+        .unwrap()
+        .terminal()
         .unwrap()
         .is_held());
 }

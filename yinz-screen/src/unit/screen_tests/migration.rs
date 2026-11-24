@@ -152,7 +152,7 @@ fn releasing_the_last_tab_retains_source_server_and_durable_recovery_state() {
     let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
         .unwrap()
-        .terminal_io_mut()
+        .terminal_mut()
         .unwrap()
         .arm_forward_pause();
     tab.handle_pty_bytes(TerminalId::new(1), b"after-host-reply".to_vec())
@@ -1386,5 +1386,254 @@ fn attachment_generation_source_replay_restores_serialized_live_focus() {
         assert_eq!(screen.get_active_pane_id(&owner), saved.pane_id);
         assert_eq!(screen.core.mode_info[&owner].mode, saved.mode_info.mode);
         assert_eq!(screen.core.tab_history[&owner], saved.tab_history);
+    }
+}
+
+#[test]
+fn migration_mixed_slots_restore_by_source_id() {
+    check_mixed_slot_placement(None);
+}
+
+#[test]
+fn migration_mixed_slots_refuse_incomplete_restoration() {
+    for damage in [StateDamage::Missing, StateDamage::Invalid] {
+        check_mixed_slot_placement(Some(damage));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StateDamage {
+    Missing,
+    Invalid,
+}
+
+fn check_mixed_slot_placement(damage: Option<StateDamage>) {
+    use yinz_bus::pty::{AdoptedPane, AdoptedTabPanes};
+    let client = ClientId::new(1);
+    let tab_id = TabId::new(0);
+    let live = TerminalId::new(1);
+    let held = TerminalId::new(2);
+    let plugin = PluginId::new(7);
+    let mut source = create_new_screen(
+        Size {
+            cols: 100,
+            rows: 24,
+        },
+        false,
+        false,
+    );
+    let (plugin_tx, _plugin_rx) = channels::unbounded();
+    source.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut source, live.get(), tab_id);
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/test/plugin",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    let command = RunCommand {
+        command: "/test/held".into(),
+        args: vec!["distinct".into()],
+        ..Default::default()
+    };
+    let tab = source.core.tabs.get_mut(&tab_id).unwrap();
+    tab.new_pane(
+        PaneId::Plugin(plugin),
+        None,
+        Some(Run::Plugin(run.clone())),
+        false,
+        false,
+        NewPanePlacement::Tiled {
+            direction: None,
+            borderless: None,
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(held),
+        None,
+        Some(Run::Command(command.clone())),
+        false,
+        false,
+        NewPanePlacement::Floating(None),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.hold_pane(PaneId::Terminal(held), Some(37), false, command.clone());
+    tab.handle_pty_bytes(live, b"live state".to_vec()).unwrap();
+    tab.handle_pty_bytes(held, b"held state".to_vec()).unwrap();
+    let source_geom = tab
+        .get_pane_with_id(PaneId::Terminal(live))
+        .unwrap()
+        .current_geom();
+    let slots = [
+        PaneId::Terminal(live),
+        PaneId::Plugin(plugin),
+        PaneId::Terminal(held),
+    ];
+    let (inventory, _, terminals, held_states) = source.migration_inventory(client).unwrap();
+    assert_eq!(inventory.tabs[0].panes, slots);
+    assert_eq!(terminals, [live, held]);
+    assert_eq!(held_states.len(), 1);
+    let held_state = &held_states[&held];
+    assert_eq!(held_state.command, command);
+    assert!(!held_state.first_run);
+    assert_eq!(held_state.exit_status, Some(37));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snapshot.json");
+    let operation = operation();
+    let (reply, released) = crossbeam::channel::bounded(1);
+    source.session_migration(ScreenRequest::Release {
+        operation: operation.clone(),
+        snapshot: path.clone(),
+        client,
+        deadline: std::time::Instant::now() + yinz_test_support::default_timeout(),
+        forward_agent_reports: false,
+        reply,
+    });
+    let addresses = vec![
+        (
+            live,
+            ReleasedPane::Local(ReleasedPtyHost {
+                host_id: SupervisorId::new("fixture"),
+                host_pid: ProcessId::new(42),
+                control_socket: Some(dir.path().join("fixture.sock")),
+            }),
+        ),
+        (held, ReleasedPane::Held(held_state.clone())),
+    ];
+    source.session_migration(ScreenRequest::InputDrained {
+        operation: operation.clone(),
+        result: Ok(addresses.clone()),
+    });
+    source.session_migration(ScreenRequest::Released {
+        operation: operation.clone(),
+        results: addresses
+            .into_iter()
+            .map(|(id, pane)| {
+                (
+                    id,
+                    Ok(yinz_bus::warp::ReleasedPaneForWarp {
+                        pane,
+                        run_command: command.clone(),
+                    }),
+                )
+            })
+            .collect(),
+    });
+    let mut snapshot = released.try_recv().unwrap().unwrap();
+    let saved = &mut snapshot.tabs[0];
+    assert_eq!(saved.slots, slots);
+    assert_eq!(
+        saved
+            .terminal_states
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        [slots[0], slots[2]]
+    );
+    assert_eq!(saved.payload.tiled_panes.len(), 1);
+    assert_eq!(saved.payload.floating_panes.len(), 1);
+    assert_eq!(
+        saved.payload.floating_panes[0].held.as_ref(),
+        Some(held_state)
+    );
+    let tiled = saved.payload.tiled_layout.clone();
+    let floating = saved.payload.floating_layout.clone();
+    match damage {
+        Some(StateDamage::Missing) => {
+            saved.terminal_states.pop();
+        },
+        Some(StateDamage::Invalid) => saved.terminal_states[1].1 = serde_json::Value::Null,
+        None => {},
+    }
+    migration::save_snapshot(&path, &snapshot).unwrap();
+    let mut destination = create_new_screen(
+        Size {
+            cols: 140,
+            rows: 32,
+        },
+        false,
+        false,
+    );
+    let (tx, _rx) = channels::unbounded();
+    destination.core.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let (reply, adopted) = crossbeam::channel::bounded(1);
+    destination.session_migration(ScreenRequest::Adopt {
+        operation: operation.clone(),
+        snapshot: path.clone(),
+        client,
+        reply: reply.clone(),
+    });
+    let new_live = TerminalId::new(11);
+    let new_held = TerminalId::new(12);
+    let new_plugin = PluginId::new(17);
+    let placed = |terminal_id| AdoptedPane {
+        terminal_id,
+        cmd: command.clone(),
+        buffered: vec![],
+        child_exit_status: None,
+    };
+    destination.session_migration(ScreenRequest::Adopted {
+        snapshot: Box::new(snapshot),
+        result: Ok(vec![AdoptedTabPanes {
+            tiled: vec![placed(new_live)],
+            floating: vec![placed(new_held)],
+        }]),
+        client,
+        path: path.clone(),
+        reply,
+    });
+    destination
+        .apply_layout(
+            tiled,
+            floating,
+            vec![(new_live, None)],
+            vec![(new_held, None)],
+            HashMap::from([(run, vec![new_plugin])]),
+            tab_id,
+            true,
+            client,
+            None,
+        )
+        .unwrap();
+    destination.session_migration(ScreenRequest::TabReplayed {
+        operation: operation.clone(),
+        tab: tab_id,
+    });
+    let result = adopted.try_recv().unwrap();
+    if damage.is_some() {
+        let error = result.unwrap_err();
+        assert!(error.contains("terminal_2"), "{error}");
+        let recovery = migration::load_snapshot(&path, &operation).unwrap();
+        assert_eq!(recovery.phase, MigrationPhase::Recovery);
+        assert!(recovery.errors.contains(&error));
+    } else {
+        let targets = [
+            PaneId::Terminal(new_live),
+            PaneId::Plugin(new_plugin),
+            PaneId::Terminal(new_held),
+        ];
+        assert_eq!(
+            result.unwrap().panes,
+            slots.into_iter().zip(targets).collect::<Vec<_>>()
+        );
+        let tab = &destination.core.tabs[&tab_id];
+        for (id, marker) in [(targets[0], "live state"), (targets[2], "held state")] {
+            let pane = tab.get_pane_with_id(id).unwrap();
+            assert!(pane.dump_screen(false, Some(client)).contains(marker));
+        }
+        assert_ne!(
+            tab.get_pane_with_id(targets[0])
+                .unwrap()
+                .current_geom()
+                .cols,
+            source_geom.cols
+        );
     }
 }

@@ -1,23 +1,12 @@
 use super::pane_resizer::PaneResizer;
-use crate::pane::Pane;
+use crate::pane::{PaneGeometry, TiledGridPane};
 use crate::panes::PaneId;
-use crate::ui::pane_boundaries_frame::FrameParams;
-use crate::{
-    output::{CharacterChunk, KittyImageChunk, SixelImageChunk},
-    pty::VteBytes,
-    ClientId,
-};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::time::Instant;
+use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::geometry::SplitDirection;
-use yinz_types::input::layout::Run as LayoutRun;
-use yinz_types::internal_ids::SessionName;
-use yinz_types::pane_size::Offset;
-use yinz_types::pane_size::{Dimension, PaneGeom};
-use {yinz_types::data::InputMode, yinz_types::data::PaletteColor, yinz_types::data::PaneContents};
+use yinz_types::{
+    geometry::SplitDirection,
+    pane_size::{Dimension, PaneGeom},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaneSpec {
@@ -95,21 +84,60 @@ pub fn with_override(base: PaneSpec, geom_override: PaneGeom) -> PaneSpec {
     }
 }
 
-pub struct MockPane {
-    selectable: bool,
+pub struct MockPane<N = ()> {
+    navigation: N,
     pid: PaneId,
     geom: PaneGeom,
     geom_override: Option<PaneGeom>,
 }
 
-impl MockPane {
-    pub fn from_spec(spec: PaneSpec) -> Self {
-        MockPane {
+pub struct GridState {
+    selectable: bool,
+    active_at: Instant,
+}
+
+impl Default for GridState {
+    fn default() -> Self {
+        Self {
             selectable: true,
+            active_at: Instant::now(),
+        }
+    }
+}
+impl MockPane {
+    pub fn new(pid: PaneId, geom: PaneGeom) -> Self {
+        Self {
+            pid,
+            geom,
+            geom_override: None,
+            navigation: (),
+        }
+    }
+}
+impl<N: Default> MockPane<N> {
+    pub fn from_spec(spec: PaneSpec) -> Self {
+        Self {
+            navigation: N::default(),
             pid: spec.id,
             geom: spec.geom(),
             geom_override: spec.geom_override,
         }
+    }
+}
+impl MockPane<GridState> {
+    pub fn set_selectable(&mut self, selectable: bool) {
+        self.navigation.selectable = selectable;
+    }
+}
+impl TiledGridPane for MockPane<GridState> {
+    fn selectable(&self) -> bool {
+        self.navigation.selectable
+    }
+    fn borderless(&self) -> bool {
+        false
+    }
+    fn active_at(&self) -> Instant {
+        self.navigation.active_at
     }
 }
 
@@ -136,12 +164,9 @@ pub struct Run {
 }
 
 pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -> Run {
-    let mut owned: Vec<Box<dyn Pane>> = specs
-        .iter()
-        .map(|s| Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>)
-        .collect();
+    let mut owned: Vec<MockPane> = specs.iter().map(|s| MockPane::from_spec(*s)).collect();
 
-    let mut map: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut map: HashMap<PaneId, &mut MockPane> = HashMap::new();
     for (s, b) in specs.iter().zip(owned.iter_mut()) {
         map.insert(s.id, b);
     }
@@ -173,36 +198,9 @@ pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -
     Run { outcome, panes }
 }
 
-impl Pane for MockPane {
-    fn set_initial_contents(&mut self, _contents: &str) {
-        unimplemented!()
-    }
-    fn pane_tabs_view(&self, _client: ClientId) -> crate::pane_tabs::PaneTabsView {
-        Default::default()
-    }
-    fn reset_size_and_position_override(&mut self) {
-        unimplemented!()
-    }
-    fn prepare_full_render_for_client(&mut self, _client_id: ClientId) {
-        unimplemented!()
-    }
-    fn prepare_content_replay(&mut self, _client_id: ClientId) {
-        unimplemented!()
-    }
-    fn set_geom(&mut self, position_and_size: PaneGeom) {
-        self.geom = position_and_size;
-    }
-    fn set_geom_override(&mut self, pane_geom: PaneGeom) {
-        self.geom_override = Some(pane_geom);
-    }
-    fn handle_pty_bytes(&mut self, _bytes: VteBytes) {
-        unimplemented!()
-    }
-    fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {
-        unimplemented!()
-    }
-    fn cursor_coordinates(&self, _client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
-        unimplemented!()
+impl<N> PaneGeometry for MockPane<N> {
+    fn pid(&self) -> PaneId {
+        self.pid
     }
     fn position_and_size(&self) -> PaneGeom {
         self.geom
@@ -210,162 +208,45 @@ impl Pane for MockPane {
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
     }
-    fn should_render(&self) -> bool {
-        unimplemented!()
+    fn set_geom(&mut self, geom: PaneGeom) {
+        self.geom = geom;
     }
-    fn set_should_render(&mut self, _should_render: bool) {
-        unimplemented!()
+    fn set_geom_override(&mut self, geom: PaneGeom) {
+        self.geom_override = Some(geom);
     }
-    fn set_should_render_boundaries(&mut self, _should_render: bool) {
-        unimplemented!()
+    fn reset_size_and_position_override(&mut self) {
+        self.geom_override = None;
     }
-    fn selectable(&self) -> bool {
-        self.selectable
+    fn reduce_height(&mut self, percent: f64) {
+        if let Some(current) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(current - percent);
+        }
     }
-    fn set_selectable(&mut self, selectable: bool) {
-        self.selectable = selectable;
+    fn increase_height(&mut self, percent: f64) {
+        if let Some(current) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(current + percent);
+        }
     }
-    fn render(
-        &mut self,
-        _client_id: Option<ClientId>,
-    ) -> Result<
-        Option<(
-            Vec<CharacterChunk>,
-            Option<String>,
-            Vec<SixelImageChunk>,
-            Vec<KittyImageChunk>,
-        )>,
-    > {
-        unimplemented!()
+    fn reduce_width(&mut self, percent: f64) {
+        if let Some(current) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(current - percent);
+        }
     }
-    fn render_frame(
-        &mut self,
-        _client_id: ClientId,
-        _frame_params: FrameParams,
-        _input_mode: InputMode,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>> {
-        unimplemented!()
+    fn increase_width(&mut self, percent: f64) {
+        if let Some(current) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(current + percent);
+        }
     }
-    fn render_fake_cursor(
-        &mut self,
-        _cursor_color: PaletteColor,
-        _text_color: PaletteColor,
-    ) -> Option<CharacterChunk> {
-        unimplemented!()
+    fn pull_up(&mut self, count: usize) {
+        self.geom.y -= count;
     }
-    fn render_terminal_title(
-        &mut self,
-        _input_mode: InputMode,
-        _session_name: Option<&SessionName>,
-    ) -> String {
-        unimplemented!()
+    fn push_down(&mut self, count: usize) {
+        self.geom.y += count;
     }
-    fn update_name(&mut self, _name: &str) {
-        unimplemented!()
+    fn pull_left(&mut self, count: usize) {
+        self.geom.x -= count;
     }
-    fn pid(&self) -> PaneId {
-        self.pid
-    }
-    fn reduce_height(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn increase_height(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn reduce_width(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn increase_width(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn push_down(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn push_right(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn pull_left(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn pull_up(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn clear_screen(&mut self) {
-        unimplemented!()
-    }
-    fn scroll_up(&mut self, _count: usize, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn scroll_down(&mut self, _count: usize, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn clear_scroll(&mut self) {
-        unimplemented!()
-    }
-    fn is_scrolled(&self) -> bool {
-        unimplemented!()
-    }
-    fn active_at(&self) -> Instant {
-        unimplemented!()
-    }
-    fn set_active_at(&mut self, _instant: Instant) {
-        unimplemented!()
-    }
-    fn set_frame(&mut self, _frame: bool) {
-        unimplemented!()
-    }
-    fn set_content_offset(&mut self, _offset: Offset) {
-        unimplemented!()
-    }
-    fn store_pane_name(&mut self) {
-        unimplemented!()
-    }
-    fn load_pane_name(&mut self) {
-        unimplemented!()
-    }
-    fn set_borderless(&mut self, _borderless: bool) {
-        unimplemented!()
-    }
-    fn borderless(&self) -> bool {
-        false
-    }
-    fn set_exclude_from_sync(&mut self, _exclude_from_sync: bool) {
-        unimplemented!()
-    }
-    fn exclude_from_sync(&self) -> bool {
-        unimplemented!()
-    }
-    fn add_red_pane_frame_color_override(
-        &mut self,
-        _error_text: Option<String>,
-        _owner: Option<ClientId>,
-    ) {
-        unimplemented!()
-    }
-    fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn frame_color_override(&self, _client_id: ClientId) -> Option<PaletteColor> {
-        unimplemented!()
-    }
-    fn invoked_with(&self) -> &Option<LayoutRun> {
-        unimplemented!()
-    }
-    fn set_title(&mut self, _title: String) {
-        unimplemented!()
-    }
-    fn current_title(&self) -> String {
-        unimplemented!()
-    }
-    fn custom_title(&self) -> Option<String> {
-        unimplemented!()
-    }
-    fn pane_contents(
-        &self,
-        _client_id: Option<ClientId>,
-        _get_full_scrollback: bool,
-        _max_scrollback_lines: Option<usize>,
-    ) -> PaneContents {
-        unimplemented!()
+    fn push_right(&mut self, count: usize) {
+        self.geom.x += count;
     }
 }

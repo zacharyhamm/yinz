@@ -1,4 +1,7 @@
 use super::super::TerminalPane;
+use crate::pane::PaneGeometry;
+use crate::pane::TerminalPaneOps;
+use crate::pane::TiledGridPane;
 use crate::pane::{Pane, TerminalPaneIo};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
@@ -36,7 +39,6 @@ fn read_fixture(fixture_name: &str) -> Vec<u8> {
 
 #[test]
 pub fn scrolling_inside_a_pane() {
-    let fake_client_id = ClientId::new(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -77,9 +79,9 @@ pub fn scrolling_inside_a_pane() {
         writeln!(&mut text_to_fill_pane, "\rline {}", i + 1).unwrap();
     }
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
-    terminal_pane.scroll_up(10, Some(fake_client_id));
+    terminal_pane.scroll_up(10);
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
-    terminal_pane.scroll_down(3, Some(fake_client_id));
+    terminal_pane.scroll_down(3);
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
     terminal_pane.clear_scroll();
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
@@ -235,7 +237,6 @@ pub fn overflowing_sixel_image_inside_terminal_pane() {
 
 #[test]
 pub fn scrolling_through_a_sixel_image() {
-    let fake_client_id = ClientId::new(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -283,9 +284,9 @@ pub fn scrolling_through_a_sixel_image() {
     let pane_sixel_content = read_fixture("sixel-image-500px.six");
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
     terminal_pane.handle_pty_bytes(pane_sixel_content);
-    terminal_pane.scroll_up(10, Some(fake_client_id));
+    terminal_pane.scroll_up(10);
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
-    terminal_pane.scroll_down(3, Some(fake_client_id));
+    terminal_pane.scroll_down(3);
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
     terminal_pane.clear_scroll();
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
@@ -293,7 +294,6 @@ pub fn scrolling_through_a_sixel_image() {
 
 #[test]
 pub fn multiple_sixel_images_in_pane() {
-    let fake_client_id = ClientId::new(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -342,14 +342,13 @@ pub fn multiple_sixel_images_in_pane() {
     terminal_pane.handle_pty_bytes(pane_sixel_content.clone()); // one image above text
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
     terminal_pane.handle_pty_bytes(pane_sixel_content); // one image below text
-    terminal_pane.scroll_up(20, Some(fake_client_id)); // scroll up to see both images
+    terminal_pane.scroll_up(20); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 
 #[test]
 pub fn resizing_pane_with_sixel_images() {
     // here we test, for example, that sixel images don't wrap with other lines
-    let fake_client_id = ClientId::new(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -402,13 +401,12 @@ pub fn resizing_pane_with_sixel_images() {
     new_win_size.cols.set_inner(100);
     new_win_size.rows.set_inner(20);
     terminal_pane.set_geom(new_win_size);
-    terminal_pane.scroll_up(20, Some(fake_client_id)); // scroll up to see both images
+    terminal_pane.scroll_up(20); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 
 #[test]
 pub fn changing_character_cell_size_with_sixel_images() {
-    let fake_client_id = ClientId::new(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -467,7 +465,7 @@ pub fn changing_character_cell_size_with_sixel_images() {
         height: 18,
     });
     terminal_pane.set_geom(new_win_size);
-    terminal_pane.scroll_up(10, Some(fake_client_id)); // scroll up to see both images
+    terminal_pane.scroll_up(10); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 
@@ -1390,11 +1388,23 @@ fn pane_overlap_counts_shared_layout_spans() {
     ] {
         second.set_geom(geom);
         for (pane, other) in [(&first, &second), (&second, &first)] {
-            assert_eq!(pane.get_horizontal_overlap_with(other), rows, "{geom:?}");
-            assert_eq!(pane.get_vertical_overlap_with(other), columns, "{geom:?}");
-            assert_eq!(pane.horizontally_overlaps_with(other), rows > 0, "{geom:?}");
             assert_eq!(
-                pane.vertically_overlaps_with(other),
+                pane.get_horizontal_overlap_with(other.current_geom()),
+                rows,
+                "{geom:?}"
+            );
+            assert_eq!(
+                pane.get_vertical_overlap_with(other.current_geom()),
+                columns,
+                "{geom:?}"
+            );
+            assert_eq!(
+                pane.horizontally_overlaps_with(other.current_geom()),
+                rows > 0,
+                "{geom:?}"
+            );
+            assert_eq!(
+                pane.vertically_overlaps_with(other.current_geom()),
                 columns > 0,
                 "{geom:?}"
             );
@@ -1860,14 +1870,18 @@ fn make_pane_for_ingest() -> TerminalPane {
 fn terminal_io_capability_drains_replies_without_plugin_controls() {
     let mut terminal = make_pane_for_ingest();
     let pane: &mut dyn Pane = &mut terminal;
+    assert!(pane.plugin_control().is_none());
+    assert!(pane.terminal().is_some());
     assert!(pane.plugin_control_mut().is_none());
-    pane.handle_pty_bytes(b"\x1b[5n".to_vec());
+    pane.terminal_mut()
+        .unwrap()
+        .handle_pty_bytes(b"\x1b[5n".to_vec());
     assert_eq!(
-        pane.terminal_io_mut().unwrap().drain_messages_to_pty(),
+        pane.terminal_mut().unwrap().drain_messages_to_pty(),
         vec![b"\x1b[0n".to_vec()]
     );
     assert!(pane
-        .terminal_io_mut()
+        .terminal_mut()
         .unwrap()
         .drain_messages_to_pty()
         .is_empty());
@@ -2714,6 +2728,15 @@ fn frames_are_cached_per_client_and_borderless_frames_are_not_cached() {
     assert!(render(&mut pane, client));
     assert!(!render(&mut pane, client));
     assert!(render(&mut pane, other));
+    pane.invalidate_frame(client);
+    assert!(!render(&mut pane, other));
+    assert!(render(&mut pane, client));
+    assert!(!render(&mut pane, client));
+    pane.invalidate_all_frames();
+    for id in [client, other] {
+        assert!(render(&mut pane, id));
+        assert!(!render(&mut pane, id));
+    }
     pane.set_borderless(true);
     pane.update_name("renamed");
     assert!(!render(&mut pane, client));

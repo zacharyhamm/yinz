@@ -445,7 +445,11 @@ pub(super) fn set_pane_title_prefix(
     // can see has changed — and the plugin that sets this is reading
     // that very manifest to decide what to set.
     if screen
-        .with_pane(pane_id, |pane| pane.set_title_prefix(prefix.clone()))
+        .with_pane(pane_id, |pane| {
+            if let Some(term) = pane.terminal_mut() {
+                term.set_title_prefix(prefix.clone());
+            }
+        })
         .is_some()
     {
         screen.render()?;

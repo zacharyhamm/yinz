@@ -92,8 +92,10 @@ pub(super) fn apply_pane_foreground_command(
     }
     screen
         .with_pane(PaneId::Terminal(terminal_id), |pane| {
-            pane.set_detected_agent(detected);
-            pane.set_running_program(program)
+            if let Some(term) = pane.terminal_mut() {
+                term.set_detected_agent(detected);
+                term.set_running_program(program);
+            }
         })
         .is_some()
 }
@@ -157,7 +159,7 @@ pub(super) fn apply_detected_agent_theme(
     state: Option<yinz_types::agent::theme::DetectedAgentTheme>,
 ) -> Result<bool> {
     let updates = screen.with_pane(PaneId::Terminal(terminal_id), |pane| {
-        let Some(terminal) = pane.terminal_io_mut() else {
+        let Some(terminal) = pane.terminal_mut() else {
             return vec![];
         };
         terminal.update_detected_agent_theme(state);

@@ -1,5 +1,5 @@
 use super::stacked_panes::StackedPanes;
-use crate::{pane::Pane, panes::PaneId};
+use crate::{pane::PaneGeometry, panes::PaneId};
 use kasuari::{Expression, Solver, Strength, Variable, WeightedRelation::EQ};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -10,8 +10,8 @@ use yinz_types::{
     pane_size::{Constraint, Dimension, PaneGeom},
 };
 
-pub struct PaneResizer<'a> {
-    panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,
+pub struct PaneResizer<'a, G: PaneGeometry + ?Sized> {
+    panes: Rc<RefCell<HashMap<PaneId, &'a mut G>>>,
     vars: HashMap<PaneId, Variable>,
     solver: Solver,
 }
@@ -33,8 +33,8 @@ pub(super) struct Span {
 
 type Grid = Vec<Vec<Span>>;
 
-impl<'a> PaneResizer<'a> {
-    pub fn new(panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>) -> Self {
+impl<'a, G: PaneGeometry + ?Sized> PaneResizer<'a, G> {
+    pub fn new(panes: Rc<RefCell<HashMap<PaneId, &'a mut G>>>) -> Self {
         let mut vars = HashMap::new();
         for &pane_id in panes.borrow().keys() {
             vars.insert(pane_id, Variable::new());
@@ -268,7 +268,7 @@ impl<'a> PaneResizer<'a> {
             .panes
             .borrow()
             .values()
-            .filter_map(|p| self.get_span(!direction, p.as_ref()))
+            .filter_map(|p| self.get_span(!direction, p))
             .collect();
 
         let mut last_edge = 0;
@@ -290,7 +290,7 @@ impl<'a> PaneResizer<'a> {
             .panes
             .borrow()
             .values()
-            .filter(|p| match self.get_span(!direction, p.as_ref()) {
+            .filter(|p| match self.get_span(!direction, p) {
                 Some(s) => {
                     let span_bounds = (s.pos, s.pos + s.size.as_usize());
                     bwn(span_bounds.0, boundary)
@@ -299,13 +299,13 @@ impl<'a> PaneResizer<'a> {
                 },
                 None => false,
             })
-            .filter_map(|p| self.get_span(direction, p.as_ref()))
+            .filter_map(|p| self.get_span(direction, p))
             .collect();
         spans.sort_unstable_by_key(|s| s.pos);
         spans
     }
 
-    fn get_span(&self, direction: SplitDirection, pane: &dyn Pane) -> Option<Span> {
+    fn get_span(&self, direction: SplitDirection, pane: &G) -> Option<Span> {
         let position_and_size = {
             let pas = pane.current_geom();
             if pas.is_expanded_in_stack() {
@@ -501,7 +501,9 @@ pub(super) fn agent_widths(
         .collect())
 }
 
-pub(super) fn agent_width_input(pane: &dyn Pane) -> (PaneId, PaneGeom, usize, usize) {
+pub(super) fn agent_width_input(
+    pane: &(impl PaneGeometry + ?Sized),
+) -> (PaneId, PaneGeom, usize, usize) {
     let offset = pane.get_content_offset();
     let limit = pane.max_content_width();
     let outer_limit = if limit == 0 {

@@ -1428,6 +1428,8 @@ fn osc7501_done_does_not_complete_a_correlated_provider_turn() {
         .unwrap()
         .get_pane_with_id_mut(pane_id)
         .unwrap()
+        .terminal_mut()
+        .unwrap()
         .handle_pty_bytes(b"\x1b]7501;state=done:app=codex\x07".to_vec());
     let status = screen.agent_status_for_test();
     assert_eq!(status.agent.state, yinz_types::agent::AgentState::Busy);

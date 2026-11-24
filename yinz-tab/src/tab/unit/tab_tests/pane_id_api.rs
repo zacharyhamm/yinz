@@ -806,7 +806,7 @@ pub fn bell_in_unfocused_pane_sets_notification() {
     assert!(tab_newly_set, "tab_bell_newly_set should be true");
     assert!(
         tab.get_pane_with_id(new_pane_id)
-            .map(|p| p.get_bell_notification())
+            .map(|p| p.terminal().unwrap().get_bell_notification())
             .unwrap_or(false),
         "Pane 2 should have bell notification"
     );

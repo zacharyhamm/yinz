@@ -1,6 +1,9 @@
 mod migration;
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
-use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TerminalPaneIo, TextAroundPosition};
+use crate::pane::{
+    AdjustedInput, GuestChoiceIndicator, Pane, PaneGeometry, TerminalPaneIo, TerminalPaneOps,
+    TextAroundPosition, TiledGridPane,
+};
 use crate::panes::kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece};
 use crate::panes::selection::Selection;
 use crate::panes::sixel::SixelImageStore;
@@ -343,13 +346,24 @@ impl TerminalPaneIo for TerminalPane {
     }
 }
 
-impl Pane for TerminalPane {
-    fn terminal_io_mut(&mut self) -> Option<&mut dyn TerminalPaneIo> {
-        Some(self)
+impl PaneGeometry for TerminalPane {
+    fn pid(&self) -> PaneId {
+        PaneId::Terminal(self.pid)
     }
-    fn reset_size_and_position_override(&mut self) {
-        self.geom_override = None;
-        self.reflow_lines();
+    fn position_and_size(&self) -> PaneGeom {
+        self.geom
+    }
+    fn geom_override(&self) -> Option<PaneGeom> {
+        self.geom_override
+    }
+    fn max_content_width(&self) -> usize {
+        self.max_content_width
+    }
+    fn render_width(&self) -> Option<(usize, usize)> {
+        self.render_width
+    }
+    fn get_content_offset(&self) -> Offset {
+        self.content_offset
     }
     fn set_geom(&mut self, position_and_size: PaneGeom) {
         let is_pinned = self.geom.is_pinned;
@@ -367,30 +381,599 @@ impl Pane for TerminalPane {
         self.reflow_lines();
         self.set_should_render(true);
     }
-    fn set_layout(
-        &mut self,
-        mut geom: PaneGeom,
-        geom_override: Option<PaneGeom>,
-        borderless: bool,
-        content_offset: Offset,
-    ) {
-        geom.is_pinned = self.geom.is_pinned;
-        self.geom = geom;
-        self.geom_override = geom_override;
-        self.borderless = borderless;
-        self.content_offset = content_offset;
+    fn reset_size_and_position_override(&mut self) {
+        self.geom_override = None;
         self.reflow_lines();
-        self.render_full_viewport();
     }
-    fn character_cell_size_possibly_changed(&mut self) {
-        self.grid.character_cell_size_possibly_changed();
-        self.render_full_viewport();
+    fn reduce_height(&mut self, percent: f64) {
+        if let Some(p) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(p - percent);
+            self.set_should_render(true);
+        }
+    }
+    fn increase_height(&mut self, percent: f64) {
+        if let Some(p) = self.geom.rows.as_percent() {
+            self.geom.rows.set_percent(p + percent);
+            self.set_should_render(true);
+        }
+    }
+    fn reduce_width(&mut self, percent: f64) {
+        if let Some(p) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(p - percent);
+            self.set_should_render(true);
+        }
+    }
+    fn increase_width(&mut self, percent: f64) {
+        if let Some(p) = self.geom.cols.as_percent() {
+            self.geom.cols.set_percent(p + percent);
+            self.set_should_render(true);
+        }
+    }
+    fn push_down(&mut self, count: usize) {
+        self.geom.y += count;
+        self.reflow_lines();
+    }
+    fn push_right(&mut self, count: usize) {
+        self.geom.x += count;
+        self.reflow_lines();
+    }
+    fn pull_left(&mut self, count: usize) {
+        self.geom.x -= count;
+        self.reflow_lines();
+    }
+    fn pull_up(&mut self, count: usize) {
+        self.geom.y -= count;
+        self.reflow_lines();
+    }
+}
+
+impl TiledGridPane for TerminalPane {
+    fn selectable(&self) -> bool {
+        self.selectable
+    }
+    fn active_at(&self) -> Instant {
+        self.active_at
+    }
+    fn borderless(&self) -> bool {
+        self.borderless
+    }
+}
+
+impl TerminalPaneOps for TerminalPane {
+    fn terminal_state(&self) -> Result<String, String> {
+        self.check_migration()?;
+        if !self.parser_boundary.is_ground()
+            || !self.kitty_interceptor.is_in_ground_state()
+            || self.grid.is_mid_frame()
+        {
+            return Err(
+                "ordinary pane transfer requires a complete terminal escape sequence".into(),
+            );
+        }
+        let state = self.grid.migration_state().map_err(|e| format!("{e:#}"))?;
+        let state =
+            serde_json::to_string(&state).map_err(|e| format!("encode terminal state: {e}"))?;
+        // A fullscreen application may not have redrawn after a shrink, leaving
+        // its cursor outside the new dimensions. Reject unrestorable state while
+        // the source still exists so transfer can use the legacy fallback.
+        Grid::validate_terminal_state(&state)
+            .map_err(|e| format!("validate captured terminal state: {e:#}"))?;
+        Ok(state)
+    }
+    fn restore_terminal_state(&mut self, state: &str) -> Result<(), String> {
+        self.web_terminal = None;
+        let state =
+            serde_json::from_str(state).map_err(|e| format!("decode terminal state: {e}"))?;
+        self.grid
+            .restore_migration_state(state)
+            .map_err(|e| format!("restore terminal state: {e:#}"))?;
+        self.fit_restored_grid();
+        self.set_should_render(true);
+        self.vte_parser = vte::Parser::new();
+        self.parser_boundary = Default::default();
+        self.frame.clear();
+        self.fake_cursor_locations.clear();
+        self.render_width = None;
+        Ok(())
+    }
+    fn validate_migration(&self) -> Result<(), String> {
+        self.check_migration()
+    }
+    fn migration_state(&self) -> Result<serde_json::Value, String> {
+        self.capture_migration()
+    }
+    fn restore_migration_state(&mut self, state: serde_json::Value) -> Result<(), String> {
+        self.apply_migration(state)
+    }
+    fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
+        self.grid.serialize(scrollback_lines_to_serialize)
+    }
+    fn serialize_handoff(
+        &self,
+        scrollback: Option<usize>,
+        budget: usize,
+    ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
+        self.grid.serialize_handoff(scrollback, budget)
+    }
+    fn set_warp_pending(&mut self, pending: bool) {
+        self.warp_pending = pending;
+    }
+    fn held_for_warp(&self) -> Option<yinz_types::data::HeldTerminal> {
+        if !self.is_held() {
+            return None;
+        }
+        let Some(Run::Command(command)) = self.invoked_with() else {
+            return None;
+        };
+        Some(yinz_types::data::HeldTerminal {
+            command: command.clone(),
+            first_run: !self.exited(),
+            exit_status: self.exit_status(),
+        })
+    }
+
+    fn set_launch_command(&mut self, command: RunCommand) {
+        self.invoked_with = Some(Run::Command(command));
+        self.set_agent_info(agent_from_run(self.invoked_with.as_ref()));
+        self.is_held = None;
+        self.remove_banner();
+    }
+    fn set_running_program(&mut self, program: Option<String>) {
+        let program = program
+            .as_deref()
+            .and_then(|program| std::path::Path::new(program).file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name.trim_start_matches('-').to_owned())
+            .filter(|name| !name.is_empty());
+        // Foreground discovery can arrive after the new program's OSC 7501 reports.
+        // A command name cannot establish report ownership; retire at explicit
+        // lifecycle boundaries (such as a shell prompt) instead.
+        if self.running_program != program {
+            self.running_program = program;
+            self.set_should_render(true);
+        }
+    }
+    fn set_remote_host(&mut self, host: Option<String>) {
+        if self.remote_host != host {
+            self.remote_host = host;
+            self.set_should_render(true);
+        }
+    }
+    fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, mut run_command: RunCommand) {
+        self.web_terminal = None;
+        // Exit notifications travel separately from PTY bytes and can precede the
+        // final provider output. Let the ordered end event reset the grid palette;
+        // respawn also resets it before accepting a new process's output.
+        run_command.agent_theme = None;
+        // A resumed agent can move to another conversation while it runs; a rerun follows it.
+        if let (Some(saved), Some(agent)) = (run_command.resume_agent.as_mut(), self.agent.as_ref())
+            && agent
+                .session_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+        {
+            saved.session_id = agent.session_id.clone();
+            saved.cwd = agent.cwd.clone().or_else(|| saved.cwd.take());
+        }
+        self.invoked_with = Some(Run::Command(run_command.clone()));
+        // A held pane has no running process to be stopped, and a stale flag
+        // would leave the resume hint up over a dead pane forever.
+        self.suspended = false;
+        self.is_held = Some((exit_status, is_first_run, run_command));
+        self.grid.program_status.drop_transient();
+        self.grid.applicable_program_status.clear_all();
+        self.clear_waiting_pulse();
+        if let Some(agent) = self.agent.as_mut() {
+            agent.state = AgentState::Exited;
+            agent.detail = None;
+        }
+        if let Some(notification_end) = self.notification_end.as_mut()
+            && let Some(exit_status) = exit_status
+        {
+            notification_end.set_exit_status(exit_status);
+
+            // Check if unblock condition is met
+            if let Some(condition) = notification_end.unblock_condition()
+                && condition.is_met(exit_status)
+            {
+                // Condition met - drop the NotificationEnd now to unblock
+                drop(self.notification_end.take());
+            }
+        }
+        if is_first_run {
+            self.render_first_run_banner();
+        }
         self.set_should_render(true);
     }
-    fn set_initial_contents(&mut self, contents: &str) {
-        self.handle_pty_bytes(contents.as_bytes().to_vec());
-        self.handle_pty_bytes(b"\n\r".to_vec());
+    fn is_held(&self) -> bool {
+        self.is_held.is_some()
     }
+    fn set_suspended(&mut self, suspended: bool) {
+        if self.suspended == suspended {
+            return;
+        }
+        self.suspended = suspended;
+        self.set_should_render(true);
+    }
+    fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+    fn exited(&self) -> bool {
+        match self.is_held {
+            Some((_, is_first_run, _)) => !is_first_run,
+            None => false,
+        }
+    }
+    fn exit_status(&self) -> Option<i32> {
+        self.is_held
+            .as_ref()
+            .and_then(|(exit_status, _, _)| *exit_status)
+    }
+    fn update_exit_status(&mut self, exit_status: i32) {
+        if let Some(notification_end) = self.notification_end.as_mut() {
+            notification_end.set_exit_status(exit_status);
+            // Check if unblock condition is met
+            if let Some(condition) = notification_end.unblock_condition()
+                && condition.is_met(exit_status)
+            {
+                // Condition met - drop the NotificationEnd now to unblock
+                drop(self.notification_end.take());
+            }
+        }
+    }
+    fn respawn(
+        &mut self,
+        replacement: Option<RunCommand>,
+        keep_scrollback: bool,
+    ) -> Option<RunCommand> {
+        // if this is a command pane that has exited or is waiting to be rerun, will return the
+        // command to spawn - its own, or the replacement - otherwise it is safe to assume this
+        // is not the right sort of pane or that it is not in the right sort of state
+        if self.warp_pending {
+            return None;
+        }
+        self.is_held.as_ref()?;
+        let cleaned = if replacement.is_none() {
+            match self.restart_command_args() {
+                Ok(args) => args,
+                Err(message) => {
+                    Err::<(), _>(anyhow!(message.clone())).non_fatal();
+                    self.add_red_pane_frame_color_override(Some(message), None);
+                    self.set_should_render(true);
+                    return None;
+                },
+            }
+        } else {
+            None
+        };
+        // Explicit resumes restore their selected session in Screen::restart_agent_pane.
+        let fresh_agent = cleaned.is_some() || replacement.is_some();
+        if fresh_agent {
+            self.last_hook_at_ms = None;
+            self.last_agent_session_id = None;
+        }
+        self.is_held.take().map(|(_, _, mut run_command)| {
+            run_command.agent_theme = None;
+            if let Some(Run::Command(command)) = self.invoked_with.as_mut() {
+                command.agent_theme = None;
+            }
+            if let Some(args) = cleaned {
+                run_command.args = args;
+                self.invoked_with = Some(Run::Command(run_command.clone()));
+            }
+            self.is_held = None;
+            self.suspended = false;
+            self.agent_input_revision = 0;
+            self.agent_enter_revision = 0;
+            self.agent_input_at = None;
+            self.clear_waiting_pulse();
+            if let Some(agent) = self.agent.as_mut() {
+                agent.state = AgentState::Busy;
+                if fresh_agent {
+                    agent.session_id = None;
+                    agent.run_id = None;
+                    agent.detail = None;
+                    agent.waiting_on = None;
+                    agent.wait_needs_a_person = false;
+                    agent.source = AgentSource::Spawned;
+                }
+            }
+            if keep_scrollback {
+                self.grid.reset_terminal_state_preserving_scrollback();
+            } else {
+                self.grid.reset_terminal_state();
+            }
+            self.grid.begin_agent_run();
+            self.set_should_render(true);
+            self.remove_banner();
+            match replacement {
+                Some(mut replacement) => {
+                    replacement.agent_theme = None;
+                    // A pane re-run with a *different* command is not the same pane's work
+                    // any more, and neither the record nor the memory of one says anything
+                    // true about it. Left alone, a plugin reusing a held agent pane for `npm
+                    // test` would fire `agent_exit` on that command's exit, naming it as the
+                    // agent's - and the sticky memory would make it unrecoverable, because
+                    // clearing the record no longer disarms the hook.
+                    //
+                    // `command` and `args` rather than the whole `RunCommand`: a plugin
+                    // re-running the same agent builds a fresh one, whose `hold_on_close`,
+                    // `originating_plugin` and the rest may differ incidentally, and reading
+                    // that as a new command would forget a live agent.
+                    if replacement.command != run_command.command
+                        || replacement.args != run_command.args
+                    {
+                        self.clear_agent_identity();
+                    }
+                    self.invoked_with = Some(Run::Command(replacement.clone()));
+                    // A replacement marked as an agent starts a fresh conversation.
+                    if let Some(agent) = agent_from_run(self.invoked_with.as_ref()) {
+                        self.set_agent_info(Some(agent));
+                    }
+                    replacement
+                },
+                None => run_command.clone(),
+            }
+        })
+    }
+    fn restart_error(&self) -> Option<String> {
+        self.restart_command_args().err()
+    }
+    fn agent_restart_command(
+        &self,
+        session: yinz_types::agent::control::AgentRestartSession,
+        prompt: Option<&str>,
+    ) -> Result<RunCommand, String> {
+        use yinz_types::agent::control::{AgentRestartSession, MAX_PROMPT_BYTES};
+        if prompt.is_some_and(|prompt| prompt.len() > MAX_PROMPT_BYTES || prompt.contains('\0')) {
+            return Err("restart prompt exceeds 1 MiB or contains NUL".into());
+        }
+        let Some((_, false, command)) = self.is_held.as_ref() else {
+            return Err("target must be an exited, held agent pane".into());
+        };
+        if !self.was_an_agent || self.warp_pending {
+            return Err("target must be an exited, held agent pane".into());
+        }
+        self.restart_command_args()?;
+        let session_id = match session {
+            AgentRestartSession::Resume => Some(
+                self.last_agent_session_id
+                    .as_deref()
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or("agent pane has no remembered session id")?,
+            ),
+            AgentRestartSession::Fresh => None,
+        };
+        let args = yinz_runtime::agent::restart_with_prompt(
+            &command.command,
+            &command.args,
+            session_id,
+            prompt,
+        )?;
+        Ok(RunCommand {
+            resume_agent: None,
+            args,
+            ..command.clone()
+        })
+    }
+    fn clear_agent_session_id(&mut self) {
+        self.last_hook_at_ms = None;
+        self.last_agent_session_id = None;
+    }
+
+    fn agent_info(&self) -> Option<&AgentInfo> {
+        self.agent.as_ref()
+    }
+    fn set_agent_info(&mut self, agent: Option<AgentInfo>) -> bool {
+        // Before the equality check: a record that repeats itself still says this is an agent
+        // pane, and the memory is set once and never taken back.
+        self.was_an_agent |= agent.is_some();
+        if agent.is_none()
+            || self
+                .agent
+                .as_ref()
+                .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
+                != agent
+                    .as_ref()
+                    .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
+        {
+            self.agent_hook_flash = false;
+        }
+        if agent.is_none()
+            || self.agent.as_ref().map(|a| (&a.kind, &a.session_id))
+                != agent.as_ref().map(|a| (&a.kind, &a.session_id))
+        {
+            self.web_terminal = None;
+            self.last_hook_at_ms = None;
+            if self.agent.is_some() || agent.is_none() {
+                self.grid.applicable_program_status.clear_all();
+            }
+        }
+        if let Some(agent) = &agent {
+            if self.last_agent_kind.as_deref() != Some(agent.kind.as_str()) {
+                self.last_agent_session_id = None;
+            }
+            self.last_agent_kind = Some(agent.kind.clone());
+            if let Some(id) = agent.session_id.as_ref().filter(|id| !id.is_empty()) {
+                self.last_agent_session_id = Some(id.clone());
+            }
+            if agent.cwd.is_some() {
+                self.last_agent_cwd = agent.cwd.clone();
+            }
+        }
+        if self.agent == agent {
+            return false;
+        }
+        let waiting = agent
+            .as_ref()
+            .is_some_and(AgentInfo::is_waiting_on_a_person);
+        if !waiting {
+            self.clear_waiting_pulse();
+        } else if !self
+            .agent
+            .as_ref()
+            .is_some_and(AgentInfo::is_waiting_on_a_person)
+        {
+            self.waiting_pulse_started_at = Some(Instant::now());
+        }
+        self.agent = agent;
+        self.set_should_render(true);
+        true
+    }
+    fn was_an_agent(&self) -> bool {
+        self.was_an_agent
+    }
+    fn is_detected_agent(&self) -> bool {
+        self.detected_agent
+    }
+    fn set_detected_agent(&mut self, detected: bool) {
+        self.detected_agent = detected;
+    }
+    fn last_hook_at_ms(&self) -> Option<i64> {
+        self.last_hook_at_ms
+    }
+    fn set_last_hook_at_ms(&mut self, at: i64) {
+        self.last_hook_at_ms = Some(at);
+    }
+    fn last_agent_cwd(&self) -> Option<&str> {
+        self.last_agent_cwd.as_deref()
+    }
+    fn last_agent_session_id(&self) -> Option<&str> {
+        self.last_agent_session_id.as_deref()
+    }
+    fn last_agent_kind(&self) -> Option<&str> {
+        self.last_agent_kind.as_deref()
+    }
+    fn agent_input_revision(&self) -> u64 {
+        self.agent_input_revision
+    }
+    fn agent_enter_revision(&self) -> u64 {
+        self.agent_enter_revision
+    }
+    fn agent_input_at(&self) -> Option<Instant> {
+        self.agent_input_at
+    }
+    fn record_agent_input(&mut self, is_enter: bool) -> bool {
+        let mut applicability_changed = false;
+        self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
+        if is_enter {
+            applicability_changed = self.grid.applicable_program_status.clear_all();
+            if applicability_changed {
+                self.set_should_render(true);
+            }
+            self.agent_enter_revision = self.agent_input_revision;
+        }
+        self.agent_input_at = Some(Instant::now());
+        applicability_changed
+    }
+    fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
+        yinz_types::program_status::ProgramStatusView {
+            records: self.grid.program_status.all(),
+            current: self
+                .grid
+                .applicable_program_status
+                .deciding_record_matching(|record| {
+                    record.app.as_ref().is_none_or(|app| {
+                        self.agent.as_ref().is_none_or(|agent| {
+                            yinz_types::agent::kind_of(app).as_deref() == Some(agent.kind.as_str())
+                        })
+                    })
+                })
+                .map(|(_, record)| record),
+        }
+    }
+    fn program_status_revision(&self) -> u64 {
+        self.grid.program_status_revision()
+    }
+    fn retire_program_status(&mut self) {
+        self.grid.applicable_program_status.clear_all();
+        self.set_should_render(true);
+    }
+    fn set_title_prefix(&mut self, prefix: Option<String>) {
+        if self.title_prefix != prefix {
+            self.title_prefix = prefix;
+            self.set_should_render(true);
+        }
+    }
+    fn set_agent_hook_flash(&mut self, flash: bool) {
+        self.agent_hook_flash = flash;
+    }
+    fn set_pending_agent_escape_clients(&mut self, clients: HashSet<ClientId>) {
+        self.pending_agent_escape_clients = clients;
+    }
+
+    fn is_nested_guest(&self) -> bool {
+        self.nested_guest
+    }
+    fn set_is_nested_guest(&mut self, is_nested_guest: bool) {
+        self.nested_guest = is_nested_guest;
+    }
+    fn set_guest_modal(&mut self, client_ids: &[ClientId]) {
+        for client_id in client_ids {
+            self.guest_modal.insert(*client_id, 0);
+        }
+        self.set_should_render(true);
+    }
+    fn clear_guest_modal(&mut self, client_id: ClientId) {
+        if self.guest_modal.remove(&client_id).is_some() {
+            self.render_full_viewport();
+            self.set_should_render(true);
+        }
+    }
+    fn clear_all_guest_modals(&mut self) {
+        if !self.guest_modal.is_empty() {
+            self.guest_modal.clear();
+            self.render_full_viewport();
+            self.set_should_render(true);
+        }
+    }
+    fn guest_modal_selection(&self, client_id: ClientId) -> Option<usize> {
+        self.guest_modal.get(&client_id).copied()
+    }
+    fn has_guest_modal_for_any_client(&self) -> bool {
+        !self.guest_modal.is_empty()
+    }
+    fn set_guest_choice_indicator(
+        &mut self,
+        client_id: ClientId,
+        indicator: Option<GuestChoiceIndicator>,
+    ) {
+        let previous = self.guest_choice_indicators.get(&client_id).copied();
+        if previous == indicator {
+            return;
+        }
+        match indicator {
+            Some(indicator) => {
+                self.guest_choice_indicators.insert(client_id, indicator);
+            },
+            None => {
+                self.guest_choice_indicators.remove(&client_id);
+            },
+        }
+        self.set_should_render(true);
+    }
+    fn guest_choice_indicator(&self, client_id: ClientId) -> Option<GuestChoiceIndicator> {
+        self.guest_choice_indicators.get(&client_id).copied()
+    }
+    fn clear_all_guest_choice_indicators(&mut self) {
+        if !self.guest_choice_indicators.is_empty() {
+            self.guest_choice_indicators.clear();
+            self.set_should_render(true);
+        }
+    }
+    fn set_guest_session_name(&mut self, session_name: Option<SessionName>) {
+        self.guest_session_name = session_name;
+    }
+    fn guest_session_name(&self) -> Option<SessionName> {
+        self.guest_session_name.clone()
+    }
+    fn set_guest_modal_shortcuts(&mut self, shortcuts: GuestModalShortcuts) {
+        self.guest_modal_shortcuts = shortcuts;
+    }
+    fn guest_modal_shortcuts(&self) -> GuestModalShortcuts {
+        self.guest_modal_shortcuts.clone()
+    }
+
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.grid.should_render = true;
         if self.forward_paused {
@@ -473,37 +1056,6 @@ impl Pane for TerminalPane {
                     .extend(self.kitty_interceptor.take_pending_prefix());
             }
         }
-    }
-    fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
-        // (x, y, is_visible)
-        if let Some(client_id) = client_id
-            && self.guest_modal.contains_key(&client_id)
-        {
-            return None;
-        }
-        if self.pane_tabs.as_ref().is_some_and(|tabs| {
-            tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid))
-        }) {
-            return None;
-        }
-        if self.get_content_rows() < 1 || self.get_content_columns() < 1 {
-            // do not render cursor if there's no room for it
-            return None;
-        }
-        let Offset { top, left, .. } = self.content_offset;
-        let top = top + self.content_header_rows();
-        self.grid
-            .cursor_coordinates()
-            .map(|(x, y, is_visible)| (x + left, y + top, is_visible))
-    }
-    fn is_mid_frame(&self) -> bool {
-        self.grid.is_mid_frame()
-    }
-    fn sync_output_deadline(&self) -> Option<std::time::Instant> {
-        self.grid.sync_output_deadline()
-    }
-    fn expire_sync_output(&mut self, now: std::time::Instant) -> bool {
-        self.grid.expire_sync_output(now)
     }
     fn adjust_input_to_terminal(
         &mut self,
@@ -660,11 +1212,413 @@ impl Pane for TerminalPane {
             }
         }
     }
-    fn position_and_size(&self) -> PaneGeom {
-        self.geom
+    fn supports_bracketed_paste(&self) -> bool {
+        self.grid.bracketed_paste_mode
     }
-    fn geom_override(&self) -> Option<PaneGeom> {
-        self.geom_override
+    fn terminal_emulator_wants_mouse(&self) -> bool {
+        self.grid.mouse_tracking != crate::panes::grid::MouseTracking::Off
+    }
+    fn is_alternate_mode_active(&self) -> bool {
+        self.grid.is_alternate_mode_active()
+    }
+    fn mouse_event(&self, event: &MouseEvent, _client_id: ClientId) -> Option<String> {
+        self.grid.mouse_event_signal(event)
+    }
+    fn mouse_left_click(&self, position: &Position, is_held: bool) -> Option<String> {
+        self.grid.mouse_left_click_signal(position, is_held)
+    }
+    fn mouse_left_click_release(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_left_click_release_signal(position)
+    }
+    fn mouse_right_click(&self, position: &Position, is_held: bool) -> Option<String> {
+        self.grid.mouse_right_click_signal(position, is_held)
+    }
+    fn mouse_right_click_release(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_right_click_release_signal(position)
+    }
+    fn mouse_middle_click(&self, position: &Position, is_held: bool) -> Option<String> {
+        self.grid.mouse_middle_click_signal(position, is_held)
+    }
+    fn mouse_middle_click_release(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_middle_click_release_signal(position)
+    }
+    fn mouse_scroll_up(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_scroll_up_signal(position)
+    }
+    fn mouse_scroll_down(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_scroll_down_signal(position)
+    }
+    fn focus_event(&self) -> Option<String> {
+        self.grid.focus_event()
+    }
+    fn unfocus_event(&self) -> Option<String> {
+        self.grid.unfocus_event()
+    }
+    fn update_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
+        self.grid.set_kitty_keyboard_protocol_disabled(disabled);
+    }
+    fn update_sixel_host_support(&mut self, supported: bool) {
+        self.grid.update_sixel_host_support(supported);
+    }
+    fn has_bell(&self) -> bool {
+        self.grid.ring_bell
+    }
+    fn consume_bell(&mut self) {
+        self.grid.ring_bell = false;
+    }
+    fn osc7_payload(&self) -> Option<&str> {
+        self.grid.osc7_payload()
+    }
+    fn set_bell_notification(&mut self, val: bool) {
+        if self.has_bell_notification != val {
+            self.has_bell_notification = val;
+            self.set_should_render(true);
+        }
+    }
+    fn get_bell_notification(&self) -> bool {
+        self.has_bell_notification
+    }
+    fn set_notification_end(&mut self, notification_end: Option<NotificationEnd>) {
+        self.notification_end = notification_end;
+    }
+
+    fn get_line_number(&self) -> Option<usize> {
+        // + 1 because the absolute position in the scrollback is 0 indexed and this should be 1 indexed
+        Some(self.grid.absolute_position_in_scrollback() + 1)
+    }
+    fn scroll_position(&self) -> (usize, usize) {
+        self.grid.scrollback_position_and_length()
+    }
+    fn clear_screen(&mut self) {
+        self.web_terminal = None;
+        self.grid.clear_screen()
+    }
+    fn clear_scroll(&mut self) {
+        if self.grid.is_scrolled {
+            self.grid.reset_viewport();
+            self.set_should_render(true);
+        }
+    }
+    fn is_scrolled(&self) -> bool {
+        self.grid.is_scrolled
+    }
+    fn scroll_up(&mut self, count: usize) {
+        self.grid.move_viewport_up(count);
+        self.set_should_render(true);
+    }
+    fn scroll_down(&mut self, count: usize) {
+        self.grid.move_viewport_down(count);
+        self.set_should_render(true);
+    }
+    fn update_search_term(&mut self, needle: &str) {
+        match needle {
+            TERMINATING_STRING => {
+                self.search_term = String::new();
+            },
+            DELETE_KEY | BACKSPACE_KEY => {
+                self.search_term.pop();
+            },
+            c => {
+                self.search_term.push_str(c);
+            },
+        }
+        self.grid.set_search_string(&self.search_term);
+        self.set_should_render(true);
+    }
+    fn search_down(&mut self) {
+        if self.search_term.is_empty() {
+            return; // No-op
+        }
+        self.grid.search_down();
+        self.set_should_render(true);
+    }
+    fn search_up(&mut self) {
+        if self.search_term.is_empty() {
+            return; // No-op
+        }
+        self.grid.search_up();
+        self.set_should_render(true);
+    }
+    fn toggle_search_case_sensitivity(&mut self) {
+        self.grid.toggle_search_case_sensitivity();
+        self.set_should_render(true);
+    }
+    fn toggle_search_whole_words(&mut self) {
+        self.grid.toggle_search_whole_words();
+        self.set_should_render(true);
+    }
+    fn toggle_search_wrap(&mut self) {
+        self.grid.toggle_search_wrap();
+    }
+    fn clear_search(&mut self) {
+        self.grid.clear_search();
+        self.search_term.clear();
+    }
+    fn text_around_position(&self, position: &Position) -> Option<TextAroundPosition> {
+        // The same two lookups double-click and triple-click already use, read rather than
+        // selected: this must not disturb the selection the caller is about to record.
+        let text_for = |bounds: Option<(Position, Position)>| {
+            let (start, end) = bounds?;
+            let mut selection = Selection::default();
+            selection.set_start_and_end_positions(start, end);
+            self.grid
+                .text_for_selection(&selection)
+                .filter(|text| !text.trim().is_empty())
+        };
+        Some(TextAroundPosition {
+            word: text_for(self.grid.word_around_position(position)),
+            line: text_for(self.grid.canonical_line_around_position(position)),
+        })
+    }
+    fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {
+        if self.grid.scroll_to_previous_prompt() {
+            self.set_should_render(true);
+        }
+    }
+    fn scroll_to_next_prompt(&mut self, _client_id: ClientId) {
+        if self.grid.scroll_to_next_prompt() {
+            self.set_should_render(true);
+        }
+    }
+    fn select_command_at_scroll_position(&mut self, _client_id: ClientId) {
+        if self.grid.select_command_at_scroll_position() {
+            self.set_should_render(true);
+        }
+    }
+    fn copy_last_command_output(&mut self) -> Option<String> {
+        let (output, start, end) = self.grid.last_completed_command_output()?;
+        self.grid.set_command_output_flash(start, end);
+        self.set_should_render(true);
+        Some(output)
+    }
+    fn clear_command_output_flash(&mut self) {
+        if self.grid.clear_command_output_flash() {
+            self.set_should_render(true);
+        }
+    }
+
+    fn set_plugin_regex_highlights(
+        &mut self,
+        plugin_id: PluginId,
+        highlights: Vec<RegexHighlight>,
+        style: &Style,
+    ) {
+        self.grid
+            .set_plugin_regex_highlights(plugin_id, highlights, style);
+        self.set_should_render(true);
+    }
+    fn clear_plugin_highlights(&mut self, plugin_id: PluginId) {
+        self.grid.clear_plugin_highlights(plugin_id);
+        self.set_should_render(true);
+    }
+    fn set_hover_position(&mut self, position: Option<Position>) -> bool {
+        let changed = self.grid.set_hover_position(position);
+        if changed {
+            self.set_should_render(true);
+        }
+        changed
+    }
+    fn cached_hover_tooltip(&self) -> Option<String> {
+        self.grid.cached_hover_tooltip.clone()
+    }
+    fn plugin_highlight_at(
+        &self,
+        position: &Position,
+    ) -> Option<(
+        PluginId,
+        String,
+        String,
+        std::collections::BTreeMap<String, String>,
+    )> {
+        self.grid.plugin_highlight_at(position)
+    }
+    fn render_fake_cursor(
+        &mut self,
+        cursor_color: PaletteColor,
+        text_color: PaletteColor,
+    ) -> Option<CharacterChunk> {
+        let mut cursor_chunk = None;
+        if let Some((cursor_x, cursor_y, true)) = self.cursor_coordinates() {
+            // the character at the cell we are about to draw on, which is not necessarily the
+            // one under the pty cursor (a keyboard selection moves the cursor to its live end)
+            let mut character_under_cursor = self
+                .grid
+                .get_character_at(cursor_x, cursor_y)
+                .unwrap_or(EMPTY_TERMINAL_CHARACTER);
+            character_under_cursor.styles.update(|styles| {
+                styles.background = Some(cursor_color.into());
+                styles.foreground = Some(text_color.into());
+            });
+            // we keep track of these so that we can clear them up later (see render function)
+            self.fake_cursor_locations.insert((cursor_y, cursor_x));
+            let fake_cursor = CharacterChunk::new(
+                vec![character_under_cursor],
+                self.get_content_x() + cursor_x,
+                self.get_content_y() + cursor_y,
+            );
+            cursor_chunk = Some(fake_cursor);
+        }
+        cursor_chunk
+    }
+    fn drain_fake_cursors(&mut self) -> Option<HashSet<(usize, usize)>> {
+        if !self.fake_cursor_locations.is_empty() {
+            for (y, _x) in &self.fake_cursor_locations {
+                // we do this because once these fake_cursor_locations
+                // have been drained, we have to make sure to render the line
+                // they appeared on so that whatever clears their location
+                // won't leave a hole
+                self.grid.update_line_for_rendering(*y);
+            }
+            Some(std::mem::take(&mut self.fake_cursor_locations))
+        } else {
+            None
+        }
+    }
+    fn web_terminal_frame(&mut self, after: Option<&str>) -> Option<TerminalFrame> {
+        let log = self.web_terminal.get_or_insert_with(WebTerminalLog::new);
+        log.read_at = Instant::now();
+        if let Some(snapshot) = &log.snapshot
+            && let Some(offset) = after.and_then(|cursor| snapshot.continuation_offset(cursor))
+        {
+            return Some(snapshot.part(offset, &log.generation));
+        }
+        let delta = after.and_then(|after| log.suffix(after));
+        let snapshot = delta.is_none();
+        let data = match delta {
+            Some(bytes) => STANDARD.encode(bytes),
+            None => {
+                if !self.parser_boundary.is_ground() || self.grid.is_mid_frame() {
+                    return None;
+                }
+                // Readers restarting together must share the replacement snapshot. Its
+                // captured offset still needs to be reachable in the live log.
+                if let Some(snapshot) = &log.snapshot
+                    && log.end - snapshot.live_offset <= log.bytes.len() as u64
+                {
+                    return Some(snapshot.part(0, &log.generation));
+                }
+                log.snapshot = None;
+                let bytes = self.grid.web_terminal_snapshot()?.into_bytes();
+                if bytes.len() > WEB_SNAPSHOT_PART_BYTES {
+                    let snapshot = log.snapshot.insert(WebTerminalSnapshot {
+                        id: yinz_bus::agent_launch::new_incarnation(),
+                        bytes,
+                        live_offset: log.end,
+                        cols: self.grid.width,
+                        rows: self.grid.height,
+                        supports_kitty_keyboard_protocol: self
+                            .grid
+                            .supports_kitty_keyboard_protocol,
+                    });
+                    return Some(snapshot.part(0, &log.generation));
+                }
+                STANDARD.encode(bytes)
+            },
+        };
+        Some(TerminalFrame {
+            cols: self.grid.width,
+            rows: self.grid.height,
+            cursor: format!("{}:{}", log.generation, log.end),
+            snapshot,
+            snapshot_continues: false,
+            supports_kitty_keyboard_protocol: self.grid.supports_kitty_keyboard_protocol,
+            data,
+        })
+    }
+    fn clear_web_terminal_snapshot(&mut self) {
+        if let Some(log) = &mut self.web_terminal {
+            log.snapshot = None;
+        }
+    }
+    fn dump_screen_with_ansi(&self, full: bool, _client_id: Option<ClientId>) -> String {
+        self.grid.dump_screen_with_ansi(full)
+    }
+    fn update_agent_theme_mapping(&mut self, mapping: yinz_types::agent::theme::AgentThemeMapping) {
+        self.style.agent_theme_mapping = mapping;
+        self.grid.set_agent_theme_mapping(mapping);
+    }
+    fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
+        self.style.terminal = theme;
+        self.grid.update_terminal_theme(theme);
+    }
+    fn update_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
+        self.style.application = baseline;
+        if self.grid.set_application_baseline(baseline) {
+            self.web_terminal = None;
+        }
+    }
+    fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
+        if self.grid.set_pane_default_colors(fg, bg) {
+            self.web_terminal = None;
+        }
+        self.set_should_render(true);
+    }
+    fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
+        self.grid.get_pane_default_color_strings()
+    }
+}
+
+impl Pane for TerminalPane {
+    fn terminal(&self) -> Option<&dyn TerminalPaneOps> {
+        Some(self)
+    }
+    fn terminal_mut(&mut self) -> Option<&mut dyn TerminalPaneOps> {
+        Some(self)
+    }
+    fn set_layout(
+        &mut self,
+        mut geom: PaneGeom,
+        geom_override: Option<PaneGeom>,
+        borderless: bool,
+        content_offset: Offset,
+    ) {
+        geom.is_pinned = self.geom.is_pinned;
+        self.geom = geom;
+        self.geom_override = geom_override;
+        self.borderless = borderless;
+        self.content_offset = content_offset;
+        self.reflow_lines();
+        self.render_full_viewport();
+    }
+    fn character_cell_size_possibly_changed(&mut self) {
+        self.grid.character_cell_size_possibly_changed();
+        self.render_full_viewport();
+        self.set_should_render(true);
+    }
+    fn set_initial_contents(&mut self, contents: &str) {
+        self.handle_pty_bytes(contents.as_bytes().to_vec());
+        self.handle_pty_bytes(b"\n\r".to_vec());
+    }
+    fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
+        // (x, y, is_visible)
+        if let Some(client_id) = client_id
+            && self.guest_modal.contains_key(&client_id)
+        {
+            return None;
+        }
+        if self.pane_tabs.as_ref().is_some_and(|tabs| {
+            tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid))
+        }) {
+            return None;
+        }
+        if self.get_content_rows() < 1 || self.get_content_columns() < 1 {
+            // do not render cursor if there's no room for it
+            return None;
+        }
+        let Offset { top, left, .. } = self.content_offset;
+        let top = top + self.content_header_rows();
+        self.grid
+            .cursor_coordinates()
+            .map(|(x, y, is_visible)| (x + left, y + top, is_visible))
+    }
+    fn is_mid_frame(&self) -> bool {
+        self.grid.is_mid_frame()
+    }
+    fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.grid.sync_output_deadline()
+    }
+    fn expire_sync_output(&mut self, now: std::time::Instant) -> bool {
+        self.grid.expire_sync_output(now)
     }
     fn remove_client(&mut self, client_id: ClientId) {
         self.frame.remove(&client_id);
@@ -703,37 +1657,11 @@ impl Pane for TerminalPane {
         self.frame.clear();
         self.grid.render_full_viewport();
     }
-    fn selectable(&self) -> bool {
-        self.selectable
-    }
     fn set_selectable(&mut self, selectable: bool) {
         self.selectable = selectable;
     }
-    fn update_agent_theme_mapping(&mut self, mapping: yinz_types::agent::theme::AgentThemeMapping) {
-        self.style.agent_theme_mapping = mapping;
-        self.grid.set_agent_theme_mapping(mapping);
-    }
-    fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
-        self.style.terminal = theme;
-        self.grid.update_terminal_theme(theme);
-    }
-    fn update_application_baseline(&mut self, baseline: yinz_types::style::ApplicationBaseline) {
-        self.style.application = baseline;
-        if self.grid.set_application_baseline(baseline) {
-            self.web_terminal = None;
-        }
-    }
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
         self.grid.host_colors()
-    }
-    fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
-        if self.grid.set_pane_default_colors(fg, bg) {
-            self.web_terminal = None;
-        }
-        self.set_should_render(true);
-    }
-    fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
-        self.grid.get_pane_default_color_strings()
     }
     fn render(
         &mut self,
@@ -797,10 +1725,6 @@ impl Pane for TerminalPane {
             Ok(None)
         }
     }
-    fn set_pending_agent_escape_clients(&mut self, clients: HashSet<ClientId>) {
-        self.pending_agent_escape_clients = clients;
-    }
-
     fn render_frame(
         &mut self,
         client_id: ClientId,
@@ -910,34 +1834,6 @@ impl Pane for TerminalPane {
         self.frame.insert(client_id, frame);
         Ok(Some(frame_output))
     }
-    fn render_fake_cursor(
-        &mut self,
-        cursor_color: PaletteColor,
-        text_color: PaletteColor,
-    ) -> Option<CharacterChunk> {
-        let mut cursor_chunk = None;
-        if let Some((cursor_x, cursor_y, true)) = self.cursor_coordinates() {
-            // the character at the cell we are about to draw on, which is not necessarily the
-            // one under the pty cursor (a keyboard selection moves the cursor to its live end)
-            let mut character_under_cursor = self
-                .grid
-                .get_character_at(cursor_x, cursor_y)
-                .unwrap_or(EMPTY_TERMINAL_CHARACTER);
-            character_under_cursor.styles.update(|styles| {
-                styles.background = Some(cursor_color.into());
-                styles.foreground = Some(text_color.into());
-            });
-            // we keep track of these so that we can clear them up later (see render function)
-            self.fake_cursor_locations.insert((cursor_y, cursor_x));
-            let fake_cursor = CharacterChunk::new(
-                vec![character_under_cursor],
-                self.get_content_x() + cursor_x,
-                self.get_content_y() + cursor_y,
-            );
-            cursor_chunk = Some(fake_cursor);
-        }
-        cursor_chunk
-    }
     fn render_terminal_title(
         &mut self,
         input_mode: InputMode,
@@ -966,265 +1862,23 @@ impl Pane for TerminalPane {
         }
         self.set_should_render(true);
     }
-    fn pid(&self) -> PaneId {
-        PaneId::Terminal(self.pid)
-    }
-    fn reduce_height(&mut self, percent: f64) {
-        if let Some(p) = self.geom.rows.as_percent() {
-            self.geom.rows.set_percent(p - percent);
-            self.set_should_render(true);
-        }
-    }
-    fn increase_height(&mut self, percent: f64) {
-        if let Some(p) = self.geom.rows.as_percent() {
-            self.geom.rows.set_percent(p + percent);
-            self.set_should_render(true);
-        }
-    }
-    fn reduce_width(&mut self, percent: f64) {
-        if let Some(p) = self.geom.cols.as_percent() {
-            self.geom.cols.set_percent(p - percent);
-            self.set_should_render(true);
-        }
-    }
-    fn increase_width(&mut self, percent: f64) {
-        if let Some(p) = self.geom.cols.as_percent() {
-            self.geom.cols.set_percent(p + percent);
-            self.set_should_render(true);
-        }
-    }
-    fn push_down(&mut self, count: usize) {
-        self.geom.y += count;
-        self.reflow_lines();
-    }
-    fn push_right(&mut self, count: usize) {
-        self.geom.x += count;
-        self.reflow_lines();
-    }
-    fn pull_left(&mut self, count: usize) {
-        self.geom.x -= count;
-        self.reflow_lines();
-    }
-    fn pull_up(&mut self, count: usize) {
-        self.geom.y -= count;
-        self.reflow_lines();
-    }
-    fn web_terminal_frame(&mut self, after: Option<&str>) -> Option<TerminalFrame> {
-        let log = self.web_terminal.get_or_insert_with(WebTerminalLog::new);
-        log.read_at = Instant::now();
-        if let Some(snapshot) = &log.snapshot
-            && let Some(offset) = after.and_then(|cursor| snapshot.continuation_offset(cursor))
-        {
-            return Some(snapshot.part(offset, &log.generation));
-        }
-        let delta = after.and_then(|after| log.suffix(after));
-        let snapshot = delta.is_none();
-        let data = match delta {
-            Some(bytes) => STANDARD.encode(bytes),
-            None => {
-                if !self.parser_boundary.is_ground() || self.grid.is_mid_frame() {
-                    return None;
-                }
-                // Readers restarting together must share the replacement snapshot. Its
-                // captured offset still needs to be reachable in the live log.
-                if let Some(snapshot) = &log.snapshot
-                    && log.end - snapshot.live_offset <= log.bytes.len() as u64
-                {
-                    return Some(snapshot.part(0, &log.generation));
-                }
-                log.snapshot = None;
-                let bytes = self.grid.web_terminal_snapshot()?.into_bytes();
-                if bytes.len() > WEB_SNAPSHOT_PART_BYTES {
-                    let snapshot = log.snapshot.insert(WebTerminalSnapshot {
-                        id: yinz_bus::agent_launch::new_incarnation(),
-                        bytes,
-                        live_offset: log.end,
-                        cols: self.grid.width,
-                        rows: self.grid.height,
-                        supports_kitty_keyboard_protocol: self
-                            .grid
-                            .supports_kitty_keyboard_protocol,
-                    });
-                    return Some(snapshot.part(0, &log.generation));
-                }
-                STANDARD.encode(bytes)
-            },
-        };
-        Some(TerminalFrame {
-            cols: self.grid.width,
-            rows: self.grid.height,
-            cursor: format!("{}:{}", log.generation, log.end),
-            snapshot,
-            snapshot_continues: false,
-            supports_kitty_keyboard_protocol: self.grid.supports_kitty_keyboard_protocol,
-            data,
-        })
-    }
-    fn clear_web_terminal_snapshot(&mut self) {
-        if let Some(log) = &mut self.web_terminal {
-            log.snapshot = None;
-        }
-    }
     fn dump_screen(&self, full: bool, _client_id: Option<ClientId>) -> String {
         self.grid.dump_screen(full)
     }
-    fn dump_screen_with_ansi(&self, full: bool, _client_id: Option<ClientId>) -> String {
-        self.grid.dump_screen_with_ansi(full)
-    }
-    fn clear_screen(&mut self) {
-        self.web_terminal = None;
-        self.grid.clear_screen()
-    }
-    fn scroll_up(&mut self, count: usize, _client_id: Option<ClientId>) {
-        self.grid.move_viewport_up(count);
-        self.set_should_render(true);
-    }
-    fn scroll_down(&mut self, count: usize, _client_id: Option<ClientId>) {
-        self.grid.move_viewport_down(count);
-        self.set_should_render(true);
-    }
-    fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {
-        if self.grid.scroll_to_previous_prompt() {
-            self.set_should_render(true);
-        }
-    }
-    fn scroll_to_next_prompt(&mut self, _client_id: ClientId) {
-        if self.grid.scroll_to_next_prompt() {
-            self.set_should_render(true);
-        }
-    }
-    fn select_command_at_scroll_position(&mut self, _client_id: ClientId) {
-        if self.grid.select_command_at_scroll_position() {
-            self.set_should_render(true);
-        }
-    }
-    fn copy_last_command_output(&mut self) -> Option<String> {
-        let (output, start, end) = self.grid.last_completed_command_output()?;
-        self.grid.set_command_output_flash(start, end);
-        self.set_should_render(true);
-        Some(output)
-    }
-    fn clear_command_output_flash(&mut self) {
-        if self.grid.clear_command_output_flash() {
-            self.set_should_render(true);
-        }
-    }
-    fn clear_scroll(&mut self) {
-        if self.grid.is_scrolled {
-            self.grid.reset_viewport();
-            self.set_should_render(true);
-        }
-    }
-    fn is_scrolled(&self) -> bool {
-        self.grid.is_scrolled
-    }
-
-    fn active_at(&self) -> Instant {
-        self.active_at
-    }
-
     fn set_active_at(&mut self, time: Instant) {
         self.active_at = time;
     }
     fn cursor_shape_csi(&self) -> String {
         self.grid.cursor_shape().get_csi_str().to_string()
     }
-
-    fn is_nested_guest(&self) -> bool {
-        self.nested_guest
-    }
-
-    fn set_is_nested_guest(&mut self, is_nested_guest: bool) {
-        self.nested_guest = is_nested_guest;
-    }
-
-    fn set_guest_modal(&mut self, client_ids: &[ClientId]) {
-        for client_id in client_ids {
-            self.guest_modal.insert(*client_id, 0);
-        }
-        self.set_should_render(true);
-    }
-
-    fn clear_guest_modal(&mut self, client_id: ClientId) {
-        if self.guest_modal.remove(&client_id).is_some() {
-            self.render_full_viewport();
-            self.set_should_render(true);
-        }
-    }
-
-    fn clear_all_guest_modals(&mut self) {
-        if !self.guest_modal.is_empty() {
-            self.guest_modal.clear();
-            self.render_full_viewport();
-            self.set_should_render(true);
-        }
-    }
-
-    fn guest_modal_selection(&self, client_id: ClientId) -> Option<usize> {
-        self.guest_modal.get(&client_id).copied()
-    }
-
-    fn has_guest_modal_for_any_client(&self) -> bool {
-        !self.guest_modal.is_empty()
-    }
-
-    fn set_guest_choice_indicator(
-        &mut self,
-        client_id: ClientId,
-        indicator: Option<GuestChoiceIndicator>,
-    ) {
-        let previous = self.guest_choice_indicators.get(&client_id).copied();
-        if previous == indicator {
-            return;
-        }
-        match indicator {
-            Some(indicator) => {
-                self.guest_choice_indicators.insert(client_id, indicator);
-            },
-            None => {
-                self.guest_choice_indicators.remove(&client_id);
-            },
-        }
-        self.set_should_render(true);
-    }
-
-    fn guest_choice_indicator(&self, client_id: ClientId) -> Option<GuestChoiceIndicator> {
-        self.guest_choice_indicators.get(&client_id).copied()
-    }
-
-    fn clear_all_guest_choice_indicators(&mut self) {
-        if !self.guest_choice_indicators.is_empty() {
-            self.guest_choice_indicators.clear();
-            self.set_should_render(true);
-        }
-    }
-
-    fn set_guest_session_name(&mut self, session_name: Option<SessionName>) {
-        self.guest_session_name = session_name;
-    }
-
-    fn guest_session_name(&self) -> Option<SessionName> {
-        self.guest_session_name.clone()
-    }
-
-    fn set_guest_modal_shortcuts(&mut self, shortcuts: GuestModalShortcuts) {
-        self.guest_modal_shortcuts = shortcuts;
-    }
-
-    fn guest_modal_shortcuts(&self) -> GuestModalShortcuts {
-        self.guest_modal_shortcuts.clone()
-    }
-
     fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {
         self.grid
             .set_selection_options(osc133_command_selection, word_separators);
     }
-
     fn start_selection(&mut self, start: &Position, _client_id: ClientId) {
         self.grid.start_selection(start);
         self.set_should_render(true);
     }
-
     fn update_selection(&mut self, to: &Position, _client_id: ClientId) {
         let should_scroll = self.selection_scrolled_at.elapsed()
             >= time::Duration::from_millis(SELECTION_SCROLL_INTERVAL_MS);
@@ -1258,16 +1912,13 @@ impl Pane for TerminalPane {
             self.grid.update_selection(to);
         }
     }
-
     fn end_selection(&mut self, end: &Position, _client_id: ClientId) {
         self.grid.end_selection(end);
         self.set_should_render(true);
     }
-
     fn reset_selection(&mut self, _client_id: Option<ClientId>) {
         self.grid.reset_selection();
     }
-
     fn start_text_selection(&mut self, _client_id: ClientId) {
         let position = self
             .grid
@@ -1277,36 +1928,26 @@ impl Pane for TerminalPane {
         self.grid.start_text_selection(position);
         self.set_should_render(true);
     }
-
     fn move_text_selection(&mut self, direction: Direction, _client_id: ClientId) {
         self.grid.move_text_selection(direction);
         self.set_should_render(true);
     }
-
     fn swap_text_selection_ends(&mut self, _client_id: ClientId) {
         self.grid.swap_text_selection_ends();
         self.set_should_render(true);
     }
-
     fn remember_copied_text_selection(&mut self, _client_id: ClientId) {
         self.grid.remember_copied_text_selection();
     }
-
     fn finish_text_selection(&mut self, _client_id: ClientId) {
         self.grid.finish_text_selection();
         self.set_should_render(true);
     }
-
     fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {
         self.grid.get_selected_text()
     }
-
-    fn set_frame(&mut self, _frame: bool) {
+    fn invalidate_all_frames(&mut self) {
         self.frame.clear();
-    }
-
-    fn render_width(&self) -> Option<(usize, usize)> {
-        self.render_width
     }
     fn set_render_width(&mut self, width: Option<(usize, usize)>) -> bool {
         let before = self.render_geom();
@@ -1317,15 +1958,6 @@ impl Pane for TerminalPane {
         self.reflow_lines();
         self.render_full_viewport();
         true
-    }
-    fn is_detected_agent(&self) -> bool {
-        self.detected_agent
-    }
-    fn set_detected_agent(&mut self, detected: bool) {
-        self.detected_agent = detected;
-    }
-    fn max_content_width(&self) -> usize {
-        self.max_content_width
     }
     fn set_max_content_width(&mut self, width: usize) -> bool {
         let before = self.render_geom();
@@ -1341,7 +1973,6 @@ impl Pane for TerminalPane {
         self.content_offset = offset;
         self.reflow_lines();
     }
-
     fn set_subtitle(&mut self, subtitle: Option<String>) {
         let subtitle = subtitle
             .map(|text| yinz_types::text::clean_string_from_control_and_linebreak(&text))
@@ -1364,7 +1995,6 @@ impl Pane for TerminalPane {
     fn subtitle_enabled(&self) -> bool {
         self.subtitle_enabled
     }
-
     fn content_header_rows(&self) -> usize {
         self.subtitle_rows()
             + usize::from(
@@ -1415,10 +2045,6 @@ impl Pane for TerminalPane {
     fn pane_tabs(&self) -> Option<&yinz_types::pane_tabs::PaneTabsInfo> {
         self.pane_tabs.as_ref()
     }
-    fn get_content_offset(&self) -> Offset {
-        self.content_offset
-    }
-
     fn store_pane_name(&mut self) {
         if self.pane_name != self.prev_pane_name {
             self.prev_pane_name = self.pane_name.clone()
@@ -1429,10 +2055,6 @@ impl Pane for TerminalPane {
             self.pane_name = self.prev_pane_name.clone();
             self.set_should_render(true);
         }
-    }
-
-    fn borderless(&self) -> bool {
-        self.borderless
     }
     fn set_borderless(&mut self, should_be_borderless: bool) {
         self.set_borderless_with_content_offset(
@@ -1448,164 +2070,11 @@ impl Pane for TerminalPane {
         self.borderless = borderless;
         self.set_content_offset(offset);
     }
-
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool) {
         self.exclude_from_sync = exclude_from_sync;
     }
-
     fn exclude_from_sync(&self) -> bool {
         self.exclude_from_sync
-    }
-
-    fn mouse_event(&self, event: &MouseEvent, _client_id: ClientId) -> Option<String> {
-        self.grid.mouse_event_signal(event)
-    }
-
-    fn mouse_left_click(&self, position: &Position, is_held: bool) -> Option<String> {
-        self.grid.mouse_left_click_signal(position, is_held)
-    }
-    fn mouse_left_click_release(&self, position: &Position) -> Option<String> {
-        self.grid.mouse_left_click_release_signal(position)
-    }
-    fn mouse_right_click(&self, position: &Position, is_held: bool) -> Option<String> {
-        self.grid.mouse_right_click_signal(position, is_held)
-    }
-    fn mouse_right_click_release(&self, position: &Position) -> Option<String> {
-        self.grid.mouse_right_click_release_signal(position)
-    }
-    fn mouse_middle_click(&self, position: &Position, is_held: bool) -> Option<String> {
-        self.grid.mouse_middle_click_signal(position, is_held)
-    }
-    fn mouse_middle_click_release(&self, position: &Position) -> Option<String> {
-        self.grid.mouse_middle_click_release_signal(position)
-    }
-    fn mouse_scroll_up(&self, position: &Position) -> Option<String> {
-        self.grid.mouse_scroll_up_signal(position)
-    }
-    fn mouse_scroll_down(&self, position: &Position) -> Option<String> {
-        self.grid.mouse_scroll_down_signal(position)
-    }
-    fn focus_event(&self) -> Option<String> {
-        self.grid.focus_event()
-    }
-    fn unfocus_event(&self) -> Option<String> {
-        self.grid.unfocus_event()
-    }
-    fn get_line_number(&self) -> Option<usize> {
-        // + 1 because the absolute position in the scrollback is 0 indexed and this should be 1 indexed
-        Some(self.grid.absolute_position_in_scrollback() + 1)
-    }
-
-    fn update_search_term(&mut self, needle: &str) {
-        match needle {
-            TERMINATING_STRING => {
-                self.search_term = String::new();
-            },
-            DELETE_KEY | BACKSPACE_KEY => {
-                self.search_term.pop();
-            },
-            c => {
-                self.search_term.push_str(c);
-            },
-        }
-        self.grid.set_search_string(&self.search_term);
-        self.set_should_render(true);
-    }
-    fn search_down(&mut self) {
-        if self.search_term.is_empty() {
-            return; // No-op
-        }
-        self.grid.search_down();
-        self.set_should_render(true);
-    }
-    fn search_up(&mut self) {
-        if self.search_term.is_empty() {
-            return; // No-op
-        }
-        self.grid.search_up();
-        self.set_should_render(true);
-    }
-    fn toggle_search_case_sensitivity(&mut self) {
-        self.grid.toggle_search_case_sensitivity();
-        self.set_should_render(true);
-    }
-    fn toggle_search_whole_words(&mut self) {
-        self.grid.toggle_search_whole_words();
-        self.set_should_render(true);
-    }
-    fn toggle_search_wrap(&mut self) {
-        self.grid.toggle_search_wrap();
-    }
-    fn clear_search(&mut self) {
-        self.grid.clear_search();
-        self.search_term.clear();
-    }
-    fn is_alternate_mode_active(&self) -> bool {
-        self.grid.is_alternate_mode_active()
-    }
-    fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, mut run_command: RunCommand) {
-        self.web_terminal = None;
-        // Exit notifications travel separately from PTY bytes and can precede the
-        // final provider output. Let the ordered end event reset the grid palette;
-        // respawn also resets it before accepting a new process's output.
-        run_command.agent_theme = None;
-        // A resumed agent can move to another conversation while it runs; a rerun follows it.
-        if let (Some(saved), Some(agent)) = (run_command.resume_agent.as_mut(), self.agent.as_ref())
-            && agent
-                .session_id
-                .as_deref()
-                .is_some_and(|id| !id.trim().is_empty())
-        {
-            saved.session_id = agent.session_id.clone();
-            saved.cwd = agent.cwd.clone().or_else(|| saved.cwd.take());
-        }
-        self.invoked_with = Some(Run::Command(run_command.clone()));
-        // A held pane has no running process to be stopped, and a stale flag
-        // would leave the resume hint up over a dead pane forever.
-        self.suspended = false;
-        self.is_held = Some((exit_status, is_first_run, run_command));
-        self.grid.program_status.drop_transient();
-        self.grid.applicable_program_status.clear_all();
-        self.clear_waiting_pulse();
-        if let Some(agent) = self.agent.as_mut() {
-            agent.state = AgentState::Exited;
-            agent.detail = None;
-        }
-        if let Some(notification_end) = self.notification_end.as_mut()
-            && let Some(exit_status) = exit_status
-        {
-            notification_end.set_exit_status(exit_status);
-
-            // Check if unblock condition is met
-            if let Some(condition) = notification_end.unblock_condition()
-                && condition.is_met(exit_status)
-            {
-                // Condition met - drop the NotificationEnd now to unblock
-                drop(self.notification_end.take());
-            }
-        }
-        if is_first_run {
-            self.render_first_run_banner();
-        }
-        self.set_should_render(true);
-    }
-    fn has_bell(&self) -> bool {
-        self.grid.ring_bell
-    }
-    fn consume_bell(&mut self) {
-        self.grid.ring_bell = false;
-    }
-    fn osc7_payload(&self) -> Option<&str> {
-        self.grid.osc7_payload()
-    }
-    fn set_bell_notification(&mut self, val: bool) {
-        if self.has_bell_notification != val {
-            self.has_bell_notification = val;
-            self.set_should_render(true);
-        }
-    }
-    fn get_bell_notification(&self) -> bool {
-        self.has_bell_notification
     }
     fn add_red_pane_frame_color_override(
         &mut self,
@@ -1687,17 +2156,8 @@ impl Pane for TerminalPane {
     fn waiting_pulse(&self) -> Option<f32> {
         self.waiting_pulse
     }
-    fn set_launch_command(&mut self, command: RunCommand) {
-        self.invoked_with = Some(Run::Command(command));
-        self.set_agent_info(agent_from_run(self.invoked_with.as_ref()));
-        self.is_held = None;
-        self.remove_banner();
-    }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
-    }
-    fn set_notification_end(&mut self, notification_end: Option<NotificationEnd>) {
-        self.notification_end = notification_end;
     }
     fn set_title(&mut self, title: String) {
         if self.pane_title != title {
@@ -1716,15 +2176,6 @@ impl Pane for TerminalPane {
             self.pane_name.to_owned()
         }
     }
-    fn set_remote_host(&mut self, host: Option<String>) {
-        if self.remote_host != host {
-            self.remote_host = host;
-            self.set_should_render(true);
-        }
-    }
-    fn set_agent_hook_flash(&mut self, flash: bool) {
-        self.agent_hook_flash = flash;
-    }
     fn agent_title(&self) -> crate::ui::agent_title::AgentTitle {
         crate::ui::agent_title::AgentTitle {
             state: self.agent.as_ref().map(|agent| {
@@ -1740,141 +2191,6 @@ impl Pane for TerminalPane {
                     })
             }),
             hook_flash: self.agent_hook_flash,
-        }
-    }
-    fn retire_program_status(&mut self) {
-        self.grid.applicable_program_status.clear_all();
-        self.set_should_render(true);
-    }
-    fn program_status_revision(&self) -> u64 {
-        self.grid.program_status_revision()
-    }
-    fn program_status(&self) -> yinz_types::program_status::ProgramStatusView {
-        yinz_types::program_status::ProgramStatusView {
-            records: self.grid.program_status.all(),
-            current: self
-                .grid
-                .applicable_program_status
-                .deciding_record_matching(|record| {
-                    record.app.as_ref().is_none_or(|app| {
-                        self.agent.as_ref().is_none_or(|agent| {
-                            yinz_types::agent::kind_of(app).as_deref() == Some(agent.kind.as_str())
-                        })
-                    })
-                })
-                .map(|(_, record)| record),
-        }
-    }
-    fn agent_info(&self) -> Option<&AgentInfo> {
-        self.agent.as_ref()
-    }
-    fn supports_bracketed_paste(&self) -> bool {
-        self.grid.bracketed_paste_mode
-    }
-    fn agent_input_revision(&self) -> u64 {
-        self.agent_input_revision
-    }
-    fn agent_enter_revision(&self) -> u64 {
-        self.agent_enter_revision
-    }
-    fn agent_input_at(&self) -> Option<Instant> {
-        self.agent_input_at
-    }
-    fn record_agent_input(&mut self, is_enter: bool) -> bool {
-        let mut applicability_changed = false;
-        self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
-        if is_enter {
-            applicability_changed = self.grid.applicable_program_status.clear_all();
-            if applicability_changed {
-                self.set_should_render(true);
-            }
-            self.agent_enter_revision = self.agent_input_revision;
-        }
-        self.agent_input_at = Some(Instant::now());
-        applicability_changed
-    }
-    fn last_hook_at_ms(&self) -> Option<i64> {
-        self.last_hook_at_ms
-    }
-    fn set_last_hook_at_ms(&mut self, at: i64) {
-        self.last_hook_at_ms = Some(at);
-    }
-    fn last_agent_cwd(&self) -> Option<&str> {
-        self.last_agent_cwd.as_deref()
-    }
-    fn last_agent_session_id(&self) -> Option<&str> {
-        self.last_agent_session_id.as_deref()
-    }
-    fn clear_agent_session_id(&mut self) {
-        self.last_hook_at_ms = None;
-        self.last_agent_session_id = None;
-    }
-    fn last_agent_kind(&self) -> Option<&str> {
-        self.last_agent_kind.as_deref()
-    }
-    fn was_an_agent(&self) -> bool {
-        self.was_an_agent
-    }
-    fn set_agent_info(&mut self, agent: Option<AgentInfo>) -> bool {
-        // Before the equality check: a record that repeats itself still says this is an agent
-        // pane, and the memory is set once and never taken back.
-        self.was_an_agent |= agent.is_some();
-        if agent.is_none()
-            || self
-                .agent
-                .as_ref()
-                .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
-                != agent
-                    .as_ref()
-                    .map(|agent| (&agent.kind, &agent.session_id, &agent.run_id))
-        {
-            self.agent_hook_flash = false;
-        }
-        if agent.is_none()
-            || self.agent.as_ref().map(|a| (&a.kind, &a.session_id))
-                != agent.as_ref().map(|a| (&a.kind, &a.session_id))
-        {
-            self.web_terminal = None;
-            self.last_hook_at_ms = None;
-            if self.agent.is_some() || agent.is_none() {
-                self.grid.applicable_program_status.clear_all();
-            }
-        }
-        if let Some(agent) = &agent {
-            if self.last_agent_kind.as_deref() != Some(agent.kind.as_str()) {
-                self.last_agent_session_id = None;
-            }
-            self.last_agent_kind = Some(agent.kind.clone());
-            if let Some(id) = agent.session_id.as_ref().filter(|id| !id.is_empty()) {
-                self.last_agent_session_id = Some(id.clone());
-            }
-            if agent.cwd.is_some() {
-                self.last_agent_cwd = agent.cwd.clone();
-            }
-        }
-        if self.agent == agent {
-            return false;
-        }
-        let waiting = agent
-            .as_ref()
-            .is_some_and(AgentInfo::is_waiting_on_a_person);
-        if !waiting {
-            self.clear_waiting_pulse();
-        } else if !self
-            .agent
-            .as_ref()
-            .is_some_and(AgentInfo::is_waiting_on_a_person)
-        {
-            self.waiting_pulse_started_at = Some(Instant::now());
-        }
-        self.agent = agent;
-        self.set_should_render(true);
-        true
-    }
-    fn set_title_prefix(&mut self, prefix: Option<String>) {
-        if self.title_prefix != prefix {
-            self.title_prefix = prefix;
-            self.set_should_render(true);
         }
     }
     fn display_title(&self) -> String {
@@ -1911,252 +2227,15 @@ impl Pane for TerminalPane {
             Some(self.pane_name.clone())
         }
     }
-    fn set_running_program(&mut self, program: Option<String>) {
-        let program = program
-            .as_deref()
-            .and_then(|program| std::path::Path::new(program).file_name())
-            .and_then(|name| name.to_str())
-            .map(|name| name.trim_start_matches('-').to_owned())
-            .filter(|name| !name.is_empty());
-        // Foreground discovery can arrive after the new program's OSC 7501 reports.
-        // A command name cannot establish report ownership; retire at explicit
-        // lifecycle boundaries (such as a shell prompt) instead.
-        if self.running_program != program {
-            self.running_program = program;
-            self.set_should_render(true);
-        }
-    }
     fn can_lend_title(&self) -> bool {
         self.has_explicit_title() || self.title_prefix.is_some() || self.running_program.is_some()
     }
     fn has_explicit_title(&self) -> bool {
         !self.pane_name.is_empty() || self.grid.title.is_some()
     }
-    fn scroll_position(&self) -> (usize, usize) {
-        self.grid.scrollback_position_and_length()
-    }
-    fn exit_status(&self) -> Option<i32> {
-        self.is_held
-            .as_ref()
-            .and_then(|(exit_status, _, _)| *exit_status)
-    }
-    fn set_warp_pending(&mut self, pending: bool) {
-        self.warp_pending = pending;
-    }
-    fn is_held(&self) -> bool {
-        self.is_held.is_some()
-    }
-    fn is_suspended(&self) -> bool {
-        self.suspended
-    }
-    fn set_suspended(&mut self, suspended: bool) {
-        if self.suspended == suspended {
-            return;
-        }
-        self.suspended = suspended;
-        self.set_should_render(true);
-    }
-    fn exited(&self) -> bool {
-        match self.is_held {
-            Some((_, is_first_run, _)) => !is_first_run,
-            None => false,
-        }
-    }
     fn rename(&mut self, buf: Vec<u8>) {
         self.pane_name = String::from_utf8_lossy(&buf).to_string();
         self.set_should_render(true);
-    }
-    fn validate_migration(&self) -> Result<(), String> {
-        self.check_migration()
-    }
-    fn terminal_state(&self) -> Result<String, String> {
-        self.check_migration()?;
-        if !self.parser_boundary.is_ground()
-            || !self.kitty_interceptor.is_in_ground_state()
-            || self.grid.is_mid_frame()
-        {
-            return Err(
-                "ordinary pane transfer requires a complete terminal escape sequence".into(),
-            );
-        }
-        let state = self.grid.migration_state().map_err(|e| format!("{e:#}"))?;
-        let state =
-            serde_json::to_string(&state).map_err(|e| format!("encode terminal state: {e}"))?;
-        // A fullscreen application may not have redrawn after a shrink, leaving
-        // its cursor outside the new dimensions. Reject unrestorable state while
-        // the source still exists so transfer can use the legacy fallback.
-        Grid::validate_terminal_state(&state)
-            .map_err(|e| format!("validate captured terminal state: {e:#}"))?;
-        Ok(state)
-    }
-
-    fn restore_terminal_state(&mut self, state: &str) -> Result<(), String> {
-        self.web_terminal = None;
-        let state =
-            serde_json::from_str(state).map_err(|e| format!("decode terminal state: {e}"))?;
-        self.grid
-            .restore_migration_state(state)
-            .map_err(|e| format!("restore terminal state: {e:#}"))?;
-        self.fit_restored_grid();
-        self.set_should_render(true);
-        self.vte_parser = vte::Parser::new();
-        self.parser_boundary = Default::default();
-        self.frame.clear();
-        self.fake_cursor_locations.clear();
-        self.render_width = None;
-        Ok(())
-    }
-
-    fn migration_state(&self) -> Result<serde_json::Value, String> {
-        self.capture_migration()
-    }
-    fn restore_migration_state(&mut self, state: serde_json::Value) -> Result<(), String> {
-        self.apply_migration(state)
-    }
-    fn serialize_handoff(
-        &self,
-        scrollback: Option<usize>,
-        budget: usize,
-    ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
-        self.grid.serialize_handoff(scrollback, budget)
-    }
-    fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
-        self.grid.serialize(scrollback_lines_to_serialize)
-    }
-    fn restart_error(&self) -> Option<String> {
-        self.restart_command_args().err()
-    }
-    fn agent_restart_command(
-        &self,
-        session: yinz_types::agent::control::AgentRestartSession,
-        prompt: Option<&str>,
-    ) -> Result<RunCommand, String> {
-        use yinz_types::agent::control::{AgentRestartSession, MAX_PROMPT_BYTES};
-        if prompt.is_some_and(|prompt| prompt.len() > MAX_PROMPT_BYTES || prompt.contains('\0')) {
-            return Err("restart prompt exceeds 1 MiB or contains NUL".into());
-        }
-        let Some((_, false, command)) = self.is_held.as_ref() else {
-            return Err("target must be an exited, held agent pane".into());
-        };
-        if !self.was_an_agent || self.warp_pending {
-            return Err("target must be an exited, held agent pane".into());
-        }
-        self.restart_command_args()?;
-        let session_id = match session {
-            AgentRestartSession::Resume => Some(
-                self.last_agent_session_id
-                    .as_deref()
-                    .filter(|id| !id.trim().is_empty())
-                    .ok_or("agent pane has no remembered session id")?,
-            ),
-            AgentRestartSession::Fresh => None,
-        };
-        let args = yinz_runtime::agent::restart_with_prompt(
-            &command.command,
-            &command.args,
-            session_id,
-            prompt,
-        )?;
-        Ok(RunCommand {
-            resume_agent: None,
-            args,
-            ..command.clone()
-        })
-    }
-    fn respawn(
-        &mut self,
-        replacement: Option<RunCommand>,
-        keep_scrollback: bool,
-    ) -> Option<RunCommand> {
-        // if this is a command pane that has exited or is waiting to be rerun, will return the
-        // command to spawn - its own, or the replacement - otherwise it is safe to assume this
-        // is not the right sort of pane or that it is not in the right sort of state
-        if self.warp_pending {
-            return None;
-        }
-        self.is_held.as_ref()?;
-        let cleaned = if replacement.is_none() {
-            match self.restart_command_args() {
-                Ok(args) => args,
-                Err(message) => {
-                    Err::<(), _>(anyhow!(message.clone())).non_fatal();
-                    self.add_red_pane_frame_color_override(Some(message), None);
-                    self.set_should_render(true);
-                    return None;
-                },
-            }
-        } else {
-            None
-        };
-        // Explicit resumes restore their selected session in Screen::restart_agent_pane.
-        let fresh_agent = cleaned.is_some() || replacement.is_some();
-        if fresh_agent {
-            self.last_hook_at_ms = None;
-            self.last_agent_session_id = None;
-        }
-        self.is_held.take().map(|(_, _, mut run_command)| {
-            run_command.agent_theme = None;
-            if let Some(Run::Command(command)) = self.invoked_with.as_mut() {
-                command.agent_theme = None;
-            }
-            if let Some(args) = cleaned {
-                run_command.args = args;
-                self.invoked_with = Some(Run::Command(run_command.clone()));
-            }
-            self.is_held = None;
-            self.suspended = false;
-            self.agent_input_revision = 0;
-            self.agent_enter_revision = 0;
-            self.agent_input_at = None;
-            self.clear_waiting_pulse();
-            if let Some(agent) = self.agent.as_mut() {
-                agent.state = AgentState::Busy;
-                if fresh_agent {
-                    agent.session_id = None;
-                    agent.run_id = None;
-                    agent.detail = None;
-                    agent.waiting_on = None;
-                    agent.wait_needs_a_person = false;
-                    agent.source = AgentSource::Spawned;
-                }
-            }
-            if keep_scrollback {
-                self.grid.reset_terminal_state_preserving_scrollback();
-            } else {
-                self.grid.reset_terminal_state();
-            }
-            self.grid.begin_agent_run();
-            self.set_should_render(true);
-            self.remove_banner();
-            match replacement {
-                Some(mut replacement) => {
-                    replacement.agent_theme = None;
-                    // A pane re-run with a *different* command is not the same pane's work
-                    // any more, and neither the record nor the memory of one says anything
-                    // true about it. Left alone, a plugin reusing a held agent pane for `npm
-                    // test` would fire `agent_exit` on that command's exit, naming it as the
-                    // agent's - and the sticky memory would make it unrecoverable, because
-                    // clearing the record no longer disarms the hook.
-                    //
-                    // `command` and `args` rather than the whole `RunCommand`: a plugin
-                    // re-running the same agent builds a fresh one, whose `hold_on_close`,
-                    // `originating_plugin` and the rest may differ incidentally, and reading
-                    // that as a new command would forget a live agent.
-                    if replacement.command != run_command.command
-                        || replacement.args != run_command.args
-                    {
-                        self.clear_agent_identity();
-                    }
-                    self.invoked_with = Some(Run::Command(replacement.clone()));
-                    // A replacement marked as an agent starts a fresh conversation.
-                    if let Some(agent) = agent_from_run(self.invoked_with.as_ref()) {
-                        self.set_agent_info(Some(agent));
-                    }
-                    replacement
-                },
-                None => run_command.clone(),
-            }
-        })
     }
     fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;
@@ -2173,34 +2252,14 @@ impl Pane for TerminalPane {
         self.grid
             .update_render_options(styled_underlines, osc8_hyperlinks);
     }
-    fn update_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
-        self.grid.set_kitty_keyboard_protocol_disabled(disabled);
-    }
     fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
         self.grid.update_kitty_host_support(supported);
-    }
-    fn update_sixel_host_support(&mut self, supported: bool) {
-        self.grid.update_sixel_host_support(supported);
     }
     fn update_rounded_corners(&mut self, rounded_corners: bool) {
         if self.style.rounded_corners != rounded_corners {
             self.style.rounded_corners = rounded_corners;
             self.frame.clear();
             self.set_should_render(true);
-        }
-    }
-    fn drain_fake_cursors(&mut self) -> Option<HashSet<(usize, usize)>> {
-        if !self.fake_cursor_locations.is_empty() {
-            for (y, _x) in &self.fake_cursor_locations {
-                // we do this because once these fake_cursor_locations
-                // have been drained, we have to make sure to render the line
-                // they appeared on so that whatever clears their location
-                // won't leave a hole
-                self.grid.update_line_for_rendering(*y);
-            }
-            Some(std::mem::take(&mut self.fake_cursor_locations))
-        } else {
-            None
         }
     }
     fn toggle_pinned(&mut self) {
@@ -2245,72 +2304,6 @@ impl Pane for TerminalPane {
     ) -> PaneContents {
         self.grid
             .pane_contents_with_ansi(get_full_scrollback, max_scrollback_lines)
-    }
-    fn update_exit_status(&mut self, exit_status: i32) {
-        if let Some(notification_end) = self.notification_end.as_mut() {
-            notification_end.set_exit_status(exit_status);
-            // Check if unblock condition is met
-            if let Some(condition) = notification_end.unblock_condition()
-                && condition.is_met(exit_status)
-            {
-                // Condition met - drop the NotificationEnd now to unblock
-                drop(self.notification_end.take());
-            }
-        }
-    }
-    fn set_plugin_regex_highlights(
-        &mut self,
-        plugin_id: PluginId,
-        highlights: Vec<RegexHighlight>,
-        style: &Style,
-    ) {
-        self.grid
-            .set_plugin_regex_highlights(plugin_id, highlights, style);
-        self.set_should_render(true);
-    }
-    fn clear_plugin_highlights(&mut self, plugin_id: PluginId) {
-        self.grid.clear_plugin_highlights(plugin_id);
-        self.set_should_render(true);
-    }
-    fn set_hover_position(&mut self, position: Option<Position>) -> bool {
-        let changed = self.grid.set_hover_position(position);
-        if changed {
-            self.set_should_render(true);
-        }
-        changed
-    }
-    fn cached_hover_tooltip(&self) -> Option<String> {
-        self.grid.cached_hover_tooltip.clone()
-    }
-    fn plugin_highlight_at(
-        &self,
-        position: &Position,
-    ) -> Option<(
-        PluginId,
-        String,
-        String,
-        std::collections::BTreeMap<String, String>,
-    )> {
-        self.grid.plugin_highlight_at(position)
-    }
-    fn terminal_emulator_wants_mouse(&self) -> bool {
-        self.grid.mouse_tracking != crate::panes::grid::MouseTracking::Off
-    }
-    fn text_around_position(&self, position: &Position) -> Option<TextAroundPosition> {
-        // The same two lookups double-click and triple-click already use, read rather than
-        // selected: this must not disturb the selection the caller is about to record.
-        let text_for = |bounds: Option<(Position, Position)>| {
-            let (start, end) = bounds?;
-            let mut selection = Selection::default();
-            selection.set_start_and_end_positions(start, end);
-            self.grid
-                .text_for_selection(&selection)
-                .filter(|text| !text.trim().is_empty())
-        };
-        Some(TextAroundPosition {
-            word: text_for(self.grid.word_around_position(position)),
-            line: text_for(self.grid.canonical_line_around_position(position)),
-        })
     }
 }
 

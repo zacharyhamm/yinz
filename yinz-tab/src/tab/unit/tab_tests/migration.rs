@@ -7,12 +7,22 @@ fn migration_drains_scrolled_output_in_order_and_removes_empty_entries() {
     let id = PaneId::Terminal(pid);
     tab.handle_pty_bytes(pid, b"line\r\n".repeat(30)).unwrap();
     tab.scroll_terminal_up(pid).unwrap();
-    assert!(tab.get_pane_with_id(id).unwrap().is_scrolled());
+    assert!(tab
+        .get_pane_with_id(id)
+        .unwrap()
+        .terminal()
+        .unwrap()
+        .is_scrolled());
     tab.handle_pty_bytes(pid, b"FIRST-".to_vec()).unwrap();
     tab.handle_pty_bytes(pid, b"SECOND".to_vec()).unwrap();
     assert_eq!(tab.pending_vte_events[&pid].len(), 2);
     tab.prepare_migration().unwrap();
-    assert!(!tab.get_pane_with_id(id).unwrap().is_scrolled());
+    assert!(!tab
+        .get_pane_with_id(id)
+        .unwrap()
+        .terminal()
+        .unwrap()
+        .is_scrolled());
     assert!(tab.pending_vte_events.is_empty());
     tab.migration_state().unwrap();
     assert!(tab
@@ -125,6 +135,8 @@ fn tab_with_scrolled_second_pane() -> (Tab, TerminalId) {
     assert!(tab
         .get_pane_with_id(PaneId::Terminal(pid))
         .unwrap()
+        .terminal()
+        .unwrap()
         .is_scrolled());
     tab.handle_pty_bytes(pid, b"QUEUED-".to_vec()).unwrap();
     tab.handle_pty_bytes(pid, b"OUTPUT".to_vec()).unwrap();
@@ -164,7 +176,7 @@ fn extracting_a_scrolled_pane_takes_its_queued_output_along() {
         .unwrap();
     assert!(tab.pending_vte_events.is_empty());
     tab.migration_state().unwrap();
-    assert!(!pane.is_scrolled());
+    assert!(!pane.terminal().unwrap().is_scrolled());
     assert!(pane.dump_screen(true, None).contains("QUEUED-OUTPUT"));
 }
 
@@ -176,6 +188,8 @@ fn floating_a_scrolled_pane_keeps_its_scroll_and_queued_output() {
     assert!(tab.pane_id_is_floating(&PaneId::Terminal(pid)));
     assert!(tab
         .get_pane_with_id(PaneId::Terminal(pid))
+        .unwrap()
+        .terminal()
         .unwrap()
         .is_scrolled());
     assert_eq!(tab.pending_vte_events[&pid].len(), 2);
@@ -226,7 +240,7 @@ fn suppressed_panes_leaving_a_closing_tab_take_their_queued_output_along() {
         .remove(&PaneId::Terminal(pid))
         .expect("the suppressed pane leaves with the closing tab")
         .pane;
-    assert!(!pane.is_scrolled());
+    assert!(!pane.terminal().unwrap().is_scrolled());
     assert!(pane.dump_screen(true, None).contains("QUEUED-OUTPUT"));
 }
 
@@ -249,11 +263,16 @@ fn osc_status_publication_follows_parsing_including_buffered_replay() {
         if delivery == "scrolled" {
             tab.handle_pty_bytes(pid, b"line\r\n".repeat(30)).unwrap();
             tab.scroll_terminal_up(pid).unwrap();
-            assert!(tab.get_pane_with_id(id).unwrap().is_scrolled());
+            assert!(tab
+                .get_pane_with_id(id)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .is_scrolled());
         } else if delivery == "forwarded" {
             tab.get_pane_with_id_mut(id)
                 .unwrap()
-                .terminal_io_mut()
+                .terminal_mut()
                 .unwrap()
                 .arm_forward_pause();
         }
@@ -265,11 +284,17 @@ fn osc_status_publication_follows_parsing_including_buffered_replay() {
             assert!(tab
                 .get_pane_with_id(id)
                 .unwrap()
+                .terminal()
+                .unwrap()
                 .program_status()
                 .current
                 .is_none());
             if delivery == "scrolled" {
-                tab.get_pane_with_id_mut(id).unwrap().clear_scroll();
+                tab.get_pane_with_id_mut(id)
+                    .unwrap()
+                    .terminal_mut()
+                    .unwrap()
+                    .clear_scroll();
                 tab.process_pending_vte_events(pid).unwrap();
             } else {
                 tab.resume_pane_after_forward(pid, vec![]).unwrap();
@@ -278,6 +303,8 @@ fn osc_status_publication_follows_parsing_including_buffered_replay() {
         assert_eq!(requests(), 1, "{delivery}");
         assert!(tab
             .get_pane_with_id(id)
+            .unwrap()
+            .terminal()
             .unwrap()
             .program_status()
             .current

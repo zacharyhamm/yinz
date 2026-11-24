@@ -1496,9 +1496,9 @@ impl Screen {
             .into_iter()
             .filter(|id| {
                 matches!(id, PaneId::Terminal(_))
-                    && tab_to_close
-                        .get_pane_with_id(*id)
-                        .is_some_and(|pane| !pane.selectable() && !pane.exited())
+                    && tab_to_close.get_pane_with_id(*id).is_some_and(|pane| {
+                        !pane.selectable() && !pane.terminal().is_some_and(|term| term.exited())
+                    })
             })
             .collect();
         for id in hidden_live {

@@ -1,5 +1,5 @@
 use super::super::TerminalPane;
-use crate::pane::Pane;
+use crate::pane::TerminalPaneOps;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
@@ -7,7 +7,6 @@ use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use yinz_types::internal_ids::ClientId;
 
 use yinz_types::pane_size::PaneGeom;
 use yinz_types::style::{Palette, Style};
@@ -269,7 +268,6 @@ pub fn searching_case_insensitive() {
 
 #[test]
 pub fn searching_inside_and_scroll() {
-    let fake_client_id = ClientId::new(1);
     let mut terminal_pane = create_pane();
     terminal_pane.update_search_term("quam");
     terminal_pane.search_up();
@@ -282,10 +280,10 @@ pub fn searching_inside_and_scroll() {
         terminal_pane.grid.search_results.selections.last()
     );
     // Scrolling up until a new search result appears
-    terminal_pane.scroll_up(4, Some(fake_client_id));
+    terminal_pane.scroll_up(4);
 
     // Scrolling back down should give the same result as before
-    terminal_pane.scroll_down(4, Some(fake_client_id));
+    terminal_pane.scroll_down(4);
     assert_eq!(
         terminal_pane.grid.search_results.active.as_ref(),
         terminal_pane.grid.search_results.selections.last()
@@ -296,10 +294,10 @@ pub fn searching_inside_and_scroll() {
     );
 
     // Scrolling up until a the active marker goes out of view
-    terminal_pane.scroll_up(5, Some(fake_client_id));
+    terminal_pane.scroll_up(5);
     assert_eq!(terminal_pane.grid.search_results.active, None);
 
-    terminal_pane.scroll_down(5, Some(fake_client_id));
+    terminal_pane.scroll_down(5);
     assert_eq!(terminal_pane.grid.search_results.active, None);
     assert_snapshot!(
         "grid_copy_quam_highlighted",

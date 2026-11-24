@@ -51,7 +51,24 @@ fn host_focus_events_are_not_sent_to_plugin_panes() {
     });
     let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
 
-    tab.send_host_focus_event_to_pane(PaneId::Plugin(crate::PluginId::new(1)), false);
+    let id = PaneId::Plugin(crate::PluginId::new(1));
+    // The pane factory needs a plugin sender to create a real plugin.
+    let (tx, _rx) = channels::unbounded();
+    tab.senders.to_plugin = Some(SenderWithContext::new(tx));
+    tab.new_pane(
+        id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(ClientId::new(1)),
+        None,
+    )
+    .unwrap();
+    assert!(tab.get_pane_with_id(id).unwrap().plugin_control().is_some());
+    tab.send_host_focus_event_to_pane(id, false);
+    tab.send_host_focus_event_to_pane(id, true);
 
     assert!(
         tty_stdin_bytes.lock().unwrap().is_empty(),

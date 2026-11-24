@@ -1,35 +1,24 @@
-use crate::{pane::Pane, panes::tiled_panes::StackedPanes, panes::PaneId};
+use super::super::pane_resizer_test_mock::MockPane;
+use crate::{pane::PaneGeometry, panes::tiled_panes::StackedPanes, panes::PaneId};
 use insta::assert_snapshot;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use yinz_runtime::errors::prelude::*;
-use yinz_types::input::layout::Run;
-use yinz_types::internal_ids::SessionName;
-use yinz_types::pane_size::Offset;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use yinz_types::pane_size::{Dimension, PaneGeom};
-
-use crate::ui::pane_boundaries_frame::FrameParams;
-use crate::{
-    output::{CharacterChunk, KittyImageChunk, SixelImageChunk},
-    pty::VteBytes,
-    ClientId,
-};
-use std::time::Instant;
-use {yinz_types::data::InputMode, yinz_types::data::PaletteColor, yinz_types::data::PaneContents};
 
 macro_rules! mock_pane {
     ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
-        let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
-            x: $x,
-            y: $y,
-            rows: mock_pane_rows,
-            cols: Dimension::percent(100.0),
-            logical_position: $logical_position,
-            ..Default::default()
-        }));
+        let mut mock_pane = MockPane::new(
+            $pane_id,
+            PaneGeom {
+                x: $x,
+                y: $y,
+                rows: mock_pane_rows,
+                cols: Dimension::percent(100.0),
+                logical_position: $logical_position,
+                ..Default::default()
+            },
+        );
         $mock_panes.insert($pane_id, &mut mock_pane);
     };
 }
@@ -40,14 +29,17 @@ macro_rules! mock_pane_with_cols {
         mock_pane_rows.set_inner($rows_inner);
         let mut mock_pane_cols = $cols_dimension;
         mock_pane_cols.set_inner($cols_inner);
-        let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
-            x: $x,
-            y: $y,
-            rows: mock_pane_rows,
-            cols: mock_pane_cols,
-            logical_position: $logical_position,
-            ..Default::default()
-        }));
+        let mut mock_pane = MockPane::new(
+            $pane_id,
+            PaneGeom {
+                x: $x,
+                y: $y,
+                rows: mock_pane_rows,
+                cols: mock_pane_cols,
+                logical_position: $logical_position,
+                ..Default::default()
+            },
+        );
         $mock_panes.insert($pane_id, &mut mock_pane);
     };
 }
@@ -55,15 +47,18 @@ macro_rules! mock_stacked_pane {
     ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
-        let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
-            x: $x,
-            y: $y,
-            rows: mock_pane_rows,
-            cols: Dimension::percent(100.0),
-            logical_position: $logical_position,
-            stacked: Some(0),
-            ..Default::default()
-        }));
+        let mut mock_pane = MockPane::new(
+            $pane_id,
+            PaneGeom {
+                x: $x,
+                y: $y,
+                rows: mock_pane_rows,
+                cols: Dimension::percent(100.0),
+                logical_position: $logical_position,
+                stacked: Some(0),
+                ..Default::default()
+            },
+        );
         $mock_panes.insert($pane_id, &mut mock_pane);
     };
 }
@@ -72,15 +67,18 @@ macro_rules! mock_stacked_pane_with_id {
     ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021, $stack_id:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
-        let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
-            x: $x,
-            y: $y,
-            rows: mock_pane_rows,
-            cols: Dimension::percent(100.0),
-            logical_position: $logical_position,
-            stacked: Some($stack_id),
-            ..Default::default()
-        }));
+        let mut mock_pane = MockPane::new(
+            $pane_id,
+            PaneGeom {
+                x: $x,
+                y: $y,
+                rows: mock_pane_rows,
+                cols: Dimension::percent(100.0),
+                logical_position: $logical_position,
+                stacked: Some($stack_id),
+                ..Default::default()
+            },
+        );
         $mock_panes.insert($pane_id, &mut mock_pane);
     };
 }
@@ -91,22 +89,25 @@ macro_rules! mock_stacked_pane_with_cols_and_id {
         mock_pane_rows.set_inner($rows_inner);
         let mut mock_pane_cols = $cols_dimension;
         mock_pane_cols.set_inner($cols_inner);
-        let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
-            x: $x,
-            y: $y,
-            rows: mock_pane_rows,
-            cols: mock_pane_cols,
-            logical_position: $logical_position,
-            stacked: Some($stack_id),
-            ..Default::default()
-        }));
+        let mut mock_pane = MockPane::new(
+            $pane_id,
+            PaneGeom {
+                x: $x,
+                y: $y,
+                rows: mock_pane_rows,
+                cols: mock_pane_cols,
+                logical_position: $logical_position,
+                stacked: Some($stack_id),
+                ..Default::default()
+            },
+        );
         $mock_panes.insert($pane_id, &mut mock_pane);
     };
 }
 
 #[test]
 fn combine_vertically_aligned_panes_to_stack() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -145,7 +146,7 @@ fn combine_vertically_aligned_panes_to_stack() {
 
 #[test]
 fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -203,7 +204,7 @@ fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked() {
 #[test]
 fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked_and_flexible_pane_is_on_top_of_stack(
 ) {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -261,7 +262,7 @@ fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked_and_flex
 #[test]
 fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked_and_flexible_pane_is_mid_stack(
 ) {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -327,7 +328,7 @@ fn combine_vertically_aligned_panes_to_stack_when_lower_pane_is_stacked_and_flex
 
 #[test]
 fn combine_vertically_aligned_panes_to_stack_when_both_are_stacked() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_stacked_pane_with_id!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -398,7 +399,7 @@ fn combine_vertically_aligned_panes_to_stack_when_both_are_stacked() {
 
 #[test]
 fn combine_vertically_aligned_panes_to_stack_with_multiple_non_stacked_neighbors() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane_with_cols!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -475,7 +476,7 @@ fn combine_vertically_aligned_panes_to_stack_with_multiple_non_stacked_neighbors
 
 #[test]
 fn combine_vertically_aligned_panes_to_stack_with_multiple_stacked_neighbors() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane_with_cols!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -565,7 +566,7 @@ fn combine_vertically_aligned_panes_to_stack_with_multiple_stacked_neighbors() {
 
 #[test]
 fn combine_horizontally_aligned_panes_to_stack() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane_with_cols!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -622,7 +623,7 @@ fn combine_horizontally_aligned_panes_to_stack() {
 
 #[test]
 fn combine_horizontally_aligned_panes_to_stack_when_left_pane_is_stacked() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_stacked_pane_with_cols_and_id!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -705,7 +706,7 @@ fn combine_horizontally_aligned_panes_to_stack_when_left_pane_is_stacked() {
 
 #[test]
 fn combine_horizontally_aligned_panes_to_stack_when_right_pane_is_stacked() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_stacked_pane_with_cols_and_id!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -788,7 +789,7 @@ fn combine_horizontally_aligned_panes_to_stack_when_right_pane_is_stacked() {
 
 #[test]
 fn break_pane_out_of_stack_top() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -855,7 +856,7 @@ fn break_pane_out_of_stack_top() {
 
 #[test]
 fn break_pane_out_of_stack_middle() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -921,7 +922,7 @@ fn break_pane_out_of_stack_middle() {
 
 #[test]
 fn break_pane_out_of_stack_bottom() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -988,7 +989,7 @@ fn break_pane_out_of_stack_bottom() {
 
 #[test]
 fn break_next_to_last_pane_out_of_stack() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
 
     mock_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -1051,224 +1052,6 @@ fn break_next_to_last_pane_out_of_stack() {
     assert_snapshot!(format!("{:#?}", pane_geoms_after));
 }
 
-struct MockPane {
-    pane_geom: PaneGeom,
-    id: Option<PaneId>,
-}
-
-impl MockPane {
-    pub fn new(pane_geom: PaneGeom) -> Self {
-        MockPane {
-            pane_geom,
-            id: None,
-        }
-    }
-}
-
-impl Pane for MockPane {
-    fn set_initial_contents(&mut self, _contents: &str) {
-        unimplemented!()
-    }
-    fn pane_tabs_view(&self, _client: ClientId) -> crate::pane_tabs::PaneTabsView {
-        Default::default()
-    }
-    fn reset_size_and_position_override(&mut self) {
-        unimplemented!()
-    }
-    fn prepare_full_render_for_client(&mut self, _client_id: ClientId) {
-        unimplemented!()
-    }
-    fn prepare_content_replay(&mut self, _client_id: ClientId) {
-        unimplemented!()
-    }
-    fn set_geom(&mut self, position_and_size: PaneGeom) {
-        self.pane_geom = position_and_size;
-    }
-    fn set_geom_override(&mut self, _pane_geom: PaneGeom) {
-        unimplemented!()
-    }
-    fn handle_pty_bytes(&mut self, _bytes: VteBytes) {
-        unimplemented!()
-    }
-    fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {
-        unimplemented!()
-    }
-    fn cursor_coordinates(&self, _client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
-        unimplemented!()
-    }
-
-    fn position_and_size(&self) -> PaneGeom {
-        self.pane_geom
-    }
-    fn current_geom(&self) -> PaneGeom {
-        self.pane_geom
-    }
-
-    fn geom_override(&self) -> Option<PaneGeom> {
-        unimplemented!()
-    }
-    fn should_render(&self) -> bool {
-        unimplemented!()
-    }
-    fn set_should_render(&mut self, _should_render: bool) {
-        unimplemented!()
-    }
-    fn set_should_render_boundaries(&mut self, _should_render: bool) {
-        unimplemented!()
-    }
-    fn selectable(&self) -> bool {
-        unimplemented!()
-    }
-    fn set_selectable(&mut self, _selectable: bool) {
-        unimplemented!()
-    }
-
-    fn render(
-        &mut self,
-        _client_id: Option<ClientId>,
-    ) -> Result<
-        Option<(
-            Vec<CharacterChunk>,
-            Option<String>,
-            Vec<SixelImageChunk>,
-            Vec<KittyImageChunk>,
-        )>,
-    > {
-        unimplemented!()
-    }
-    fn render_frame(
-        &mut self,
-        _client_id: ClientId,
-        _frame_params: FrameParams,
-        _input_mode: InputMode,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>> {
-        unimplemented!()
-    }
-    fn render_fake_cursor(
-        &mut self,
-        _cursor_color: PaletteColor,
-        _text_color: PaletteColor,
-    ) -> Option<CharacterChunk> {
-        unimplemented!()
-    }
-    fn render_terminal_title(
-        &mut self,
-        _input_mode: InputMode,
-        _session_name: Option<&SessionName>,
-    ) -> String {
-        unimplemented!()
-    }
-    fn update_name(&mut self, _name: &str) {
-        unimplemented!()
-    }
-    fn pid(&self) -> PaneId {
-        self.id.expect("set the mock ID when testing pane identity")
-    }
-    fn reduce_height(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn increase_height(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn reduce_width(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn increase_width(&mut self, _percent: f64) {
-        unimplemented!()
-    }
-    fn push_down(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn push_right(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn pull_left(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn pull_up(&mut self, _count: usize) {
-        unimplemented!()
-    }
-    fn clear_screen(&mut self) {
-        unimplemented!()
-    }
-    fn scroll_up(&mut self, _count: usize, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn scroll_down(&mut self, _count: usize, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn clear_scroll(&mut self) {
-        unimplemented!()
-    }
-    fn is_scrolled(&self) -> bool {
-        unimplemented!()
-    }
-    fn active_at(&self) -> Instant {
-        unimplemented!()
-    }
-    fn set_active_at(&mut self, _instant: Instant) {
-        unimplemented!()
-    }
-    fn set_frame(&mut self, _frame: bool) {
-        unimplemented!()
-    }
-    fn set_content_offset(&mut self, _offset: Offset) {
-        unimplemented!()
-    }
-    fn store_pane_name(&mut self) {
-        unimplemented!()
-    }
-    fn load_pane_name(&mut self) {
-        unimplemented!()
-    }
-    fn set_borderless(&mut self, _borderless: bool) {
-        unimplemented!()
-    }
-    fn borderless(&self) -> bool {
-        unimplemented!()
-    }
-    fn set_exclude_from_sync(&mut self, _exclude_from_sync: bool) {
-        unimplemented!()
-    }
-    fn exclude_from_sync(&self) -> bool {
-        unimplemented!()
-    }
-
-    fn add_red_pane_frame_color_override(
-        &mut self,
-        _error_text: Option<String>,
-        _owner: Option<ClientId>,
-    ) {
-        unimplemented!()
-    }
-    fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>) {
-        unimplemented!()
-    }
-    fn frame_color_override(&self, _client_id: ClientId) -> Option<PaletteColor> {
-        unimplemented!()
-    }
-    fn invoked_with(&self) -> &Option<Run> {
-        unimplemented!()
-    }
-    fn set_title(&mut self, _title: String) {
-        unimplemented!()
-    }
-    fn current_title(&self) -> String {
-        unimplemented!()
-    }
-    fn custom_title(&self) -> Option<String> {
-        unimplemented!()
-    }
-    fn pane_contents(
-        &self,
-        _client_id: Option<ClientId>,
-        _get_full_scrollback: bool,
-        _max_scrollback_lines: Option<usize>,
-    ) -> PaneContents {
-        unimplemented!()
-    }
-}
-
 #[test]
 fn focus_transfers_preserve_logical_positions() {
     let mut mock_panes = HashMap::new();
@@ -1313,7 +1096,7 @@ fn closing_expanded_pane_preserves_replacement_logical_position() {
     for count in [2, 3] {
         for expanded_at_top in [true, false] {
             let expanded_index = if expanded_at_top { 0 } else { count - 1 };
-            let mut owned: Vec<Box<dyn Pane>> = (0..count)
+            let mut owned: Vec<MockPane> = (0..count)
                 .map(|index| {
                     let expanded = index == expanded_index;
                     let mut rows = if expanded {
@@ -1322,9 +1105,9 @@ fn closing_expanded_pane_preserves_replacement_logical_position() {
                         Dimension::fixed(1)
                     };
                     rows.set_inner(if expanded { 8 } else { 1 });
-                    Box::new(MockPane {
-                        id: Some(PaneId::Terminal(crate::TerminalId::new(index as u32))),
-                        pane_geom: PaneGeom {
+                    MockPane::new(
+                        PaneId::Terminal(crate::TerminalId::new(index as u32)),
+                        PaneGeom {
                             y: if expanded_at_top && index > 0 {
                                 index + 7
                             } else {
@@ -1336,7 +1119,7 @@ fn closing_expanded_pane_preserves_replacement_logical_position() {
                             stacked: Some(0),
                             ..Default::default()
                         },
-                    }) as Box<dyn Pane>
+                    )
                 })
                 .collect();
             let id = |index| PaneId::Terminal(crate::TerminalId::new(index as u32));
@@ -1397,7 +1180,7 @@ fn stack_bounds_preserve_full_height_and_constraint() {
 
 #[test]
 fn break_pane_out_of_a_stack_too_small_to_split_leaves_it_whole() {
-    let mut mock_panes: HashMap<PaneId, &mut Box<dyn Pane>> = HashMap::new();
+    let mut mock_panes: HashMap<PaneId, &mut MockPane> = HashMap::new();
     // Three members in two rows of a fixed-height stack: no row is left to break out.
     mock_stacked_pane!(
         PaneId::Terminal(crate::TerminalId::new(1)),
@@ -1427,7 +1210,7 @@ fn break_pane_out_of_a_stack_too_small_to_split_leaves_it_whole() {
         mock_panes
     );
     let mock_panes = Rc::new(RefCell::new(mock_panes));
-    let geoms = |panes: &Rc<RefCell<HashMap<PaneId, &mut Box<dyn Pane>>>>| {
+    let geoms = |panes: &Rc<RefCell<HashMap<PaneId, &mut MockPane>>>| {
         let mut geoms: Vec<PaneGeom> = panes.borrow().values().map(|p| p.current_geom()).collect();
         geoms.sort_by_key(|geom| geom.logical_position);
         geoms
