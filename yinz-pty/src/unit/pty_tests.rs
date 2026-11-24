@@ -6130,3 +6130,77 @@ fn launch_transaction_typed_admission_and_final_claim_fence_process_execution() 
         ));
     }
 }
+
+/// An explicit save is acknowledged only after its checkpoint is published; a write failure
+/// reaches the requester instead of being logged and dropped.
+#[test]
+fn save_session_reports_whether_its_checkpoint_was_published() {
+    for fail in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        // A regular file where the cache directory should be makes every write fail.
+        let blocker = root.path().join("not-a-directory");
+        std::fs::write(&blocker, b"").unwrap();
+        let cache_dir = if fail {
+            blocker
+        } else {
+            root.path().join("cache")
+        };
+        let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(MockOsApi::new());
+        let (to_pty, pty_rx) = channels::unbounded();
+        let to_pty = SenderWithContext::new(to_pty);
+        let mut bus = Bus::new(
+            vec![pty_rx],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            pty.bus.os_input.take(),
+        );
+        bus.senders = pty.bus.senders.clone();
+        bus.senders.session_checkpoint = Arc::new(
+            yinz_bus::background_jobs::SessionCheckpointWriter::new(cache_dir.clone()),
+        );
+        pty.bus = bus;
+        let thread = std::thread::spawn(move || pty_thread_main(pty, Box::default()).unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut completion = NotificationEnd::new(tx);
+        completion.require_confirmation("checkpoint not written".into());
+        to_pty
+            .send(PtyInstruction::SaveSessionToDisk {
+                session_name: SessionName::new("saved"),
+                session_info: Default::default(),
+                session_layout_metadata: Default::default(),
+                completion_tx: Some(completion),
+            })
+            .unwrap();
+        let result = async_runtime()
+            .block_on(async {
+                tokio::time::timeout(yinz_test_support::default_timeout(), rx).await
+            })
+            .unwrap()
+            .unwrap();
+        to_pty.send(PtyInstruction::Exit).unwrap();
+        thread.join().unwrap();
+        assert!(result.confirmed);
+        let published = cache_dir.join("saved/current").exists();
+        let save_time_reported =
+            std::iter::from_fn(|| plugin_rx.try_recv().ok()).any(|(instruction, _)| {
+                matches!(instruction, PluginInstruction::UpdateSessionSaveTime(_))
+            });
+        if fail {
+            let error = result
+                .error_message
+                .expect("a failed save reports its error");
+            assert!(error.starts_with("Failed to save session: "), "{error}");
+            assert_ne!(error, "checkpoint not written");
+            assert!(!published);
+            assert!(!save_time_reported);
+        } else {
+            assert_eq!(result.error_message, None);
+            assert!(published);
+            assert!(save_time_reported);
+        }
+    }
+}

@@ -92,3 +92,38 @@ fn session_list_projects_each_age_independently_and_skips_unrepresentable_peers(
         serde_json::json!([["dead",{"secs":41,"nanos":0}]])
     );
 }
+
+/// A bulk delete may report success only after a complete scan. An unreadable inventory
+/// directory is the error rather than an empty inventory; a missing one is empty.
+#[cfg(unix)]
+#[test]
+fn dead_session_inventory_reports_unreadable_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let sock_dir = root.path().join("sock");
+    let cache_dir = root.path().join("cache");
+    assert_eq!(
+        super::dead_sessions(&sock_dir, &cache_dir).unwrap(),
+        Vec::<SessionName>::new()
+    );
+    std::fs::create_dir_all(cache_dir.join("dead")).unwrap();
+    std::fs::create_dir_all(&sock_dir).unwrap();
+    assert_eq!(
+        super::dead_sessions(&sock_dir, &cache_dir).unwrap(),
+        vec![SessionName::new("dead")]
+    );
+    for unreadable in [&cache_dir, &sock_dir] {
+        let set_mode = |mode| {
+            std::fs::set_permissions(unreadable, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        set_mode(0o000);
+        // A privileged user reads the directory regardless; there is nothing to observe.
+        let refused = std::fs::read_dir(unreadable).is_err();
+        let result = super::dead_sessions(&sock_dir, &cache_dir);
+        set_mode(0o755);
+        if refused {
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(error.contains(&unreadable.display().to_string()), "{error}");
+        }
+    }
+}

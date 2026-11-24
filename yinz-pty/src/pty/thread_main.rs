@@ -637,9 +637,16 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 session_name,
                 session_info,
                 mut session_layout_metadata,
-                completion_tx: _completion_tx, // Dropped at end to signal completion
+                mut completion_tx, // Dropped at end to signal completion
             } => {
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
+                // The requester learns whether the checkpoint was published, or why not.
+                let report_failure = |completion: &mut Option<yinz_bus::route::NotificationEnd>,
+                                      error: String| {
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_error_message(error);
+                    }
+                };
                 match session_serialization::serialize_session_layout(
                     session_layout_metadata.into(),
                 ) {
@@ -651,6 +658,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             &kdl_and_files,
                         ) {
                             Ok(()) => {
+                                if let Some(completion) = completion_tx.as_mut() {
+                                    completion.confirm();
+                                }
                                 let timestamp_millis = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -660,7 +670,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     PluginInstruction::UpdateSessionSaveTime(timestamp_millis),
                                 );
                             },
-                            Err(error) => Err::<(), _>(error).non_fatal(),
+                            Err(error) => {
+                                report_failure(
+                                    &mut completion_tx,
+                                    format!("Failed to save session: {error:#}"),
+                                );
+                                Err::<(), _>(error).non_fatal();
+                            },
                         }
 
                         let _ = pty.bus.senders.send_to_background_jobs(
@@ -669,6 +685,10 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                     Err(e) => {
                         log::error!("Failed to serialize layout: {}", e);
+                        report_failure(
+                            &mut completion_tx,
+                            format!("Failed to serialize session layout: {e}"),
+                        );
                     },
                 };
             },

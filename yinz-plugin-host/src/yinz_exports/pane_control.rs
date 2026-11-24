@@ -517,6 +517,34 @@ pub(super) fn notify(
         .non_fatal();
 }
 
+/// Changed (`true`) or already so (`false`). The tab's own refusal - a missing tab, or no
+/// selectable floating pane to show - is the error, and so is an unacknowledged request, whose
+/// outcome is unknown.
+fn floating_visibility_reply(
+    result: yinz_bus::route::ActionCompletionResult,
+    showing: bool,
+) -> Result<DecodedResponse> {
+    let operation = if showing {
+        "Showing floating panes"
+    } else {
+        "Hiding floating panes"
+    };
+    if let Some(error) = result.error_message {
+        return Err(anyhow!(error));
+    }
+    match result.exit_status {
+        Some(0) => value(true),
+        Some(2) => value(false),
+        // A tab that exists but has no selectable floating pane to show reports 1 without a
+        // message. Hiding reports 1 only with the screen's missing-tab message, handled above.
+        Some(1) if showing => Err(anyhow!("No floating panes to show in this tab")),
+        _ if !result.confirmed => Err(anyhow!(
+            "{operation} was not confirmed in time; the visibility of floating panes is unknown"
+        )),
+        _ => Err(anyhow!("{operation} completed without reporting a result")),
+    }
+}
+
 pub(super) fn show_floating_panes(
     env: &mut PluginEnv,
     tab_id: Option<TabId>,
@@ -530,11 +558,10 @@ pub(super) fn show_floating_panes(
             completion: Some(NotificationEnd::new(completion_tx)),
         });
     send_result.map_err(|error| anyhow!("{error}"))?;
-    match wait_for_action_completion(completion_rx, "show_floating_panes", false).exit_status {
-        Some(0) => value(true),
-        Some(2) => value(false),
-        _ => Err(anyhow!("Tab not found")),
-    }
+    floating_visibility_reply(
+        wait_for_action_completion(completion_rx, "show_floating_panes", false),
+        true,
+    )
 }
 
 pub(super) fn hide_floating_panes(
@@ -550,11 +577,10 @@ pub(super) fn hide_floating_panes(
             completion: Some(NotificationEnd::new(completion_tx)),
         });
     send_result.map_err(|error| anyhow!("{error}"))?;
-    match wait_for_action_completion(completion_rx, "hide_floating_panes", false).exit_status {
-        Some(0) => value(true),
-        Some(2) => value(false),
-        _ => Err(anyhow!("Tab not found")),
-    }
+    floating_visibility_reply(
+        wait_for_action_completion(completion_rx, "hide_floating_panes", false),
+        false,
+    )
 }
 
 pub(super) fn set_pane_regex_highlights(

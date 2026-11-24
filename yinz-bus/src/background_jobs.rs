@@ -1535,8 +1535,15 @@ struct CheckpointProgress {
 
 impl Default for SessionCheckpointWriter {
     fn default() -> Self {
+        Self::new(YINZ_SESSION_INFO_CACHE_DIR.clone())
+    }
+}
+
+impl SessionCheckpointWriter {
+    /// A writer publishing checkpoints under `cache_dir` instead of the session cache.
+    pub fn new(cache_dir: PathBuf) -> Self {
         Self {
-            cache_dir: YINZ_SESSION_INFO_CACHE_DIR.clone(),
+            cache_dir,
             name: Mutex::new(None),
             progress: Mutex::default(),
             #[cfg(test)]

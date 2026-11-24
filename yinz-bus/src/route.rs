@@ -53,6 +53,9 @@ pub struct NotificationEnd {
     pub wait_for_agent_start: bool,
     pub launch: Option<std::sync::Arc<crate::agent_launch::LaunchGate>>,
     placement_pending: bool,
+    /// Reported as the error when the handle drops before an owner confirms: see
+    /// `require_confirmation`.
+    unconfirmed_failure: Option<String>,
     pub switch_source_retained: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub created_tab_id: Option<TabId>,
@@ -94,6 +97,7 @@ impl Clone for NotificationEnd {
             wait_for_agent_start: self.wait_for_agent_start,
             launch: self.launch.clone(),
             placement_pending: self.placement_pending,
+            unconfirmed_failure: self.unconfirmed_failure.clone(),
             switch_source_retained: self.switch_source_retained,
             agent_tab: self.agent_tab.clone(),
             created_tab_id: self.created_tab_id,
@@ -116,6 +120,7 @@ impl NotificationEnd {
             wait_for_agent_start: false,
             launch: None,
             placement_pending: false,
+            unconfirmed_failure: None,
             switch_source_retained: false,
             agent_tab: None,
             created_tab_id: None,
@@ -235,6 +240,7 @@ impl NotificationEnd {
             wait_for_agent_start: false,
             launch: None,
             placement_pending: false,
+            unconfirmed_failure: None,
             switch_source_retained: false,
             agent_tab: None,
             created_tab_id: None,
@@ -278,6 +284,18 @@ impl NotificationEnd {
         self.placement_pending = true;
     }
 
+    /// Report `failure` unless an owner calls `confirm` before the handle drops. A request whose
+    /// handle can be dropped on an error path before its work is done (a save that never reached
+    /// the disk) uses this so that dropping it cannot read as success.
+    pub fn require_confirmation(&mut self, failure: String) {
+        self.unconfirmed_failure = Some(failure);
+    }
+
+    /// The work `require_confirmation` waits for is done.
+    pub fn confirm(&mut self) {
+        self.unconfirmed_failure = None;
+    }
+
     pub fn set_error_message(&mut self, message: String) {
         self.error_message = Some(message);
     }
@@ -314,6 +332,9 @@ impl Drop for NotificationEnd {
     fn drop(&mut self) {
         if self.placement_pending && self.error_message.is_none() {
             self.error_message = Some("pane was not placed in a live destination; the destination may have closed before its layout completed".into());
+        }
+        if self.error_message.is_none() {
+            self.error_message = self.unconfirmed_failure.take();
         }
         // Followers are fields, dropped after this body: each sends the copy it is given here.
         for follower in self.followers.iter_mut() {

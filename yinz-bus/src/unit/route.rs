@@ -37,6 +37,41 @@ async fn split_input_completion_waits_for_all_targets_and_preserves_failures() {
 }
 
 #[test]
+fn required_confirmation_reports_its_failure_unless_confirmed_or_explained() {
+    let outcome = |confirm: bool, error: Option<&str>| {
+        let (tx, rx) = oneshot::channel();
+        let mut completion = NotificationEnd::new(tx);
+        completion.require_confirmation("save never reached the disk".into());
+        // Clones carry the requirement but answer nobody.
+        drop(completion.clone());
+        if confirm {
+            completion.confirm();
+        }
+        if let Some(error) = error {
+            completion.set_error_message(error.into());
+        }
+        drop(completion);
+        let result = rx.blocking_recv().unwrap();
+        assert!(result.confirmed);
+        result.error_message
+    };
+    assert_eq!(
+        outcome(false, None).as_deref(),
+        Some("save never reached the disk")
+    );
+    assert_eq!(outcome(true, None), None);
+    // An owner's specific error wins over the generic one.
+    assert_eq!(
+        outcome(false, Some("disk full")).as_deref(),
+        Some("disk full")
+    );
+    assert_eq!(
+        outcome(true, Some("disk full")).as_deref(),
+        Some("disk full")
+    );
+}
+
+#[test]
 fn test_notification_end_sets_affected_tab_id() {
     let (tx, rx) = oneshot::channel();
     let mut notification_end = NotificationEnd::new(tx);

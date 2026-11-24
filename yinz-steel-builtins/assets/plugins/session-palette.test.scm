@@ -126,6 +126,8 @@
     (assert-throws (lambda () (p-execute (handle (car actions)))) "no longer exists") (assert-equal (t-named "SwitchSession") '())))
 (test "save host errors stay inline and notifications are newest first with full searchable details" (lambda ()
     (harness) (test-stub "SaveSession" #f) (assert-throws (lambda () (p-execute (handle (p-action (p-roots) "save")))))
+    (test-stub-error "SaveSession" "Failed to save session: No space left on device")
+    (assert-throws (lambda () (p-execute (handle (p-action (p-roots) "save")))) "No space left on device")
     (test-stub "ListNotifications" (list (hash "id" 1 "received_at_unix_ms" 1 "message" "old") (hash "id" 2 "received_at_unix_ms" 2 "message" "new\nfull message")))
     (define view (p-open "notifications")) (define actions (choices view)) (assert-equal (map (lambda (a) (hash-ref a "id")) actions) '("2" "1"))
     (assert-equal (hash-ref (p-view (p-execute (handle (car actions)))) "text") (yinz-markdown-escape "new\nfull message")) (assert-equal (length (choices view "full message")) 1)

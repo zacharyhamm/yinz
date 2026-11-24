@@ -1158,3 +1158,145 @@ fn granted_cwd_queries_preserve_distinct_guest_path_projections() {
         responder.join().unwrap();
     }
 }
+
+/// One synchronous host command per `CustomMessage`, recording its value or error message.
+fn command_outcome_plugin(command: &str, permission: PermissionType) -> SteelPlugin {
+    let mut env = env();
+    env.set_permissions([permission].into());
+    let source = format!(
+        r#"(yinz-declare-pane) (define outcome #f)
+        (define (load config) (yinz-command (hash "Subscribe" (list "CustomMessage"))))
+        (define (update event)
+          (set! outcome (with-handler (lambda (failure) (list "error" (error-object-message failure)))
+            {command}))
+          #t)
+        (define (render rows columns) (yinz-json-string outcome))"#
+    );
+    let mut plugin = SteelPlugin::new(&source, Path::new("test.scm"), env, Arc::default()).unwrap();
+    plugin.load(&BTreeMap::new(), true).unwrap();
+    plugin
+}
+
+fn next_command_outcome(plugin: &mut SteelPlugin) -> serde_json::Value {
+    plugin
+        .update(&Event::CustomMessage("run".into(), String::new()))
+        .unwrap();
+    serde_json::from_slice(&plugin.render(10, 80).unwrap()).unwrap()
+}
+
+fn error_outcome(outcome: &serde_json::Value) -> &str {
+    assert_eq!(outcome[0], "error", "{outcome}");
+    outcome[1].as_str().unwrap()
+}
+
+#[test]
+fn save_session_is_true_only_after_the_checkpoint_is_confirmed() {
+    let mut plugin = command_outcome_plugin(
+        r#"(yinz-command "SaveSession")"#,
+        PermissionType::ReadApplicationState,
+    );
+    let (to_screen, screen) = channels::unbounded();
+    plugin.env_mut().senders.to_screen = Some(SenderWithContext::new(to_screen));
+    let handler = std::thread::spawn(move || {
+        let mut unanswered = None;
+        for step in 0..4 {
+            let (yinz_bus::screen::ScreenInstruction::SaveSession(_, Some(mut completion)), _) =
+                screen.recv().unwrap()
+            else {
+                panic!("expected a save with a completion")
+            };
+            match step {
+                // The disk writer published the checkpoint.
+                0 => completion.confirm(),
+                // The disk writer failed and said why.
+                1 => completion.set_error_message(
+                    "Failed to save session: No space left on device (os error 28)".into(),
+                ),
+                // Dropped before reaching the disk writer.
+                2 => {},
+                // Never answered within the deadline.
+                _ => unanswered = Some(completion),
+            }
+        }
+        unanswered
+    });
+    assert_eq!(next_command_outcome(&mut plugin), json!(true));
+    let storage = next_command_outcome(&mut plugin);
+    assert!(error_outcome(&storage).contains("No space left on device"));
+    let dropped = next_command_outcome(&mut plugin);
+    assert!(error_outcome(&dropped).contains("Session was not saved"));
+    let unconfirmed = next_command_outcome(&mut plugin);
+    assert!(error_outcome(&unconfirmed).contains("not confirmed in time"));
+    drop(handler.join().unwrap());
+}
+
+#[test]
+fn floating_pane_visibility_replies_keep_the_screens_reason() {
+    for show in [true, false] {
+        let command = if show {
+            "ShowFloatingPanes"
+        } else {
+            "HideFloatingPanes"
+        };
+        let mut plugin = command_outcome_plugin(
+            &format!(r#"(yinz-command (hash "{command}" (hash "tab_id" 3)))"#),
+            PermissionType::ChangeApplicationState,
+        );
+        let (to_screen, screen) = channels::unbounded();
+        plugin.env_mut().senders.to_screen = Some(SenderWithContext::new(to_screen));
+        let handler = std::thread::spawn(move || {
+            let mut unanswered = None;
+            for step in 0..6 {
+                let (instruction, _) = screen.recv().unwrap();
+                let (tab_id, mut completion) = match instruction {
+                    yinz_bus::screen::ScreenInstruction::ShowFloatingPanes {
+                        tab_id,
+                        completion: Some(completion),
+                        ..
+                    } if show => (tab_id, completion),
+                    yinz_bus::screen::ScreenInstruction::HideFloatingPanes {
+                        tab_id,
+                        completion: Some(completion),
+                        ..
+                    } if !show => (tab_id, completion),
+                    other => panic!("unexpected instruction: {other:?}"),
+                };
+                assert_eq!(tab_id, Some(yinz_types::internal_ids::TabId::new(3)));
+                match step {
+                    0 => completion.set_exit_status(0),
+                    1 => completion.set_exit_status(2),
+                    // An existing tab with no selectable floating pane to show.
+                    2 => completion.set_exit_status(1),
+                    // The screen's missing-tab refusal.
+                    3 => {
+                        completion.set_exit_status(1);
+                        completion.set_error_message("Tab not found".into());
+                    },
+                    // Acknowledged without a result.
+                    4 => {},
+                    _ => unanswered = Some(completion),
+                }
+            }
+            unanswered
+        });
+        assert_eq!(next_command_outcome(&mut plugin), json!(true));
+        assert_eq!(next_command_outcome(&mut plugin), json!(false));
+        // Hiding never reports 1 without the screen's message: not an empty-tab claim.
+        let empty = next_command_outcome(&mut plugin);
+        if show {
+            assert_eq!(
+                error_outcome(&empty),
+                "No floating panes to show in this tab"
+            );
+        } else {
+            assert!(error_outcome(&empty).contains("completed without reporting a result"));
+        }
+        let missing = next_command_outcome(&mut plugin);
+        assert_eq!(error_outcome(&missing), "Tab not found");
+        let silent = next_command_outcome(&mut plugin);
+        assert!(error_outcome(&silent).contains("completed without reporting a result"));
+        let unconfirmed = next_command_outcome(&mut plugin);
+        assert!(error_outcome(&unconfirmed).contains("not confirmed in time"));
+        drop(handler.join().unwrap());
+    }
+}

@@ -6,7 +6,7 @@ use crate::plugin_map::PluginEnv;
 use crate::response::{value, DecodedResponse};
 use crate::{PaneId, PluginInstruction};
 use anyhow::ensure;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
@@ -104,9 +104,25 @@ pub(super) fn delete_dead_session(session_name: &SessionName) -> Result<()> {
 }
 
 pub(super) fn delete_all_dead_sessions() -> Result<()> {
+    for session in dead_sessions(&YINZ_SOCK_DIR, &YINZ_SESSION_INFO_CACHE_DIR)? {
+        delete_dead_session(&session)?;
+    }
+    Ok(())
+}
+
+/// Saved sessions in `cache_dir` without a live socket in `sock_dir`. A missing directory is an
+/// empty inventory. Any other failure to read one leaves the inventory unknown and is the error:
+/// an empty list would let a bulk delete remove nothing (or a live session's state, had the
+/// socket scan failed) and still report success.
+fn dead_sessions(sock_dir: &Path, cache_dir: &Path) -> Result<Vec<SessionName>> {
     use yinz_ipc::consts::{is_ipc_socket, is_session_socket_name};
+    let read_inventory = |dir: &Path| match std::fs::read_dir(dir) {
+        Ok(files) => Ok(Some(files)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", dir.display())),
+    };
     let mut live_sessions = vec![];
-    if let Ok(files) = std::fs::read_dir(&*YINZ_SOCK_DIR) {
+    if let Some(files) = read_inventory(sock_dir)? {
         files.for_each(|file| {
             if let Ok(file) = file
                 && let Ok(file_name) = file.file_name().into_string()
@@ -117,31 +133,21 @@ pub(super) fn delete_all_dead_sessions() -> Result<()> {
             }
         });
     }
-    let dead_sessions: Vec<SessionName> = match std::fs::read_dir(&*YINZ_SESSION_INFO_CACHE_DIR) {
-        Ok(files_in_session_info_folder) => {
-            let files_that_are_folders = files_in_session_info_folder
-                .filter_map(|f| f.ok().map(|f| f.path()))
-                .filter(|f| f.is_dir());
-            files_that_are_folders
-                .filter_map(|folder_name| {
-                    let session_name = SessionName::new(folder_name.file_name()?.to_str()?);
-                    if live_sessions.contains(&session_name) {
-                        // this is not a dead session...
-                        return None;
-                    }
-                    Some(session_name)
-                })
-                .collect()
-        },
-        Err(e) => {
-            log::error!("Failed to read session info cache dir: {:?}", e);
-            vec![]
-        },
+    let Some(files_in_session_info_folder) = read_inventory(cache_dir)? else {
+        return Ok(vec![]);
     };
-    for session in dead_sessions {
-        delete_dead_session(&session)?;
-    }
-    Ok(())
+    Ok(files_in_session_info_folder
+        .filter_map(|f| f.ok().map(|f| f.path()))
+        .filter(|f| f.is_dir())
+        .filter_map(|folder_name| {
+            let session_name = SessionName::new(folder_name.file_name()?.to_str()?);
+            if live_sessions.contains(&session_name) {
+                // this is not a dead session...
+                return None;
+            }
+            Some(session_name)
+        })
+        .collect())
 }
 
 pub(super) fn quit_yinz(env: &PluginEnv) {
@@ -457,16 +463,30 @@ pub(super) fn dump_session_layout(
     )
 }
 
+/// `true` only once the checkpoint is published. A storage failure is the error; a save that was
+/// not acknowledged in time has an unknown outcome and is reported as such, never as saved.
 pub(super) fn save_session(env: &mut PluginEnv) -> Result<DecodedResponse> {
     let (completion_tx, completion_rx) = oneshot::channel();
+    let mut completion = NotificationEnd::new(completion_tx);
+    completion.require_confirmation(
+        "Session was not saved: the save ended before the checkpoint was written".into(),
+    );
 
     let send_result = env.senders.send_to_screen(ScreenInstruction::SaveSession(
         env.client_id,
-        Some(NotificationEnd::new(completion_tx)),
+        Some(completion),
     ));
 
     send_result.map_err(|e| anyhow!("Failed to send save request: {e}"))?;
-    wait_for_action_completion(completion_rx, "save_session", false);
+    let result = wait_for_action_completion(completion_rx, "save_session", false);
+    if let Some(error) = result.error_message {
+        return Err(anyhow!(error));
+    }
+    if !result.confirmed {
+        return Err(anyhow!(
+            "Session save was not confirmed in time; it may not have been saved"
+        ));
+    }
     value(true)
 }
 
