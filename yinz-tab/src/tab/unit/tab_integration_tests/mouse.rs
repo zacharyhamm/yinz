@@ -4031,6 +4031,129 @@ fn plugin_drags_from_two_clients_keep_their_own_capture() {
     assert_eq!(pane.get_selected_text(other), None);
 }
 
+/// The mouse resize is one tab-wide drag, classified before any client's own capture. While one
+/// client drags in a plugin, another client's press on a tiled border - plain or ctrl - starts no
+/// resize, so the first client's motion and release still finish its own gesture and its next
+/// press is a fresh one. Once the capture is gone, the border resizes as before.
+#[test]
+fn plugin_drags_from_two_clients_keep_their_own_capture_over_a_border_press() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    type Events = [fn(Position) -> MouseEvent; 3];
+    let plain: Events = [
+        MouseEvent::new_left_press_event,
+        MouseEvent::new_left_motion_event,
+        MouseEvent::new_left_release_event,
+    ];
+    let ctrl: Events = [
+        MouseEvent::new_left_press_with_ctrl_event,
+        MouseEvent::new_left_motion_with_ctrl_event,
+        MouseEvent::new_left_release_with_ctrl_event,
+    ];
+    for (name, [press, motion, release]) in [("plain", plain), ("ctrl", ctrl)] {
+        let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.add_client(other, None).unwrap();
+        let id = add_test_plugin(&mut tab, client, true);
+        let pane = tab.get_pane_with_id(id).unwrap();
+        let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+        let plugin_geom = |tab: &Tab| {
+            let geom = tab.get_pane_with_id(id).unwrap().current_geom();
+            (geom.x, geom.cols.as_usize())
+        };
+        let before = plugin_geom(&tab);
+        let underlying = tab.get_pane_with_id(terminal).unwrap();
+        let geom = underlying.current_geom();
+        let border = Position::new(
+            (geom.y + geom.rows.as_usize() / 2) as i32,
+            (geom.x + geom.cols.as_usize() - 1) as u16,
+        );
+        let dragged = Position::new(border.line() as i32, border.column() as u16 + 4);
+        let terminal_content = Position::new(
+            underlying.get_content_y() as i32,
+            underlying.get_content_x() as u16,
+        );
+
+        tab.handle_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(y, x + 1)),
+            client,
+        )
+        .unwrap();
+        tab.handle_mouse_event(&press(border), other).unwrap();
+        assert!(
+            tab.pane_being_resized_with_mouse.is_none(),
+            "{name}: another client's capture must keep the border press from resizing"
+        );
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane,
+            HashMap::from([(client, id)]),
+            "{name}"
+        );
+
+        for event in [
+            MouseEvent::new_left_motion_event(Position::new(y, x + 6)),
+            MouseEvent::new_left_release_event(Position::new(y, x + 6)),
+        ] {
+            tab.handle_mouse_event(&event, client).unwrap();
+        }
+        assert_eq!(
+            plugin_geom(&tab),
+            before,
+            "{name}: the drag resized nothing"
+        );
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{name}");
+        assert_eq!(
+            plugin_mouse_events(&rx),
+            [
+                Mouse::LeftClick(0, 1),
+                Mouse::Hold(0, 6),
+                Mouse::Release(0, 6)
+            ]
+            .map(|mouse| (Some(crate::PluginId::new(7)), Some(client), mouse)),
+            "{name}: the capturing client's gesture is whole"
+        );
+        tab.handle_mouse_event(&release(border), other).unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_none(), "{name}");
+
+        for event in [
+            MouseEvent::new_left_press_event(terminal_content),
+            MouseEvent::new_left_release_event(terminal_content),
+        ] {
+            tab.handle_mouse_event(&event, client).unwrap();
+        }
+        assert_eq!(
+            tab.get_active_pane_id(client),
+            Some(terminal),
+            "{name}: the next press is a fresh one"
+        );
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{name}");
+        assert_eq!(
+            plugin_mouse_events(&rx),
+            [],
+            "{name}: nothing stray reaches the plugin"
+        );
+
+        tab.handle_mouse_event(&press(border), other).unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_some(), "{name}");
+        for event in [motion(dragged), release(dragged)] {
+            tab.handle_mouse_event(&event, other).unwrap();
+        }
+        assert!(tab.pane_being_resized_with_mouse.is_none(), "{name}");
+        assert_eq!(
+            plugin_geom(&tab),
+            (before.0 + 4, before.1 - 4),
+            "{name}: without a capture the border resizes"
+        );
+    }
+}
+
 /// A plugin can go away while it holds a drag, for instance by closing itself on the click. The
 /// capture goes with the pane, and a release always ends the releasing client's gesture, so the
 /// next press in the tab is an ordinary one.

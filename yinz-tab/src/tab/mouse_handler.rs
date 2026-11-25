@@ -343,7 +343,12 @@ struct MouseEventContext {
     active_pane_id: Option<PaneId>,
     floating_visible: bool,
     pane_being_resized: bool,
+    /// This client holds its own drag capture (`Tab::selecting_with_mouse_in_pane`).
     selecting_with_mouse: bool,
+    /// Another client holds a drag capture. The mouse resize is one tab-wide drag, classified
+    /// before any client's own capture, so starting one now would take over that client's
+    /// motion and release and strand its capture. Such a press starts no resize.
+    capture_held_by_other_client: bool,
     pane_being_moved: Option<MouseDragTarget>,
     /// A seam drag is in flight (`OverlayPanes::seam_is_being_dragged`). Exclusive with
     /// `pane_being_moved` - the pointer is one pointer - and checked first, as the resize is.
@@ -627,6 +632,10 @@ impl MouseHandler {
             floating_visible,
             pane_being_resized: tab.pane_being_resized_with_mouse.is_some(),
             selecting_with_mouse: tab.selecting_with_mouse_in_pane.contains_key(&client_id),
+            capture_held_by_other_client: tab
+                .selecting_with_mouse_in_pane
+                .keys()
+                .any(|capturing| *capturing != client_id),
             seam_being_dragged: tab.overlay_panes.seam_is_being_dragged(),
             pane_being_moved: if tab.overlay_panes.pane_is_being_moved_with_mouse() {
                 Some(MouseDragTarget::Overlay)
@@ -1977,7 +1986,8 @@ impl MouseHandler {
                 // screen, so a ctrl-drag on one is nothing at all rather than falling through to
                 // `start_pane_resize_with_mouse` - which would find it in neither the floating nor
                 // the tiled collection and error the whole mouse event
-                let may_resize = !details.is_overlay || details.overlay_is_resizable;
+                let may_resize = (!details.is_overlay || details.overlay_is_resizable)
+                    && !ctx.capture_held_by_other_client;
                 if may_resize && let Some(edge) = details.edge {
                     return Ok(MouseAction::StartResize {
                         pane_id: details.pane_id,
@@ -2059,6 +2069,9 @@ impl MouseHandler {
                 }
 
                 if let Some(edge) = details.edge {
+                    if ctx.capture_held_by_other_client {
+                        return Ok(MouseAction::NoAction);
+                    }
                     return Ok(MouseAction::StartResize {
                         pane_id: details.pane_id,
                         edge,

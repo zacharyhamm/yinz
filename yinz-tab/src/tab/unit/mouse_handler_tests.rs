@@ -7,6 +7,7 @@ fn mouse_event_context(mouse_scroll_resize: bool) -> MouseEventContext {
         floating_visible: false,
         pane_being_resized: false,
         selecting_with_mouse: false,
+        capture_held_by_other_client: false,
         pane_being_moved: None,
         seam_being_dragged: false,
         clicked_pane: None,
