@@ -11,7 +11,7 @@ workspace = true
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 log = { workspace = true }
-yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.27" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.2-alpha.28" }
 yinz-runtime = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-types = { workspace = true }
