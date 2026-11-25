@@ -1226,34 +1226,41 @@ fn break_pane_out_of_a_stack_too_small_to_split_leaves_it_whole() {
 fn visible_pane_ids_keep_collapsed_stack_titles_and_drop_hidden_panes() {
     use super::super::tiled_pane_ids_on_screen;
     use std::collections::{BTreeMap, HashSet};
-    let stacked = |rows: Dimension, y: usize| -> Box<dyn Pane> {
-        Box::new(MockPane::new(PaneGeom {
-            y,
-            rows,
-            cols: Dimension::percent(100.0),
-            stacked: Some(0),
-            ..Default::default()
-        }))
-    };
     let id = |n| PaneId::Terminal(crate::TerminalId::new(n));
+    // The geometry-only fixture: listing what is on screen needs no rendering or input.
+    let stacked = |n: u32, rows: Dimension, y: usize| -> Box<MockPane> {
+        Box::new(MockPane::new(
+            id(n),
+            PaneGeom {
+                y,
+                rows,
+                cols: Dimension::percent(100.0),
+                stacked: Some(0),
+                ..Default::default()
+            },
+        ))
+    };
     let mut expanded_rows = Dimension::percent(50.0);
     expanded_rows.set_inner(8);
     let mut collapsed_rows = Dimension::fixed(1);
     collapsed_rows.set_inner(1);
     let mut whole_rows = Dimension::percent(50.0);
     whole_rows.set_inner(10);
-    let mut panes: BTreeMap<PaneId, Box<dyn Pane>> = BTreeMap::new();
-    panes.insert(id(4), stacked(collapsed_rows, 0));
-    panes.insert(id(2), stacked(expanded_rows, 1));
-    panes.insert(id(3), stacked(collapsed_rows, 9));
+    let mut panes: BTreeMap<PaneId, Box<MockPane>> = BTreeMap::new();
+    panes.insert(id(4), stacked(4, collapsed_rows, 0));
+    panes.insert(id(2), stacked(2, expanded_rows, 1));
+    panes.insert(id(3), stacked(3, collapsed_rows, 9));
     panes.insert(
         id(1),
-        Box::new(MockPane::new(PaneGeom {
-            y: 10,
-            rows: whole_rows,
-            cols: Dimension::percent(100.0),
-            ..Default::default()
-        })),
+        Box::new(MockPane::new(
+            id(1),
+            PaneGeom {
+                y: 10,
+                rows: whole_rows,
+                cols: Dimension::percent(100.0),
+                ..Default::default()
+            },
+        )),
     );
 
     let nothing_hidden = HashSet::new();

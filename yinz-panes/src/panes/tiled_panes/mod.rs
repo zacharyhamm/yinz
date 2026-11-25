@@ -3584,8 +3584,8 @@ pub fn is_inside_viewport(viewport: &Viewport, pane: &(impl PaneGeometry + ?Size
 
 /// The tiled panes outside `hidden`, in id order so that per-frame consumers see a stable
 /// order. Collapsed stack members are kept only when `include_collapsed` is set.
-fn tiled_pane_ids_on_screen(
-    panes: &BTreeMap<PaneId, Box<dyn Pane>>,
+fn tiled_pane_ids_on_screen<G: PaneGeometry + ?Sized>(
+    panes: &BTreeMap<PaneId, Box<G>>,
     hidden: &HashSet<PaneId>,
     include_collapsed: bool,
 ) -> Vec<PaneId> {
