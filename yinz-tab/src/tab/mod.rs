@@ -1347,6 +1347,10 @@ impl Tab {
             .unwrap_or_else(|| self.default_mode_info.clone());
         self.connected_clients.borrow_mut().remove(&client_id);
         self.client_repaints.remove(&client_id);
+        // The client's later mouse events go to its new tab, so the release that would end a
+        // drag it started here never arrives. Its capture leaves with it, or other clients'
+        // border presses here would keep deferring to a drag that is no longer happening.
+        self.selecting_with_mouse_in_pane.remove(&client_id);
         self.forget_host_cursor_state(client_id);
         (client_id, client_mode_info)
     }

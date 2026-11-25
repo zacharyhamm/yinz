@@ -1107,3 +1107,111 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
         .map(|mouse| (Some(crate::PluginId::new(7)), Some(client_id), mouse))
     );
 }
+
+/// A client that switches tabs mid-drag sends its release to the new tab, so the old tab never
+/// sees that drag end. Its capture leaves with it. Another client in the old tab can then resize
+/// a tiled border, plain or ctrl, once the clients still dragging there have released. Until
+/// then the capture of a client that stayed still refuses the resize.
+#[test]
+fn a_client_leaving_a_tab_mid_drag_takes_its_capture_along() {
+    let leaving = ClientId::new(1);
+    let resizing = ClientId::new(2);
+    let staying = ClientId::new(3);
+    let left = PaneId::Terminal(TERMINAL_1);
+    let right = PaneId::Terminal(TerminalId::new(2));
+    type Events = [fn(Position) -> MouseEvent; 3];
+    let plain: Events = [
+        MouseEvent::new_left_press_event,
+        MouseEvent::new_left_motion_event,
+        MouseEvent::new_left_release_event,
+    ];
+    let ctrl: Events = [
+        MouseEvent::new_left_press_with_ctrl_event,
+        MouseEvent::new_left_motion_with_ctrl_event,
+        MouseEvent::new_left_release_with_ctrl_event,
+    ];
+    for (name, [press, motion, release]) in [("plain", plain), ("ctrl", ctrl)] {
+        let mut screen = create_non_mirrored_screen(Size {
+            cols: 120,
+            rows: 20,
+        });
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(&mut screen, TabId::new(0), right, false);
+        new_tab(&mut screen, 3, TabId::new(1));
+        screen.go_to_tab(TabNumber::new(1), leaving).unwrap();
+        for client in [resizing, staying] {
+            screen.add_client(client).unwrap();
+        }
+        let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.set_pane_frames(yinz_types::input::options::PaneFrameStyle::Full);
+        for (client, pane) in [(leaving, left), (resizing, left), (staying, right)] {
+            tab.focus_pane_with_id(pane, false, false, client).unwrap();
+        }
+        let content = |pane: PaneId| {
+            let pane = tab.get_pane_with_id(pane).unwrap();
+            Position::new(pane.get_content_y() as i32, pane.get_content_x() as u16 + 1)
+        };
+        let (left_content, right_content) = (content(left), content(right));
+        let geom = tab.get_pane_with_id(left).unwrap().current_geom();
+        let border = Position::new(
+            (geom.y + geom.rows.as_usize() / 2) as i32,
+            (geom.x + geom.cols.as_usize() - 1) as u16,
+        );
+        let dragged = Position::new(border.line() as i32, border.column() as u16 + 4);
+        let right_geom = |screen: &Screen| {
+            let geom = screen.core.tabs[&TabId::new(0)]
+                .get_pane_with_id(right)
+                .unwrap()
+                .current_geom();
+            (geom.x, geom.cols.as_usize())
+        };
+        let captures = |screen: &Screen| {
+            screen.core.tabs[&TabId::new(0)]
+                .selecting_with_mouse_in_pane
+                .clone()
+        };
+        let before = right_geom(&screen);
+
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(left_content), leaving);
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(right_content), staying);
+        assert_eq!(
+            captures(&screen),
+            HashMap::from([(leaving, left), (staying, right)]),
+            "{name}"
+        );
+
+        screen.go_to_tab(TabNumber::new(2), leaving).unwrap();
+        assert_eq!(screen.get_active_tab(leaving).unwrap().id, TabId::new(1));
+        assert_eq!(
+            captures(&screen),
+            HashMap::from([(staying, right)]),
+            "{name}: the departing client's capture leaves with it, the staying one's remains"
+        );
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(left_content), leaving);
+        assert_eq!(
+            captures(&screen),
+            HashMap::from([(staying, right)]),
+            "{name}: the release went to the new tab"
+        );
+
+        for event in [press(border), motion(dragged), release(dragged)] {
+            screen.handle_mouse_event(event, resizing);
+        }
+        assert_eq!(
+            right_geom(&screen),
+            before,
+            "{name}: a client still dragging here keeps the border from resizing"
+        );
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(right_content), staying);
+        assert!(captures(&screen).is_empty(), "{name}");
+
+        for event in [press(border), motion(dragged), release(dragged)] {
+            screen.handle_mouse_event(event, resizing);
+        }
+        assert_eq!(
+            right_geom(&screen),
+            (before.0 + 4, before.1 - 4),
+            "{name}: with no drag left in the tab, the border resizes"
+        );
+    }
+}
