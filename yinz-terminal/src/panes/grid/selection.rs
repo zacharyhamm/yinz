@@ -155,6 +155,16 @@ impl Grid {
         self.mark_for_rerender();
     }
 
+    /// Stop a mouse selection where it stands, as `end_selection` would, but without moving its
+    /// end: the gesture making it ended without a release here. From then on it scrolls with
+    /// its text instead of stretching from its start to a fixed row. A keyboard selection is
+    /// not a mouse gesture and keeps going.
+    pub fn finalize_mouse_selection(&mut self) {
+        if !self.text_selection_active {
+            self.selection.finalize();
+        }
+    }
+
     pub fn reset_selection(&mut self) {
         let old_selection = self.selection;
         self.text_selection_active = false;

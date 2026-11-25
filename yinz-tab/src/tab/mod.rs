@@ -1318,7 +1318,7 @@ impl Tab {
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
-        self.selecting_with_mouse_in_pane.remove(&client_id);
+        self.interrupt_mouse_gesture(client_id);
         self.forget_host_cursor_state(client_id);
         if was_connected || was_dimmed {
             self.set_client_dimmed(client_id, false);
@@ -1348,9 +1348,8 @@ impl Tab {
         self.connected_clients.borrow_mut().remove(&client_id);
         self.client_repaints.remove(&client_id);
         // The client's later mouse events go to its new tab, so the release that would end a
-        // drag it started here never arrives. Its capture leaves with it, or other clients'
-        // border presses here would keep deferring to a drag that is no longer happening.
-        self.selecting_with_mouse_in_pane.remove(&client_id);
+        // drag it started here never arrives.
+        self.interrupt_mouse_gesture(client_id);
         self.forget_host_cursor_state(client_id);
         (client_id, client_mode_info)
     }

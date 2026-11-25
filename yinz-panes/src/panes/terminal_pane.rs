@@ -1916,6 +1916,10 @@ impl Pane for TerminalPane {
         self.grid.end_selection(end);
         self.set_should_render(true);
     }
+    fn finalize_selection(&mut self, _client_id: ClientId) {
+        // The highlighted cells stay as they are, so there is nothing to repaint.
+        self.grid.finalize_mouse_selection();
+    }
     fn reset_selection(&mut self, _client_id: Option<ClientId>) {
         self.grid.reset_selection();
     }

@@ -614,6 +614,10 @@ pub trait Pane: TiledGridPane {
     fn start_selection(&mut self, start: &Position, client_id: ClientId);
     fn update_selection(&mut self, position: &Position, client_id: ClientId);
     fn end_selection(&mut self, end: &Position, client_id: ClientId);
+    /// End the mouse selection `client_id` was making here without a release: its gesture
+    /// was cut off elsewhere. The selection keeps its extent and stops following the pointer
+    /// and the output; nothing is copied.
+    fn finalize_selection(&mut self, client_id: ClientId);
     fn reset_selection(&mut self, client_id: Option<ClientId>);
     fn start_text_selection(&mut self, client_id: ClientId);
     fn move_text_selection(&mut self, direction: Direction, client_id: ClientId);

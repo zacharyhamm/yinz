@@ -255,10 +255,38 @@ impl Tab {
         client_id: ClientId,
         passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEffect> {
-        if self.pane_tabs_mouse(event, client_id)? {
+        // A drag belongs to the pane it started in, across a pane-tab bar as across a toast.
+        // The bar would otherwise take its motion and release, and the release with it would
+        // leave the drag open.
+        let dragging = self.selecting_with_mouse_in_pane.contains_key(&client_id);
+        if !dragging && self.pane_tabs_mouse(event, client_id)? {
             return Ok(MouseEffect::state_changed());
         }
         MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
+    }
+
+    /// End the drag `client_id` started in this tab, whose release will never arrive here:
+    /// the client left the tab or disconnected, or a Screen surface took the release.
+    ///
+    /// Its capture goes, so other clients' border presses no longer defer to it. The selection
+    /// it was making keeps its extent but stops following the pointer and the output, so it
+    /// does not keep growing over new lines. Nothing is copied and the pane's program hears
+    /// nothing: the release went elsewhere, and this tab never saw it.
+    pub fn interrupt_mouse_gesture(&mut self, client_id: ClientId) {
+        let Some(pane_id) = self.selecting_with_mouse_in_pane.remove(&client_id) else {
+            return;
+        };
+        // A terminal has one selection for every client. While another client is dragging in
+        // the same pane, that selection is the other client's.
+        let another_drag_in_pane = self
+            .selecting_with_mouse_in_pane
+            .values()
+            .any(|captured| *captured == pane_id);
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id)
+            && !(another_drag_in_pane && pane.terminal().is_some())
+        {
+            pane.finalize_selection(client_id);
+        }
     }
 
     pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {

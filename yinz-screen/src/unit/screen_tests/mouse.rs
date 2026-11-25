@@ -1215,3 +1215,209 @@ fn a_client_leaving_a_tab_mid_drag_takes_its_capture_along() {
         );
     }
 }
+
+/// A Screen surface that opens for a client mid-drag takes that client's release, so its tab
+/// never sees the drag end. The surface keeps the release, and the tab ends the drag where it
+/// stands, for a terminal and for a plugin with mouse selection alike. The capture goes, so
+/// another client resizes a border on its first try. Nothing is copied, the selection keeps the
+/// extent the last motion gave it, and a terminal's selection stays on its text as output
+/// scrolls it instead of growing. The plugin hears the press and the hold but no release.
+#[test]
+fn a_screen_surface_taking_a_drags_release_ends_that_drag() {
+    use yinz_types::data::{PermissionType, PluginPermission};
+    let dragging = ClientId::new(1);
+    let resizing = ClientId::new(2);
+    let terminal = PaneId::Terminal(TERMINAL_1);
+    let plugin = PaneId::Plugin(crate::PluginId::new(7));
+    let permission_modal: fn(&mut Screen, ClientId) = |screen, client| {
+        let mut request = PluginPermission::new(
+            "drag.scm".into(),
+            vec![PermissionType::ReadApplicationState],
+        );
+        request.request_id = 1;
+        screen.open_permission_modal(crate::PluginId::new(42), request);
+        assert!(
+            screen.permissions.permission_modal_open(client),
+            "the modal goes to the client that last used the mouse"
+        );
+    };
+    let command_palette: fn(&mut Screen, ClientId) = |screen, client| {
+        screen.toggle_command_palette(client);
+        assert!(screen.palette.command_palettes.contains_key(&client));
+    };
+    let still_open = |screen: &Screen, surface: &str| match surface {
+        "permission modal" => screen.permissions.permission_modal_open(dragging),
+        _ => screen.palette.command_palettes.contains_key(&dragging),
+    };
+    for (surface, open) in [
+        ("permission modal", permission_modal),
+        ("command palette", command_palette),
+    ] {
+        for dragged in [terminal, plugin] {
+            let name = format!("{surface}, {dragged:?}");
+            let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+            let mut screen = create_non_mirrored_screen(Size {
+                cols: 120,
+                rows: 20,
+            });
+            screen.core.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+            new_tab(&mut screen, 1, TabId::new(0));
+            let right = if dragged == plugin {
+                screen
+                    .get_active_tab_mut(dragging)
+                    .unwrap()
+                    .new_pane(
+                        plugin,
+                        None,
+                        None,
+                        false,
+                        false,
+                        NewPanePlacement::Tiled {
+                            direction: None,
+                            borderless: None,
+                        },
+                        Some(dragging),
+                        None,
+                    )
+                    .unwrap();
+                plugin
+            } else {
+                let right = PaneId::Terminal(TerminalId::new(2));
+                add_pane_to_tab(&mut screen, TabId::new(0), right, false);
+                right
+            };
+            screen.add_client(resizing).unwrap();
+            let (server_tx, server_rx) = channels::unbounded();
+            let tab = screen.core.tabs.get_mut(&TabId::new(0)).unwrap();
+            tab.senders.to_server = Some(SenderWithContext::new(server_tx));
+            tab.set_pane_frames(yinz_types::input::options::PaneFrameStyle::Full);
+            tab.handle_pty_bytes(TERMINAL_1, b"line1 abcdefgh\r\nline2".to_vec())
+                .unwrap();
+            if let Some(control) = tab
+                .get_pane_with_id_mut(plugin)
+                .and_then(|pane| pane.plugin_control_mut())
+            {
+                control.set_mouse_selection_support(true);
+                control.handle_plugin_bytes(dragging, b"abcdefghi".to_vec());
+            }
+            for client in [dragging, resizing] {
+                tab.focus_pane_with_id(dragged, false, false, client)
+                    .unwrap();
+            }
+            let pane = tab.get_pane_with_id(dragged).unwrap();
+            let at = |column: u16| {
+                Position::new(
+                    pane.get_content_y() as i32,
+                    pane.get_content_x() as u16 + column,
+                )
+            };
+            let (press, last_motion, release) = (at(0), at(4), at(8));
+            let geom = tab.get_pane_with_id(terminal).unwrap().current_geom();
+            let border = Position::new(
+                (geom.y + geom.rows.as_usize() / 2) as i32,
+                (geom.x + geom.cols.as_usize() - 1) as u16,
+            );
+            let dragged_border = Position::new(border.line() as i32, border.column() as u16 + 4);
+            let right_geom = |screen: &Screen| {
+                let geom = screen.core.tabs[&TabId::new(0)]
+                    .get_pane_with_id(right)
+                    .unwrap()
+                    .current_geom();
+                (geom.x, geom.cols.as_usize())
+            };
+            let selection = |screen: &Screen| {
+                screen.core.tabs[&TabId::new(0)]
+                    .get_pane_with_id(dragged)
+                    .unwrap()
+                    .get_selected_text(dragging)
+            };
+            let before = right_geom(&screen);
+            while plugin_rx.try_recv().is_ok() {}
+
+            screen.handle_mouse_event(MouseEvent::new_left_press_event(press), dragging);
+            screen.handle_mouse_event(MouseEvent::new_left_motion_event(last_motion), dragging);
+            assert_eq!(
+                screen.core.tabs[&TabId::new(0)].selecting_with_mouse_in_pane,
+                HashMap::from([(dragging, dragged)]),
+                "{name}"
+            );
+            let selected = if dragged == plugin { "abcd" } else { "line" };
+            assert_eq!(selection(&screen).as_deref(), Some(selected), "{name}");
+
+            open(&mut screen, dragging);
+            screen.handle_mouse_event(MouseEvent::new_left_release_event(release), dragging);
+            assert!(still_open(&screen, surface), "{name}: the surface kept it");
+            assert!(
+                screen.core.tabs[&TabId::new(0)]
+                    .selecting_with_mouse_in_pane
+                    .is_empty(),
+                "{name}: the drag ended with the release the surface took"
+            );
+            assert_eq!(
+                selection(&screen).as_deref(),
+                Some(selected),
+                "{name}: the selection ends where the last motion left it"
+            );
+            assert!(
+                !server_rx.try_iter().any(|(instruction, _)| matches!(
+                    instruction,
+                    ServerInstruction::ClipboardUpdate(_)
+                )),
+                "{name}: nothing is copied"
+            );
+            let plugin_mouse: Vec<_> = plugin_rx
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(updates) => updates,
+                    _ => vec![],
+                })
+                .filter_map(|(id, client, event)| match event {
+                    Event::Mouse(mouse) => Some((id, client, mouse)),
+                    _ => None,
+                })
+                .collect();
+            let heard = if dragged == plugin {
+                vec![Mouse::LeftClick(0, 0), Mouse::Hold(0, 4)]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                plugin_mouse,
+                heard
+                    .into_iter()
+                    .map(|mouse| (Some(crate::PluginId::new(7)), Some(dragging), mouse))
+                    .collect::<Vec<_>>(),
+                "{name}"
+            );
+
+            if dragged == terminal {
+                let output: String = (0..25).map(|line| format!("\r\nout{line}")).collect();
+                screen
+                    .core
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .handle_pty_bytes(TERMINAL_1, output.into_bytes())
+                    .unwrap();
+                assert_eq!(
+                    selection(&screen).as_deref(),
+                    Some(selected),
+                    "{name}: output scrolls the selection along with its text"
+                );
+            }
+
+            for event in [
+                MouseEvent::new_left_press_event(border),
+                MouseEvent::new_left_motion_event(dragged_border),
+                MouseEvent::new_left_release_event(dragged_border),
+            ] {
+                screen.handle_mouse_event(event, resizing);
+            }
+            assert_eq!(
+                right_geom(&screen),
+                (before.0 + 4, before.1 - 4),
+                "{name}: the other client's first border drag resizes"
+            );
+        }
+    }
+}

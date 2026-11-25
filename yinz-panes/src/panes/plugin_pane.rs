@@ -955,6 +955,14 @@ impl Pane for PluginPane {
             self.set_should_render(true);
         }
     }
+    fn finalize_selection(&mut self, client_id: ClientId) {
+        // Only this client's grid: every other client's selection here is its own.
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.finalize_mouse_selection();
+        }
+    }
     fn reset_selection(&mut self, client_id: Option<ClientId>) {
         if let Some(grid) = client_id.and_then(|c| self.grids.get_mut(&c)) {
             grid.reset_selection();

@@ -53,76 +53,20 @@ impl Screen {
         if outside {
             overlay_event.position.change_line(-1);
         }
-        if self.permission_modal_mouse(&overlay_event, client_id) {
-            return;
-        }
-        // A gesture belongs to its press target, even when it crosses a toast or
-        // leaves the palette. In particular its release must not reach a pane.
-        if self.palette.palette_captures_mouse(client_id) {
-            self.command_palette_handles_mouse(&event, client_id);
-            return;
-        }
-        if self
-            .notices
-            .notification_mouse_captures
-            .contains(&client_id)
-        {
-            if event.event_type == MouseEventType::Release && event.left {
-                self.notices.notification_mouse_captures.remove(&client_id);
-            }
-            return;
-        }
+        // Read ahead of the surfaces. One that passes the event on leaves the client's focus
+        // and scroll as they were.
         let active_pane_id_before = self.active_pane_id(client_id);
         let active_pane_was_scrolled = self.active_pane_is_scrolled(client_id);
-        let surface = self.client_surface(client_id);
-        // An open context menu owns the mouse outright - ahead of toasts and the tab. That is
-        // what a menu is: while it is up, a click means "a row of this menu, or dismiss", and
-        // never also "focus whatever happened to be underneath". The event is consumed either
-        // way: with no surface there is nothing to hit-test against, but letting it fall through
-        // to the pane under the menu is the one thing it must not do.
-        if self.menus.context_menu_is_open(client_id) {
-            if let Some(surface) = surface {
-                self.handle_context_menu_mouse_event(&overlay_event, surface, client_id);
+        if self.screen_surface_takes_mouse_event(&event, &overlay_event, client_id) {
+            // The surface owns the event and the Tab never sees it. A left release it took
+            // was the end of whatever drag the client had going there, which must not stay
+            // open waiting for a release that will not come.
+            if event.event_type == MouseEventType::Release
+                && event.left
+                && let Ok(tab) = self.get_active_tab_mut(client_id)
+            {
+                tab.interrupt_mouse_gesture(client_id);
             }
-            return;
-        }
-        // sampled here rather than taken from the last painted frame: a click should resolve
-        // against where the toast is now, which is at most one frame ahead of what was drawn
-        let now = self.frame_now();
-        // A browsing client sees the browser in place of its toasts, so the browser is what gets
-        // hit-tested - never the toasts it is covering.
-        if self.notification_browser_is_visible(client_id) {
-            if surface.is_some_and(|surface| {
-                self.handle_notification_browser_mouse(&overlay_event, surface, client_id, now)
-            }) {
-                if event.event_type == MouseEventType::Press && event.left {
-                    self.notices.notification_mouse_captures.insert(client_id);
-                }
-                return;
-            }
-        } else if surface.is_some_and(|surface| {
-            self.handle_pane_notification_click(&overlay_event, surface, client_id, now)
-        }) {
-            self.notices.notification_mouse_captures.insert(client_id);
-            return;
-        }
-        if self.palette.command_palettes.contains_key(&client_id)
-            && surface.is_some_and(|surface| {
-                usize::try_from(overlay_event.position.line())
-                    .ok()
-                    .is_some_and(|line| {
-                        self.notification_cell_rects(surface, now, client_id)
-                            .iter()
-                            .any(|rect| rect.contains(overlay_event.position.column(), line))
-                    })
-            })
-        {
-            if event.event_type == MouseEventType::Press && event.left {
-                self.notices.notification_mouse_captures.insert(client_id);
-            }
-            return;
-        }
-        if self.command_palette_handles_mouse(&overlay_event, client_id) {
             return;
         }
         if outside && event.event_type == MouseEventType::Press {
@@ -206,5 +150,83 @@ impl Screen {
                 log::error!("Failed to process MouseEvent: {}", e);
             },
         }
+    }
+
+    /// Whether a Screen-level surface (permission modal, command palette, notifications,
+    /// context menu) takes this mouse event, ahead of the client's tab.
+    fn screen_surface_takes_mouse_event(
+        &mut self,
+        event: &MouseEvent,
+        overlay_event: &MouseEvent,
+        client_id: ClientId,
+    ) -> bool {
+        if self.permission_modal_mouse(overlay_event, client_id) {
+            return true;
+        }
+        // A gesture belongs to its press target, even when it crosses a toast or
+        // leaves the palette. In particular its release must not reach a pane.
+        if self.palette.palette_captures_mouse(client_id) {
+            self.command_palette_handles_mouse(event, client_id);
+            return true;
+        }
+        if self
+            .notices
+            .notification_mouse_captures
+            .contains(&client_id)
+        {
+            if event.event_type == MouseEventType::Release && event.left {
+                self.notices.notification_mouse_captures.remove(&client_id);
+            }
+            return true;
+        }
+        let surface = self.client_surface(client_id);
+        // An open context menu owns the mouse outright - ahead of toasts and the tab. That is
+        // what a menu is: while it is up, a click means "a row of this menu, or dismiss", and
+        // never also "focus whatever happened to be underneath". The event is consumed either
+        // way: with no surface there is nothing to hit-test against, but letting it fall through
+        // to the pane under the menu is the one thing it must not do.
+        if self.menus.context_menu_is_open(client_id) {
+            if let Some(surface) = surface {
+                self.handle_context_menu_mouse_event(overlay_event, surface, client_id);
+            }
+            return true;
+        }
+        // sampled here rather than taken from the last painted frame: a click should resolve
+        // against where the toast is now, which is at most one frame ahead of what was drawn
+        let now = self.frame_now();
+        // A browsing client sees the browser in place of its toasts, so the browser is what gets
+        // hit-tested - never the toasts it is covering.
+        if self.notification_browser_is_visible(client_id) {
+            if surface.is_some_and(|surface| {
+                self.handle_notification_browser_mouse(overlay_event, surface, client_id, now)
+            }) {
+                if event.event_type == MouseEventType::Press && event.left {
+                    self.notices.notification_mouse_captures.insert(client_id);
+                }
+                return true;
+            }
+        } else if surface.is_some_and(|surface| {
+            self.handle_pane_notification_click(overlay_event, surface, client_id, now)
+        }) {
+            self.notices.notification_mouse_captures.insert(client_id);
+            return true;
+        }
+        if self.palette.command_palettes.contains_key(&client_id)
+            && surface.is_some_and(|surface| {
+                usize::try_from(overlay_event.position.line())
+                    .ok()
+                    .is_some_and(|line| {
+                        self.notification_cell_rects(surface, now, client_id)
+                            .iter()
+                            .any(|rect| rect.contains(overlay_event.position.column(), line))
+                    })
+            })
+        {
+            if event.event_type == MouseEventType::Press && event.left {
+                self.notices.notification_mouse_captures.insert(client_id);
+            }
+            return true;
+        }
+        self.command_palette_handles_mouse(overlay_event, client_id)
     }
 }

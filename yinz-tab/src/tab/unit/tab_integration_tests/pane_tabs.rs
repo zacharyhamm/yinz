@@ -835,6 +835,68 @@ fn pane_tabs_content_press_releases_only_pressing_clients_bar_focus() {
     }
 }
 
+/// A drag belongs to the pane it started in, also where it crosses or ends over a pane-tab bar,
+/// which otherwise takes every event on its row. Its release there ends the selection and copies
+/// it, as a release over a frame does, and leaves no capture behind for the next press.
+#[test]
+fn a_drag_released_over_a_pane_tab_bar_ends_in_its_own_pane() {
+    let (mut tab, _receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    let container = PaneId::Plugin(PluginId::new(100));
+    tab.new_pane(
+        container,
+        None,
+        None,
+        false,
+        false,
+        NewPanePlacement::NoPreference {
+            borderless: Some(false),
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(container, layout(), 0, client).unwrap();
+    tab.focus_pane_with_id(terminal, false, false, client)
+        .unwrap();
+    tab.handle_pty_bytes(TerminalId::new(1), b"line1 abcdefgh".to_vec())
+        .unwrap();
+    let pane = tab.get_pane_with_id(terminal).unwrap();
+    let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+    let bars = tab.get_pane_with_id(container).unwrap();
+    let bar = Position::new(
+        bars.get_content_y() as i32 - 1,
+        bars.get_content_x() as u16 + 1,
+    );
+    assert!(
+        tab.pane_tabs_mouse(&MouseEvent::new_buttonless_motion(bar), client)
+            .unwrap(),
+        "the bar takes the events on its row"
+    );
+
+    for event in [
+        MouseEvent::new_left_press_event(Position::new(y, x)),
+        MouseEvent::new_left_motion_event(Position::new(y, x + 4)),
+        MouseEvent::new_left_motion_event(bar),
+    ] {
+        tab.handle_mouse_event(&event, client).unwrap();
+    }
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_left_release_event(bar), client)
+        .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_empty());
+    assert!(effect.leave_clipboard_message, "the release copied it");
+    assert!(tab
+        .get_pane_with_id(terminal)
+        .unwrap()
+        .get_selected_text(client)
+        .is_some_and(|text| text.starts_with("line")));
+    assert_eq!(tab.get_active_pane_id(client), Some(terminal));
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+}
+
 #[test]
 fn pane_tabs_highlight_is_per_client_and_only_enter_activates() {
     let (mut tab, receiver) =

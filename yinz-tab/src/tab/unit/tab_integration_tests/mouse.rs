@@ -4238,6 +4238,220 @@ fn a_plugin_leaving_mid_drag_releases_its_capture() {
     }
 }
 
+type Interruption = (&'static str, fn(&mut Tab, ClientId));
+
+/// The places a drag ends without its release reaching the tab: the client's tab changed, or
+/// the client disconnected. (A Screen surface taking the release is the Screen's own test.)
+const INTERRUPTIONS: [Interruption; 2] = [
+    ("departure", |tab, client| {
+        tab.drain_single_client(client);
+    }),
+    ("disconnection", |tab, client| tab.remove_client(client)),
+];
+
+/// A terminal selection whose drag was cut off ends where it stands. Output then scrolls it with
+/// its text instead of stretching it from its start to a fixed row, nothing is copied, and the
+/// next click in the pane is an ordinary one that clears it.
+#[test]
+fn an_interrupted_terminal_drag_leaves_its_selection_where_it_stands() {
+    let client = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    for (name, interrupt) in INTERRUPTIONS {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        let (sender, server_rx) = channels::unbounded();
+        tab.senders.to_server = Some(SenderWithContext::new(sender));
+        tab.handle_pty_bytes(TerminalId::new(1), b"line1 abcdefgh\r\nline2".to_vec())
+            .unwrap();
+        let pane = tab.get_pane_with_id(terminal).unwrap();
+        let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+        let at = |column: u16| Position::new(y, x + column);
+        let (press, motion) = (at(0), at(4));
+        let selection = |tab: &Tab| {
+            tab.get_pane_with_id(terminal)
+                .unwrap()
+                .get_selected_text(client)
+        };
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(press), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_motion_event(motion), client)
+            .unwrap();
+        assert_eq!(selection(&tab).as_deref(), Some("line"), "{name}");
+
+        interrupt(&mut tab, client);
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{name}");
+        let output: String = (0..25).map(|line| format!("\r\nout{line}")).collect();
+        tab.handle_pty_bytes(TerminalId::new(1), output.into_bytes())
+            .unwrap();
+        assert_eq!(
+            selection(&tab).as_deref(),
+            Some("line"),
+            "{name}: the selection follows its text instead of growing"
+        );
+        assert!(
+            !server_rx.try_iter().any(|(instruction, _)| matches!(
+                instruction,
+                yinz_bus::ServerInstruction::ClipboardUpdate(_)
+            )),
+            "{name}: nothing is copied"
+        );
+
+        tab.add_client(client, None).unwrap();
+        // Away from the first press, so it does not count as a double click.
+        let click = at(2);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(click), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(click), client)
+            .unwrap();
+        assert_eq!(
+            selection(&tab),
+            None,
+            "{name}: a click in the pane is a fresh one"
+        );
+    }
+}
+
+/// A terminal has one selection for every client. When one client's drag there is cut off while
+/// another client is dragging in the same pane, the selection is the other client's and keeps
+/// following its pointer until its own release copies it.
+#[test]
+fn an_interrupted_drag_leaves_another_clients_drag_in_the_same_terminal_alone() {
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    for (name, interrupt) in INTERRUPTIONS {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.add_client(other, None).unwrap();
+        tab.handle_pty_bytes(TerminalId::new(1), b"line1 abcdefgh\r\nline2".to_vec())
+            .unwrap();
+        let pane = tab.get_pane_with_id(terminal).unwrap();
+        let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+        let at = |column: u16| Position::new(y, x + column);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(at(0)), client)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(at(6)), other)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_motion_event(at(10)), other)
+            .unwrap();
+
+        interrupt(&mut tab, client);
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane,
+            HashMap::from([(other, terminal)]),
+            "{name}"
+        );
+        let output: String = (0..25).map(|line| format!("\r\nout{line}")).collect();
+        tab.handle_pty_bytes(TerminalId::new(1), output.into_bytes())
+            .unwrap();
+        let selected = tab
+            .get_pane_with_id(terminal)
+            .unwrap()
+            .get_selected_text(other)
+            .unwrap();
+        assert!(
+            selected.starts_with("abcd") && selected.lines().count() > 1,
+            "{name}: the other client's drag still runs from its start to its pointer: {selected:?}"
+        );
+        let effect = tab
+            .handle_mouse_event(&MouseEvent::new_left_release_event(at(10)), other)
+            .unwrap();
+        assert!(effect.leave_clipboard_message, "{name}");
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{name}");
+    }
+}
+
+/// A plugin with mouse selection keeps a selection per client. A client's drag that is cut off
+/// ends in that client's grid only, and the plugin hears no release for it; another client's
+/// drag in the same plugin keeps going. A plugin frame taller than the pane scrolls the ended
+/// selection with its text and stretches the live one to its pointer.
+#[test]
+fn an_interrupted_plugin_drag_ends_only_its_own_clients_selection() {
+    use yinz_types::data::Mouse;
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    for (name, interrupt) in INTERRUPTIONS {
+        let (mut tab, rx) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 120,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.add_client(other, None).unwrap();
+        let id = add_test_plugin(&mut tab, client, true);
+        tab.focus_pane_with_id(id, false, false, other).unwrap();
+        let pane = tab.get_pane_with_id_mut(id).unwrap();
+        let plugin = pane.plugin_control_mut().unwrap();
+        plugin.set_mouse_selection_support(true);
+        for c in [client, other] {
+            plugin.handle_plugin_bytes(c, b"abcdefghi".to_vec());
+        }
+        let (x, y) = (pane.get_content_x() as u16, pane.get_content_y() as i32);
+        for c in [client, other] {
+            for event in [
+                MouseEvent::new_left_press_event(Position::new(y, x)),
+                MouseEvent::new_left_motion_event(Position::new(y, x + 4)),
+            ] {
+                tab.handle_mouse_event(&event, c).unwrap();
+            }
+        }
+        while rx.try_recv().is_ok() {}
+
+        interrupt(&mut tab, client);
+        assert_eq!(
+            tab.selecting_with_mouse_in_pane,
+            HashMap::from([(other, id)]),
+            "{name}"
+        );
+        assert_eq!(plugin_mouse_events(&rx), [], "{name}: no release for it");
+        let frame: String = (0..40).map(|row| format!("row{row:02}\r\n")).collect();
+        let pane = tab.get_pane_with_id_mut(id).unwrap();
+        for c in [client, other] {
+            pane.plugin_control_mut()
+                .unwrap()
+                .handle_plugin_bytes(c, frame.clone().into_bytes());
+        }
+        assert_eq!(
+            pane.get_selected_text(client).as_deref(),
+            Some("row0"),
+            "{name}: the ended selection keeps its extent"
+        );
+        let live = pane.get_selected_text(other).unwrap();
+        assert!(
+            live.starts_with("row0") && live.lines().count() > 1,
+            "{name}: the other client's drag still reaches its pointer: {live:?}"
+        );
+
+        for event in [
+            MouseEvent::new_left_motion_event(Position::new(y, x + 5)),
+            MouseEvent::new_left_release_event(Position::new(y, x + 5)),
+        ] {
+            tab.handle_mouse_event(&event, other).unwrap();
+        }
+        assert!(tab.selecting_with_mouse_in_pane.is_empty(), "{name}");
+        assert_eq!(
+            plugin_mouse_events(&rx),
+            [Mouse::Hold(0, 5), Mouse::Release(0, 5)].map(|mouse| (
+                Some(crate::PluginId::new(7)),
+                Some(other),
+                mouse
+            )),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn plugin_pane_id_scroll_and_terminal_actions() {
     use yinz_types::data::Mouse;
