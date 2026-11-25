@@ -1,5 +1,7 @@
 use super::*;
-use yinz_types::structured_render::{PaneRect, PANE_FLOATING, PANE_FOCUSED, PANE_SELECTABLE};
+use yinz_types::structured_render::{
+    PaneRect, PANE_FLOATING, PANE_FOCUSED, PANE_SELECTABLE, PANE_UNDER_FLOATING,
+};
 
 fn bounds(rect: &PaneRect) -> (usize, usize, usize, usize) {
     (
@@ -189,4 +191,166 @@ fn native_geometry_keeps_overlays_above_tiled_fullscreen() {
         assert_eq!(bounds(&geometry.panes[1]), pane_bounds(&tab, overlay));
         assert_ne!(geometry.panes[1].flags & PANE_FLOATING, 0);
     }
+}
+
+/// A three-pane stack beside a plain pane: one stack member is expanded, two are collapsed.
+fn tab_with_a_stack_beside_a_pane() -> Tab {
+    let stack = TiledPaneLayout {
+        children_are_stacked: true,
+        children: vec![
+            TiledPaneLayout::default(),
+            TiledPaneLayout::default(),
+            TiledPaneLayout::default(),
+        ],
+        ..Default::default()
+    };
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), stack],
+        ..Default::default()
+    };
+    create_new_tab_with_layout(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        layout,
+    )
+}
+
+fn collapsed_in_stack(tab: &Tab) -> Vec<PaneId> {
+    tab.tiled_panes
+        .panes
+        .iter()
+        .filter(|(_, pane)| pane.current_geom().is_collapsed_in_stack())
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+#[test]
+fn native_geometry_includes_collapsed_stack_title_rows() {
+    let client = ClientId::new(1);
+    let tab = tab_with_a_stack_beside_a_pane();
+    let collapsed = collapsed_in_stack(&tab);
+    assert_eq!(collapsed.len(), 2, "the stack should collapse two members");
+
+    let geometry = tab.native_geometry(client);
+    assert_eq!(geometry.panes.len(), 4);
+    let ids: Vec<PaneId> = tab.tiled_panes.panes.keys().copied().collect();
+    assert_eq!(
+        geometry.panes.iter().map(bounds).collect::<Vec<_>>(),
+        ids.iter()
+            .map(|id| pane_bounds(&tab, *id))
+            .collect::<Vec<_>>(),
+        "every tiled pane, collapsed or not, has a rect in id order"
+    );
+    let focused = tab.get_active_pane_id(client).unwrap();
+    for (rect, id) in geometry.panes.iter().zip(&ids) {
+        assert_eq!(rect.flags & PANE_FLOATING, 0);
+        assert_eq!(rect.flags & PANE_UNDER_FLOATING, 0);
+        assert_ne!(rect.flags & PANE_SELECTABLE, 0);
+        assert_eq!(rect.flags & PANE_FOCUSED != 0, *id == focused);
+        if collapsed.contains(id) {
+            assert_eq!(rect.rows, 1, "a collapsed member shows only its title row");
+            let pane = tab.get_pane_with_id(*id).unwrap();
+            assert_eq!(
+                rect.rows as usize - rect.top as usize - rect.bottom as usize,
+                pane.get_content_rows(),
+                "the rect's content rows match the pane's"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_geometry_shows_one_rect_for_a_stacked_fullscreen_pane() {
+    let client = ClientId::new(1);
+    let mut tab = tab_with_a_stack_beside_a_pane();
+    let expanded = tab
+        .tiled_panes
+        .panes
+        .iter()
+        .find(|(_, pane)| pane.current_geom().is_expanded_in_stack())
+        .map(|(id, _)| *id)
+        .unwrap();
+    tab.tiled_panes.focus_pane(expanded, client);
+    let before = tab.native_geometry(client).panes;
+    tab.toggle_active_pane_fullscreen(client);
+
+    let geometry = tab.native_geometry(client);
+    assert_eq!(geometry.panes.len(), 1);
+    assert_eq!(bounds(&geometry.panes[0]), pane_bounds(&tab, expanded));
+    assert_ne!(geometry.panes[0].flags & PANE_FOCUSED, 0);
+
+    tab.toggle_active_pane_fullscreen(client);
+    let after = tab.native_geometry(client).panes;
+    assert_eq!(
+        after.iter().map(bounds).collect::<Vec<_>>(),
+        before.iter().map(bounds).collect::<Vec<_>>(),
+        "leaving fullscreen restores every rect, collapsed titles included"
+    );
+}
+
+#[test]
+fn native_geometry_marks_tiled_panes_under_a_shown_floating_layer() {
+    let client = ClientId::new(1);
+    let mut tab = create_tab_with_two_floating_panes();
+    let pinned = PaneId::Terminal(TerminalId::new(2));
+    let under = |tab: &Tab| -> Vec<bool> {
+        tab.native_geometry(client)
+            .panes
+            .iter()
+            .map(|rect| rect.flags & PANE_UNDER_FLOATING != 0)
+            .collect()
+    };
+
+    tab.floating_panes.toggle_show_panes(true);
+    assert_eq!(
+        under(&tab),
+        [true, false, false],
+        "only tiled panes are under"
+    );
+
+    tab.floating_panes.toggle_show_panes(false);
+    assert_eq!(under(&tab), [false]);
+
+    // Pinned floats stay up while the layer is hidden, and tiled panes stay active.
+    tab.floating_panes
+        .get_mut(&pinned)
+        .unwrap()
+        .set_pinned(true);
+    assert_eq!(under(&tab), [false, false]);
+
+    tab.floating_panes.toggle_show_panes(true);
+    assert_eq!(under(&tab), [true, false, false]);
+}
+
+#[test]
+fn native_geometry_marks_no_tiled_pane_under_an_empty_floating_layer() {
+    let client = ClientId::new(1);
+    let mut tab = create_tab_with_four_panes();
+    tab.floating_panes.toggle_show_panes(true);
+    assert!(tab.are_floating_panes_visible());
+    assert!(tab
+        .native_geometry(client)
+        .panes
+        .iter()
+        .all(|rect| rect.flags & PANE_UNDER_FLOATING == 0));
+}
+
+#[test]
+fn native_geometry_overlay_panes_stay_floating_without_covering_tiled_panes() {
+    let client = ClientId::new(1);
+    let mut tab = create_tab_with_four_panes();
+    let overlay = PaneId::Terminal(TerminalId::new(5));
+    add_geometry_overlay(&mut tab, overlay, client);
+
+    let geometry = tab.native_geometry(client);
+    let (last, tiled) = geometry.panes.split_last().unwrap();
+    assert_eq!(bounds(last), pane_bounds(&tab, overlay));
+    assert_ne!(last.flags & PANE_FLOATING, 0);
+    assert_eq!(last.flags & PANE_UNDER_FLOATING, 0);
+    assert!(tiled
+        .iter()
+        .all(|rect| rect.flags & (PANE_UNDER_FLOATING | PANE_FLOATING) == 0));
 }

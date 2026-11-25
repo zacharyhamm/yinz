@@ -836,18 +836,19 @@ impl TiledPanes {
     /// The panes whose content is on screen: hidden ones are out, and so are collapsed
     /// stack members, which show only their one-row title. Image placements belonging
     /// to a pane that is not in here are deleted from the host.
+    ///
+    /// Use [`Self::visible_pane_ids`] for the panes that occupy screen cells at all.
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
-        self.panes
-            .iter()
-            .filter(|(pane_id, pane)| {
-                if self.panes_to_hide.contains(pane_id) {
-                    return false;
-                }
-                let geom = pane.current_geom();
-                !geom.is_collapsed_in_stack()
-            })
-            .map(|(pane_id, _pane)| *pane_id)
-            .collect()
+        tiled_pane_ids_on_screen(&self.panes, &self.panes_to_hide, false)
+    }
+    /// The panes that occupy screen cells: every pane that is not hidden, including
+    /// collapsed stack members, whose one-row title is on screen while their content is
+    /// not. Native viewers get a geometry rect for each of them.
+    ///
+    /// Unlike [`Self::rendered_pane_ids`], this is not the set of panes whose images stay
+    /// placed: a collapsed member's images must still be deleted.
+    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
+        tiled_pane_ids_on_screen(&self.panes, &self.panes_to_hide, true)
     }
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {
         for pane in self.panes.values_mut() {
@@ -3570,6 +3571,23 @@ pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
     pane_position_and_size.y >= viewport.y
         && pane_position_and_size.y + pane_position_and_size.rows.as_usize()
             <= viewport.y + viewport.rows
+}
+
+/// The tiled panes outside `hidden`, in id order so that per-frame consumers see a stable
+/// order. Collapsed stack members are kept only when `include_collapsed` is set.
+fn tiled_pane_ids_on_screen(
+    panes: &BTreeMap<PaneId, Box<dyn Pane>>,
+    hidden: &HashSet<PaneId>,
+    include_collapsed: bool,
+) -> Vec<PaneId> {
+    panes
+        .iter()
+        .filter(|(pane_id, pane)| {
+            !hidden.contains(pane_id)
+                && (include_collapsed || !pane.current_geom().is_collapsed_in_stack())
+        })
+        .map(|(pane_id, _pane)| *pane_id)
+        .collect()
 }
 
 pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> bool {

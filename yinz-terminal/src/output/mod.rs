@@ -1019,6 +1019,9 @@ pub struct Output {
     client_character_chunks: HashMap<ClientId, Vec<CharacterChunk>>,
     compositions: HashMap<ClientId, translucency::Composition>,
     native_geometry: HashMap<ClientId, yinz_types::structured_render::GeometryRecord>,
+    /// Screen overlays each native client sees this frame, in paint order, appended to its
+    /// geometry as `PANE_POPUP` rects.
+    native_popups: HashMap<ClientId, Vec<yinz_types::structured_render::PaneRect>>,
     sixel_chunks: HashMap<ClientId, Vec<SixelImageChunk>>,
     client_kitty_chunks: HashMap<ClientId, HashMap<PaneId, Vec<KittyImageChunk>>>,
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,

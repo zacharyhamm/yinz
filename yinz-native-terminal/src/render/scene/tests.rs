@@ -1793,6 +1793,36 @@ fn an_image_inside_its_pane_is_left_alone() {
 }
 
 #[test]
+fn an_image_beneath_a_popup_is_clipped_to_its_pane_not_to_the_popup() {
+    let popup = PaneRect {
+        x: 1,
+        y: 0,
+        cols: 3,
+        rows: 2,
+        flags: yinz_types::structured_render::PANE_POPUP,
+        ..Default::default()
+    };
+    let geometry = GeometryRecord {
+        panes: vec![clipping_pane(0, 0, 8, 4), popup],
+    };
+    let metrics = metrics_of(8, 20);
+    // Anchored at column 2, row 1: inside the popup, which is the topmost rect there.
+    let quad = quad_at(16, 20, 48, 40);
+    let clipped = clip_to_owning_pane(quad.clone(), 2, 1, &geometry, metrics).expect("kept");
+    assert_eq!(
+        clipped, quad,
+        "the popup's three columns do not cut an image its pane holds whole"
+    );
+    let clipped = clip_to_owning_pane(quad_at(16, 20, 64, 20), 2, 1, &geometry, metrics)
+        .expect("the part inside the pane survives");
+    assert_eq!(
+        (clipped.x, clipped.width),
+        (16, 48),
+        "the pane's edge cuts it"
+    );
+}
+
+#[test]
 fn an_image_straddling_a_pane_edge_is_cut_at_the_edge() {
     let geometry = GeometryRecord {
         panes: vec![clipping_pane(0, 0, 4, 4), clipping_pane(4, 0, 4, 4)],

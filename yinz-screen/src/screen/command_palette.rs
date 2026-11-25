@@ -579,6 +579,7 @@ impl Screen {
                         .and_then(|id| self.core.tabs.get(id))
                 })
                 .map(|tab| tab.native_geometry(client));
+            let owns_input = self.palette.palette_owns_input(client);
             let Some(state) = self.palette.command_palettes.get_mut(&client) else {
                 continue;
             };
@@ -677,6 +678,10 @@ impl Screen {
                     },
                 )
                 .context("failed to render command palette")?;
+            // Watchers get no native frames; their output is ANSI.
+            if !watcher {
+                output.add_native_popup(client, layout.rect, owns_input);
+            }
             if let Some((quota, cell)) = quota.zip(cell) {
                 output.add_overlay_kitty_image(client, state.context.pane_id, quota, cell);
             }

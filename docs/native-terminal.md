@@ -997,7 +997,7 @@ images in its own medium.
 
 | Feature bit | Meaning and current production behavior |
 |---|---|
-| Geometry (1) | Pane bounds locate graphics and constrain clipping to the owning pane. |
+| Geometry (1) | Pane bounds locate graphics and constrain clipping to the owning pane. The record lists the visible scene; see [Pane and overlay composition](#pane-and-overlay-composition). |
 | Links (2) | Hyperlink table and cell references. A full repaint carries every mapping its cells use; deltas carry only new or retargeted entries. See [Unicode cells, clusters and hyperlinks](#unicode-cells-clusters-and-hyperlinks). Disabled clients receive plain cells. |
 | Kitty (4), Sixel (8) | Independently selectable. Both require geometry and inline media. Kitty also follows the server's graphics setting. Text-only clients get cells without graphics placeholders. |
 | Row shifts (16) | Move existing cells within the current grid. The reader can apply shifts. The writer currently sends ordinary cell deltas. |
@@ -1037,6 +1037,71 @@ meter. Image and placement identifiers are unsigned 64-bit values throughout the
 scene. Row shifts apply to fully contained rectangles on incremental frames of
 the same grid size. A clear, full repaint or resize starts a new baseline.
 Media failure requires a new attachment and full repaint.
+
+### Pane and overlay composition
+
+A native frame carries the cells an ANSI client of the same tab receives. These
+are the tiled, floating and overlay panes, with toasts, menus, the command
+palette and the permission modal drawn over them. Translucent overlays blend the
+same way. A clipped or occluded cell appears in neither output.
+
+The geometry record lists every visible element of that scene, bottom to top:
+
+1. Tiled panes, in pane-id order. A tiled fullscreen pane appears alone. Each
+   member of a classic stack has a rect, so a collapsed member's one-row title
+   has its own rect with no content rows.
+2. Floating panes, in stacking order. All of them appear while the floating
+   layer is shown, and only pinned ones while it is hidden. A floating
+   fullscreen pane covers the others.
+3. Overlay panes.
+4. Screen overlays as popups, in paint order: toasts or the notification
+   browser, the notification return cue, the context menu, the command palette,
+   toasts over a palette that owns input, and the permission modal.
+
+A hidden pane appears in neither the cells nor the geometry. Hidden panes
+include those behind a tiled fullscreen pane, an inactive pane tab, a member
+the stacked pane list does not show, and an unpinned float while its layer is
+hidden.
+
+| Flag | Meaning for viewers |
+|---|---|
+| `PANE_FRAMED` | The pane has a frame or title inset around its content. |
+| `PANE_FOCUSED` | This client's focused pane. On a popup: the overlay takes this client's input. The palette, context menu, permission modal and notification browser do; toasts do not. |
+| `PANE_FLOATING` | A floating or overlay pane, which can be moved and resized. |
+| `PANE_UNDER_FLOATING` | A tiled pane while the floating layer is shown with at least one pane. Pinned floats left up while the layer is hidden do not set it. Viewers treat these panes as covered: their pointer is inert and a selection is not remapped into them. |
+| `PANE_POPUP` | A screen overlay. Its insets are zero, so its border belongs to the popup rather than to the pane beneath. A sliding toast's rect covers only the columns it has revealed. |
+| `PANE_SELECTABLE`, `PANE_WANTS_MOUSE`, `PANE_PLUGIN_UI` | The pane accepts focus, its program has requested mouse reporting, or it is plugin chrome without text selection. |
+
+Popups never own images. A Kitty placement or Sixel anchor beneath a toast or
+the palette belongs to the pane under it. It is clipped to that pane and
+validated against it. Hiding images beneath overlays is a graphics placement
+concern, not an ownership one. Popups coming and going elsewhere leave a local
+selection mapped. A toast or menu painted over the selected text hides the
+highlight but keeps the copy. A sliding toast changes its rect every frame, so
+the viewer rebuilds its scene for the length of the animation.
+
+The frame header carries the cursor that client would see on an ANSI host. It
+shows only in the client's focused pane. It is hidden where a floating pane,
+toast or context menu covers it. When the palette owns input, its caret
+replaces the pane cursor in its input field. The palette hides the cursor when
+it has no input field, for example while busy. The permission modal hides the
+cursor. A hidden cursor keeps its position and shape for when it shows again.
+
+Each client receives its own frames. Focus flags, the cursor and the
+presentation offset are per client. A context menu or palette belongs to the
+client that opened it, while toasts reach every client. A viewer larger than
+its tab centers it. Cells, geometry, the cursor and image anchors then share
+one offset.
+
+The tab follows the smallest attached client. A recipient is smaller than its
+tab only while a reflow is pending or refused, for example for a stack that
+cannot fit. Cells are then cropped to the recipient's grid and the cursor is
+hidden until it is back inside. Rects keep their tab extent, because image
+anchors are validated against them.
+
+A full repaint carries the complete cells, geometry and cursor. Full repaints
+follow a new attachment, a resize, a presentation change or a display clear.
+Reattaching starts a fresh sequence.
 
 ### Unicode cells, clusters and hyperlinks
 

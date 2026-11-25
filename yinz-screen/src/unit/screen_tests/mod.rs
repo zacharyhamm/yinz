@@ -2162,6 +2162,7 @@ mod key_intercepts;
 mod layout_watcher;
 mod lent_slots;
 mod mouse;
+mod native_scene;
 mod nested_sessions;
 mod new_pane_placement;
 mod notification_activation;

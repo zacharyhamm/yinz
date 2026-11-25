@@ -1112,3 +1112,120 @@ fn uncaptured_selection_survives_expansion_and_a_new_wrap_boundary() {
         assert_eq!(local.text(state.screen()).as_deref(), Some(phrase));
     }
 }
+
+/// A selection in a terminal pane beside plugin chrome, captured across a resize to 60
+/// columns and reanchored there; returns the resized geometry.
+fn reanchored_in_pane(
+    terminal_flags: u8,
+) -> (
+    crate::emulation::terminal::TerminalState,
+    LocalSelection,
+    Vec<yinz_types::structured_render::PaneRect>,
+) {
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_PLUGIN_UI};
+    let terminal = PaneRect {
+        y: 1,
+        cols: 80,
+        rows: 3,
+        flags: terminal_flags,
+        ..Default::default()
+    };
+    let chrome = PaneRect {
+        cols: 80,
+        rows: 1,
+        flags: PANE_PLUGIN_UI,
+        ..Default::default()
+    };
+    let mut state = Painter::state(4, 80, |p| {
+        p.text(1, 70, "ABCD");
+        p.geometry(&GeometryRecord {
+            panes: vec![chrome, terminal],
+        });
+    });
+    let mut local = selected(&state, Selection::at(1, 70).extended_to(1, 73));
+    local.resizing(&state, 4, 60);
+    let resized = vec![
+        PaneRect { cols: 60, ..chrome },
+        PaneRect {
+            cols: 60,
+            ..terminal
+        },
+    ];
+    let frame = Painter::frame(4, 60, |p| {
+        p.full_repaint();
+        p.text(2, 10, "ABCD");
+        p.geometry(&GeometryRecord {
+            panes: resized.clone(),
+        });
+    });
+    local.apply_frame(&mut state, &frame).unwrap();
+    (state, local, resized)
+}
+
+#[test]
+fn popups_coming_and_going_keep_a_mapped_selection() {
+    use yinz_types::structured_render::{
+        GeometryRecord, PaneRect, PANE_FOCUSED, PANE_POPUP, PANE_SELECTABLE,
+    };
+    let (mut state, mut local, panes) = reanchored_in_pane(PANE_SELECTABLE | PANE_FOCUSED);
+    let mapped = Some(Selection::at(2, 10).extended_to(2, 13));
+    assert_eq!(local.range(), mapped);
+    let toast = PaneRect {
+        x: 40,
+        y: 3,
+        cols: 20,
+        rows: 1,
+        flags: PANE_POPUP,
+        ..Default::default()
+    };
+    let with_popup = |popup: PaneRect| {
+        let mut panes = panes.clone();
+        panes.push(popup);
+        GeometryRecord { panes }
+    };
+    let arrived = Painter::frame(4, 60, |p| {
+        p.text(3, 40, "toast toast toast !!");
+        p.geometry(&with_popup(toast));
+    });
+    local.apply_frame(&mut state, &arrived).unwrap();
+    assert_eq!(local.range(), mapped, "a toast elsewhere moves no pane");
+
+    let gone = Painter::frame(4, 60, |p| {
+        p.text(3, 40, &" ".repeat(20));
+        p.geometry(&GeometryRecord {
+            panes: panes.clone(),
+        });
+    });
+    local.apply_frame(&mut state, &gone).unwrap();
+    assert_eq!(local.range(), mapped, "nor does its removal");
+
+    // A menu painted over the selected text hides the highlight, keeping the copy.
+    let menu = PaneRect {
+        x: 8,
+        y: 2,
+        cols: 8,
+        rows: 1,
+        flags: PANE_POPUP | PANE_FOCUSED,
+        ..Default::default()
+    };
+    let covered = Painter::frame(4, 60, |p| {
+        p.text(2, 8, "[ menu ]");
+        p.geometry(&with_popup(menu));
+    });
+    local.apply_frame(&mut state, &covered).unwrap();
+    assert_eq!(local.range(), None);
+    assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+}
+
+#[test]
+fn a_tiled_pane_under_floating_panes_is_not_remapped() {
+    use yinz_types::structured_render::{PANE_FOCUSED, PANE_SELECTABLE, PANE_UNDER_FLOATING};
+    let (state, local, _) =
+        reanchored_in_pane(PANE_SELECTABLE | PANE_FOCUSED | PANE_UNDER_FLOATING);
+    assert_eq!(
+        local.range(),
+        None,
+        "a covered pane gives no region to map into"
+    );
+    assert_eq!(local.text(state.screen()).as_deref(), Some("ABCD"));
+}

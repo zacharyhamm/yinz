@@ -346,6 +346,17 @@ impl Screen {
                     None,
                 )?;
                 output.add_post_vte_instruction_to_client(client, "\u{1b}[?25l");
+                // The modal takes the client's input until it is answered.
+                output.add_native_popup(
+                    client,
+                    CellRect {
+                        x: layout.x,
+                        y: layout.y,
+                        cols: layout.width,
+                        rows: layout.height(),
+                    },
+                    true,
+                );
             }
             Ok(())
         })();

@@ -436,7 +436,7 @@ impl TerminalState {
                     u16::try_from(x)
                         .ok()
                         .zip(u16::try_from(y).ok())
-                        .and_then(|(x, y)| geometry.content_pane_at(x, y))
+                        .and_then(|(x, y)| geometry.image_owner_at(x, y))
                         .is_none()
                 }) {
                     return Err(invalid(
@@ -567,7 +567,7 @@ impl TerminalState {
                     && u16::try_from(*cell_x)
                         .ok()
                         .zip(u16::try_from(*cell_y).ok())
-                        .and_then(|(x, y)| geometry.content_pane_at(x, y))
+                        .and_then(|(x, y)| geometry.image_owner_at(x, y))
                         .is_none()
                 {
                     return Err("image anchor has no owning pane".into());

@@ -736,6 +736,17 @@ impl super::ContextMenuController {
         let previous_stack = output.set_floating_panes_stack(None);
         let result = output.add_character_chunks_to_client(client_id, chunks, None);
         output.set_floating_panes_stack(previous_stack);
+        // The menu takes this client's keys and clicks while it is open.
+        output.add_native_popup(
+            client_id,
+            CellRect {
+                x: layout.x,
+                y: layout.y,
+                cols: layout.width,
+                rows: layout.height(),
+            },
+            true,
+        );
         result.context("failed to render context menu")
     }
 }

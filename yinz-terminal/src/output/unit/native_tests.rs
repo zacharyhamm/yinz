@@ -1209,3 +1209,271 @@ fn a_watcher_frame_carries_cluster_texts_and_group_continuations() {
     assert_eq!(row[8].width, 3);
     assert_eq!(texts[11], "z");
 }
+
+fn popup_test_output(clients: &[ClientId]) -> Output {
+    let mut output = Output::default();
+    output.add_clients(
+        &clients.iter().copied().collect(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    output
+        .add_character_chunks_to_multiple_clients(
+            vec![CharacterChunk::new(
+                "popup".chars().map(TerminalCharacter::new).collect(),
+                2,
+                1,
+            )],
+            clients.iter().copied(),
+            None,
+        )
+        .unwrap();
+    output
+}
+
+fn tiled_geometry() -> yinz_types::structured_render::GeometryRecord {
+    use yinz_types::structured_render::{GeometryRecord, PaneRect, PANE_FOCUSED};
+    GeometryRecord {
+        panes: vec![
+            PaneRect {
+                x: 0,
+                y: 0,
+                cols: 6,
+                rows: 4,
+                left: 1,
+                top: 1,
+                right: 1,
+                bottom: 1,
+                flags: PANE_FOCUSED,
+            },
+            PaneRect {
+                x: 6,
+                y: 0,
+                cols: 6,
+                rows: 4,
+                ..Default::default()
+            },
+        ],
+    }
+}
+
+#[test]
+fn native_popups_follow_the_panes_in_paint_order() {
+    use crate::ui::damage::CellRect;
+    use yinz_types::structured_render::{PaneRect, PANE_FOCUSED, PANE_POPUP};
+    let client = ClientId::new(1);
+    let mut output = popup_test_output(&[client]);
+    output.set_native_geometry(client, tiled_geometry());
+    let toast = CellRect {
+        x: 4,
+        y: 0,
+        cols: 5,
+        rows: 2,
+    };
+    let palette = CellRect {
+        x: 1,
+        y: 1,
+        cols: 9,
+        rows: 3,
+    };
+    output.add_native_popup(client, toast, false);
+    output.add_native_popup(client, palette, true);
+    output.add_native_popup(
+        client,
+        CellRect {
+            x: 3,
+            y: 3,
+            cols: 0,
+            rows: 2,
+        },
+        true,
+    );
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let frames = output.serialize_native(
+        &mut states,
+        &HashMap::from([(client, Size { cols: 12, rows: 4 })]),
+        &HashMap::new(),
+    );
+    let geometry = decode(&frames[&client]).unwrap().geometry().unwrap();
+    let mut expected = tiled_geometry().panes;
+    expected.push(PaneRect {
+        x: 4,
+        y: 0,
+        cols: 5,
+        rows: 2,
+        flags: PANE_POPUP,
+        ..Default::default()
+    });
+    expected.push(PaneRect {
+        x: 1,
+        y: 1,
+        cols: 9,
+        rows: 3,
+        flags: PANE_POPUP | PANE_FOCUSED,
+        ..Default::default()
+    });
+    assert_eq!(geometry.panes, expected, "empty popups are dropped");
+    // The topmost rect at a covered cell is the popup, whose border is part of it.
+    assert_eq!(geometry.pane_at(1, 1), Some(&expected[3]));
+}
+
+#[test]
+fn native_popups_share_the_presentation_offset() {
+    use crate::ui::damage::CellRect;
+    use yinz_types::{data::PaletteColor, structured_render::PANE_POPUP};
+    let client = ClientId::new(1);
+    let presentation = Presentation {
+        terminal: Size { cols: 16, rows: 8 },
+        content: Size { cols: 12, rows: 4 },
+        background: PaletteColor::Rgb((0, 0, 0)),
+    };
+    let (dx, dy) = presentation.offset();
+    assert!(dx > 0 && dy > 0);
+    let mut output = popup_test_output(&[client]);
+    output.set_native_geometry(client, tiled_geometry());
+    output.add_native_popup(
+        client,
+        CellRect {
+            x: 2,
+            y: 1,
+            cols: 3,
+            rows: 2,
+        },
+        false,
+    );
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let frames = output.serialize_native(
+        &mut states,
+        &HashMap::from([(client, presentation.terminal)]),
+        &HashMap::from([(client, presentation)]),
+    );
+    let geometry = decode(&frames[&client]).unwrap().geometry().unwrap();
+    let popup = geometry.panes.last().unwrap();
+    assert_eq!(popup.flags, PANE_POPUP);
+    assert_eq!(
+        (popup.x, popup.y),
+        ((2 + dx) as u16, (1 + dy) as u16),
+        "popups and panes share one coordinate space"
+    );
+    assert_eq!(
+        (geometry.panes[1].x, geometry.panes[1].y),
+        ((6 + dx) as u16, dy as u16)
+    );
+}
+
+#[test]
+fn native_popups_need_negotiated_tab_geometry() {
+    use crate::ui::damage::CellRect;
+    use yinz_types::render_negotiation::Agreement;
+    let limited = ClientId::new(1);
+    let deferred = ClientId::new(2);
+    let mut output = popup_test_output(&[limited, deferred]);
+    output.set_native_geometry(limited, tiled_geometry());
+    let rect = CellRect {
+        x: 1,
+        y: 1,
+        cols: 3,
+        rows: 2,
+    };
+    for client in [limited, deferred] {
+        output.add_native_popup(client, rect, true);
+    }
+    let mut states = HashMap::from([
+        (
+            limited,
+            NativeRenderState::negotiated(
+                Agreement {
+                    version: 4,
+                    features: 0,
+                    media: 0,
+                    proof_response: vec![],
+                },
+                None,
+                None,
+            ),
+        ),
+        (deferred, NativeRenderState::default()),
+    ]);
+    let frames = output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+    assert!(decode(&frames[&limited]).unwrap().geometry().is_none());
+    assert!(
+        decode(&frames[&deferred]).unwrap().geometry().is_none(),
+        "popups alone never replace a scene the tab did not provide"
+    );
+}
+
+#[test]
+fn native_cursor_outside_a_cropped_recipient_is_hidden_and_restored() {
+    use yinz_types::structured_render::CURSOR_SHAPE_BEAM;
+    let client = ClientId::new(1);
+    let mut states = HashMap::from([(client, NativeRenderState::default())]);
+    let frame_for = |states: &mut HashMap<ClientId, NativeRenderState>,
+                     size: Size,
+                     instruction: Option<&str>| {
+        let mut output = Output::default();
+        output.client_character_chunks.insert(client, vec![]);
+        if let Some(instruction) = instruction {
+            output.add_post_vte_instruction_to_client(client, instruction);
+        }
+        let frames =
+            output.serialize_native(states, &HashMap::from([(client, size)]), &HashMap::new());
+        *decode(&frames[&client]).unwrap().header()
+    };
+    let full = Size { cols: 20, rows: 8 };
+    let cropped = Size { cols: 10, rows: 8 };
+    let header = frame_for(&mut states, full, Some("\x1b[3;15H\x1b[6 q\x1b[?25h"));
+    assert!(header.cursor_visible);
+    assert_eq!((header.cursor_x, header.cursor_y), (14, 2));
+
+    // The tab has not shrunk yet: the cursor is past this recipient's right edge.
+    let header = frame_for(&mut states, cropped, None);
+    assert!(
+        !header.cursor_visible,
+        "a cursor outside the grid is hidden"
+    );
+    assert_eq!((header.cursor_x, header.cursor_y), (14, 2));
+    assert_eq!(header.cursor_shape, CURSOR_SHAPE_BEAM);
+
+    // Only the frame hid it: once the tab fits, the cursor shows again with no new instruction.
+    let header = frame_for(&mut states, full, None);
+    assert!(header.cursor_visible);
+    assert_eq!((header.cursor_x, header.cursor_y), (14, 2));
+    assert_eq!(header.cursor_shape, CURSOR_SHAPE_BEAM);
+
+    // A cursor moved inside the cropped grid shows there.
+    let header = frame_for(&mut states, cropped, Some("\x1b[2;4H"));
+    assert!(header.cursor_visible);
+    assert_eq!((header.cursor_x, header.cursor_y), (3, 1));
+}
+
+#[test]
+fn native_popups_leave_ansi_output_unchanged() {
+    use crate::ui::damage::CellRect;
+    let native = ClientId::new(1);
+    let ansi = ClientId::new(2);
+    let render = |with_popups: bool| {
+        let mut output = popup_test_output(&[native, ansi]);
+        output.add_post_vte_instruction_to_client(ansi, "\x1b[2;3H\x1b[?25h");
+        output.set_native_geometry(native, tiled_geometry());
+        if with_popups {
+            for client in [native, ansi] {
+                output.add_native_popup(
+                    client,
+                    CellRect {
+                        x: 1,
+                        y: 1,
+                        cols: 4,
+                        rows: 2,
+                    },
+                    true,
+                );
+            }
+        }
+        let mut states = HashMap::from([(native, NativeRenderState::default())]);
+        output.serialize_native(&mut states, &HashMap::new(), &HashMap::new());
+        output.serialize().unwrap()
+    };
+    let without = render(false);
+    assert_eq!(render(true), without);
+    assert!(without[&ansi].contains("popup"));
+}

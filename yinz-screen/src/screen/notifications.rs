@@ -423,6 +423,18 @@ impl Screen {
                         std::iter::once(client_id),
                         None,
                     )?;
+                    // The revealed part only: a toast sliding in or out has not painted the
+                    // rest of its box, and those cells still belong to the pane beneath.
+                    output.add_native_popup(
+                        client_id,
+                        CellRect {
+                            x: layout.revealed_x,
+                            y: layout.y,
+                            cols: layout.visible_cols,
+                            rows: layout.height(),
+                        },
+                        false,
+                    );
                 }
             }
             if let Some((rect, lines)) = retry {
@@ -440,6 +452,7 @@ impl Screen {
                     std::iter::once(client_id),
                     None,
                 )?;
+                output.add_native_popup(client_id, rect, false);
             }
             Ok(())
         })();

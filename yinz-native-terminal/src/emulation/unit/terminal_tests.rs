@@ -1051,3 +1051,68 @@ mod transfers {
         assert_eq!(state.graphics().placements().count(), 1);
     }
 }
+
+#[test]
+fn live_images_beneath_a_popup_stay_owned_by_their_pane() {
+    use structured_render::{PaneRect, PANE_FOCUSED, PANE_POPUP};
+    let pane = PaneRect {
+        cols: 12,
+        rows: 6,
+        ..Default::default()
+    };
+    // Covers both the Kitty placement at (2, 3) and the Sixel anchor at (3, 2).
+    let palette = PaneRect {
+        x: 1,
+        y: 1,
+        cols: 6,
+        rows: 4,
+        flags: PANE_POPUP | PANE_FOCUSED,
+        ..Default::default()
+    };
+    let mut state = TerminalState::new(6, 12);
+    state.set_cell_size(8, 20);
+    state.negotiate(caps::Agreement::default(), None);
+    let mut first = FrameBuilder::new(12, 6, 1);
+    first.set_full_repaint(true);
+    first.push_geometry(&GeometryRecord {
+        panes: vec![pane, palette],
+    });
+    first.extend_graphics(&[
+        residency(7, GraphicsMedium::Inline, rgba([1, 2, 3, 255], 4)),
+        placement(7, 1),
+        sixel_at(2, 3, 16, 1),
+    ]);
+    state.apply_frame(&first.finish()).unwrap();
+    assert_eq!(state.graphics().placements().count(), 1);
+    assert_eq!(state.sixels().chunks().count(), 1);
+    assert_eq!(state.geometry().content_pane_at(2, 3), Some(&palette));
+    assert_eq!(state.geometry().image_owner_at(2, 3), Some(&pane));
+    assert_eq!(state.geometry().image_owner_at(3, 2), Some(&pane));
+
+    // The popup closes: the pane still owns both images.
+    let mut closed = FrameBuilder::new(12, 6, 2);
+    closed.push_geometry(&GeometryRecord { panes: vec![pane] });
+    state.apply_frame(&closed.finish()).unwrap();
+    assert_eq!(state.graphics().placements().count(), 1);
+    assert_eq!(state.sixels().chunks().count(), 1);
+
+    // A popup is never an owner, so it cannot stand in for a pane that went away.
+    let mut orphaned = FrameBuilder::new(12, 6, 3);
+    orphaned.push_geometry(&GeometryRecord {
+        panes: vec![palette],
+    });
+    assert!(matches!(
+        state.apply_frame(&orphaned.finish()),
+        Err(FrameError::Protocol(3, reason)) if reason.contains("without an owning pane")
+    ));
+    let mut placed = FrameBuilder::new(12, 6, 3);
+    placed.push_geometry(&GeometryRecord {
+        panes: vec![palette],
+    });
+    placed.extend_graphics(&[placement(7, 2)]);
+    assert!(matches!(
+        state.apply_frame(&placed.finish()),
+        Err(FrameError::Protocol(3, reason)) if reason.contains("no owning pane")
+    ));
+    assert_eq!(state.applied_seq, Some(2));
+}

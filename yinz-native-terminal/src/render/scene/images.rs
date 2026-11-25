@@ -42,7 +42,7 @@ pub fn clip_to_owning_pane(
     let (Ok(cell_x), Ok(cell_y)) = (u16::try_from(cell_x), u16::try_from(cell_y)) else {
         return Some(quad);
     };
-    let Some(pane) = geometry.content_pane_at(cell_x, cell_y) else {
+    let Some(pane) = geometry.image_owner_at(cell_x, cell_y) else {
         return Some(quad);
     };
     let left = pane.content_x() as i64 * metrics.width as i64;

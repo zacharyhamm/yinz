@@ -629,6 +629,32 @@ impl Output {
         self.native_geometry.insert(client, geometry);
     }
 
+    /// Record a screen overlay (toast, menu, palette, modal) that paints `rect` for `client`.
+    /// Call in paint order, from the layout that produced the overlay's chunks, in the same
+    /// tab coordinates as the panes. Native clients that negotiated geometry receive these
+    /// after the panes as `PANE_POPUP` rects whose insets are zero, so an overlay's border
+    /// belongs to the overlay rather than to the pane beneath it. ANSI output ignores them.
+    pub fn add_native_popup(&mut self, client: ClientId, rect: CellRect, focused: bool) {
+        if rect.is_empty() {
+            return;
+        }
+        let clamp = |value: usize| value.min(u16::MAX as usize) as u16;
+        self.native_popups
+            .entry(client)
+            .or_default()
+            .push(PaneRect {
+                x: clamp(rect.x),
+                y: clamp(rect.y),
+                cols: clamp(rect.cols),
+                rows: clamp(rect.rows),
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+                flags: PANE_POPUP | if focused { PANE_FOCUSED } else { 0 },
+            });
+    }
+
     /// Drain just native clients, leaving the ordinary ANSI clients for `serialize`.
     pub fn serialize_native(
         &mut self,
@@ -849,11 +875,15 @@ impl Output {
                     })
                     .collect(),
             });
+            let popups = self.native_popups.remove(client).unwrap_or_default();
+            // A client without tab geometry this frame keeps the absent-geometry meaning, so
+            // popups alone never stand in for the scene.
             if let Some(mut geometry) = self
                 .native_geometry
                 .remove(client)
                 .filter(|_| state.agreement.features & caps::GEOMETRY != 0)
             {
+                geometry.panes.extend(popups);
                 for pane in &mut geometry.panes {
                     pane.x = pane.x.saturating_add(dx.min(u16::MAX as usize) as u16);
                     pane.y = pane.y.saturating_add(dy.min(u16::MAX as usize) as u16);
@@ -863,6 +893,12 @@ impl Output {
             let mut cursor = state.cursor;
             cursor.x = cursor.x.saturating_add(dx.min(u16::MAX as usize) as u16);
             cursor.y = cursor.y.saturating_add(dy.min(u16::MAX as usize) as u16);
+            // A recipient smaller than its tab cannot show a cursor past its grid, as with a
+            // cropped watcher. Only the frame hides it: the state keeps the position and
+            // shape, so the next frame inside the grid shows the cursor again.
+            if usize::from(cursor.x) >= size.cols || usize::from(cursor.y) >= size.rows {
+                cursor.visible = false;
+            }
             builder.set_cursor(cursor);
             self.post_vte_instructions.remove(client);
             // Sixel already has cropped, occluded slices at this stage.

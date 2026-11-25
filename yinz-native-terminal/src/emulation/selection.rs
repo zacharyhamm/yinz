@@ -93,6 +93,8 @@ struct CapturedSelection {
     before: usize,
     selected: usize,
     reverse: bool,
+    /// The scene's panes without its popups, which come and go (toasts, menus) without
+    /// moving any pane. `pane_index` indexes this list.
     panes: Vec<yinz_types::structured_render::PaneRect>,
     pane_index: Option<usize>,
     mappable: bool,
@@ -104,6 +106,13 @@ struct CapturedSelection {
 struct VerifiedLocation {
     units: Vec<Selection>,
     panes: Vec<yinz_types::structured_render::PaneRect>,
+}
+
+/// The geometry's panes without screen popups: the topology a selection maps across.
+fn scene_panes(
+    state: &crate::emulation::terminal::TerminalState,
+) -> impl Iterator<Item = &yinz_types::structured_render::PaneRect> {
+    state.geometry().panes.iter().filter(|pane| !pane.popup())
 }
 
 #[derive(Clone, Copy)]
@@ -121,7 +130,7 @@ impl Region {
     ) -> Option<Self> {
         let size = state.size();
         let region = if let Some(index) = pane_index {
-            let pane = state.geometry().panes.get(index)?;
+            let pane = scene_panes(state).nth(index)?;
             if pane.plugin_ui() || pane.popup() || pane.floating() || pane.under_floating() {
                 return None;
             }
@@ -298,8 +307,8 @@ impl CapturedSelection {
             before: 0,
             selected: 0,
             reverse: range.anchor > range.head,
-            panes: state.geometry().panes.clone(),
-            pane_index: state.geometry().panes.iter().position(|pane| {
+            panes: scene_panes(state).copied().collect(),
+            pane_index: scene_panes(state).position(|pane| {
                 pane.content_contains(range.anchor.1 as u16, range.anchor.0 as u16)
                     && pane.content_contains(range.head.1 as u16, range.head.0 as u16)
             }),
@@ -365,7 +374,7 @@ impl CapturedSelection {
         let Some(location) = &self.location else {
             return false;
         };
-        if location.panes != state.geometry().panes {
+        if !location.panes.iter().eq(scene_panes(state)) {
             return false;
         }
         let affected = |row| match damage {
@@ -399,7 +408,7 @@ impl CapturedSelection {
             return None;
         }
         let region = Region::of(state, self.pane_index)?;
-        let panes = &state.geometry().panes;
+        let panes: &Vec<_> = &scene_panes(state).copied().collect();
         if self.panes.len() != panes.len() {
             return None;
         }

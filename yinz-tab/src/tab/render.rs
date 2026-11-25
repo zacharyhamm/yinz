@@ -871,21 +871,29 @@ impl Tab {
     ) -> yinz_types::structured_render::GeometryRecord {
         use yinz_types::structured_render::*;
         let focused = self.get_active_pane_id(client);
+        let floating_ids = self.floating_panes.rendered_pane_ids();
+        // As upstream: tiled panes are under the floating layer only while the layer itself is
+        // shown. Pinned floats that stay up while the layer is hidden leave tiled panes active.
+        let tiled_flags = if self.are_floating_panes_visible() && !floating_ids.is_empty() {
+            PANE_UNDER_FLOATING
+        } else {
+            0
+        };
+        // Collapsed stack members are included: their one-row title occupies screen cells.
         let panes = self
             .tiled_panes
-            .rendered_pane_ids()
+            .visible_pane_ids()
             .into_iter()
-            .filter_map(|id| self.tiled_panes.get_pane(id).map(|pane| (id, pane, 0)))
-            .chain(
+            .filter_map(|id| {
+                self.tiled_panes
+                    .get_pane(id)
+                    .map(|pane| (id, pane, tiled_flags))
+            })
+            .chain(floating_ids.into_iter().filter_map(|id| {
                 self.floating_panes
-                    .rendered_pane_ids()
-                    .into_iter()
-                    .filter_map(|id| {
-                        self.floating_panes
-                            .get(&id)
-                            .map(|pane| (id, pane, PANE_FLOATING))
-                    }),
-            )
+                    .get(&id)
+                    .map(|pane| (id, pane, PANE_FLOATING))
+            }))
             .chain(
                 self.overlay_panes
                     .rendered_pane_ids()

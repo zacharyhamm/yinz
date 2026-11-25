@@ -186,6 +186,17 @@ impl Screen {
                 std::iter::once(client_id),
                 None,
             )?;
+            // The browser owns this client's input, so each of its entries is a focused popup.
+            output.add_native_popup(
+                client_id,
+                CellRect {
+                    x: entry.x,
+                    y: entry.y,
+                    cols: frame.layout.width,
+                    rows: notification_height(entry.lines.len()),
+                },
+                true,
+            );
         }
         Ok(())
     }

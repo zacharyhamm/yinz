@@ -724,6 +724,17 @@ impl GeometryRecord {
             .find(|pane| pane.content_contains(x, y))
     }
 
+    /// The pane that owns an image anchored at this cell: the topmost pane whose content
+    /// holds it, looking through screen popups. Popups (toasts, menus, the palette) never
+    /// own, clip or invalidate images; hiding images beneath them belongs to the graphics
+    /// layer, not to ownership.
+    pub fn image_owner_at(&self, x: u16, y: u16) -> Option<&PaneRect> {
+        self.panes
+            .iter()
+            .rev()
+            .find(|pane| !pane.popup() && pane.content_contains(x, y))
+    }
+
     pub fn focused_popup(&self) -> Option<&PaneRect> {
         self.panes
             .iter()

@@ -1354,6 +1354,8 @@ fn native_headless_uses_builtin_despite_extensionless_collision() {
 
 #[path = "native_terminal/negotiation.rs"]
 mod negotiation;
+#[path = "native_terminal/scene.rs"]
+mod scene;
 
 #[test]
 fn native_refusal_prefix_headless() {

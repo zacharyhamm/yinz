@@ -388,3 +388,342 @@ fn a_full_cluster_record_falls_back_to_first_code_points_without_breaking_the_fr
     assert_eq!(last, char::from_u32(base - 1).unwrap().to_string());
     assert_eq!(trip.text(rows - 1, cols - 1), " ");
 }
+
+/// A scene of two side-by-side pane grids composed through `Output` at their offsets, with
+/// popups and the cursor instructions tabs emit, applied to a live `TerminalState`.
+mod scene {
+    use super::*;
+    use crate::emulation::screen_buffer::CursorShape;
+    use crate::emulation::terminal::TerminalState;
+    use yinz_terminal::panes::kitty_graphics::{InterceptorResult, KittyApcInterceptor};
+    use yinz_terminal::panes::PaneId;
+    use yinz_terminal::ui::damage::CellRect;
+    use yinz_types::internal_ids::TerminalId;
+    use yinz_types::pane_size::SizeInPixels;
+    use yinz_types::render_negotiation::Agreement;
+    use yinz_types::structured_render::{
+        GeometryRecord, PaneRect, PANE_FOCUSED, PANE_POPUP, PANE_SELECTABLE,
+    };
+
+    const ROWS: usize = 6;
+    const PANE_COLS: usize = 10;
+
+    struct Scene {
+        grids: [Grid; 2],
+        kitty: Rc<RefCell<KittyImageStore>>,
+        links: Rc<RefCell<LinkHandler>>,
+        states: HashMap<ClientId, NativeRenderState>,
+        size: Size,
+        presentation: Option<Presentation>,
+        viewer: TerminalState,
+    }
+
+    fn pane(index: usize) -> PaneRect {
+        PaneRect {
+            x: (index * PANE_COLS) as u16,
+            y: 0,
+            cols: PANE_COLS as u16,
+            rows: ROWS as u16,
+            flags: PANE_SELECTABLE | if index == 0 { PANE_FOCUSED } else { 0 },
+            ..Default::default()
+        }
+    }
+
+    fn popup_rect(rect: CellRect, focused: bool) -> PaneRect {
+        PaneRect {
+            x: rect.x as u16,
+            y: rect.y as u16,
+            cols: rect.cols as u16,
+            rows: rect.rows as u16,
+            flags: PANE_POPUP | if focused { PANE_FOCUSED } else { 0 },
+            ..Default::default()
+        }
+    }
+
+    fn offset(rect: PaneRect, (dx, dy): (usize, usize)) -> PaneRect {
+        PaneRect {
+            x: rect.x + dx as u16,
+            y: rect.y + dy as u16,
+            ..rect
+        }
+    }
+
+    impl Scene {
+        fn new() -> Self {
+            let kitty = Rc::new(RefCell::new(KittyImageStore::default()));
+            let links = Rc::new(RefCell::new(LinkHandler::new()));
+            let grid = || {
+                Grid::new(
+                    ROWS,
+                    PANE_COLS,
+                    Rc::new(RefCell::new(Palette::default())),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    links.clone(),
+                    Rc::new(RefCell::new(Some(SizeInPixels {
+                        width: 10,
+                        height: 20,
+                    }))),
+                    Rc::new(RefCell::new(SixelImageStore::default())),
+                    kitty.clone(),
+                    Style::default(),
+                    false,
+                    true,
+                    true,
+                    true,
+                    false,
+                )
+            };
+            let size = Size {
+                cols: 2 * PANE_COLS,
+                rows: ROWS,
+            };
+            let mut viewer = TerminalState::new(size.rows, size.cols);
+            viewer.set_cell_size(10, 20);
+            viewer.negotiate(Agreement::default(), None);
+            Scene {
+                grids: [grid(), grid()],
+                kitty,
+                links,
+                states: HashMap::from([(CLIENT, NativeRenderState::default())]),
+                size,
+                presentation: None,
+                viewer,
+            }
+        }
+
+        fn feed(&mut self, pane: usize, bytes: &[u8]) {
+            let mut parser = vte::Parser::new();
+            let mut interceptor = KittyApcInterceptor::new();
+            for byte in bytes {
+                match interceptor.advance(*byte) {
+                    InterceptorResult::Forward(forward) => {
+                        parser.advance(&mut self.grids[pane], forward.as_slice())
+                    },
+                    InterceptorResult::Captured(command) => {
+                        self.grids[pane].handle_kitty_apc(&command);
+                    },
+                    InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
+                }
+            }
+        }
+
+        /// Render both panes and send one frame with this scene's popups and cursor bytes.
+        fn frame(&mut self, popups: &[(CellRect, bool)], cursor: &str) {
+            let mut output = Output::new(
+                Rc::new(RefCell::new(SixelImageStore::default())),
+                Rc::new(RefCell::new(Some(SizeInPixels {
+                    width: 10,
+                    height: 20,
+                }))),
+                true,
+                true,
+                self.kitty.clone(),
+                Rc::new(RefCell::new(HashMap::from([(CLIENT, true)]))),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+            );
+            output.add_clients(&HashSet::from([CLIENT]), self.links.clone(), None);
+            for (index, grid) in self.grids.iter_mut().enumerate() {
+                let Some((chunks, _, _, kitty)) = grid
+                    .render(index * PANE_COLS, 0, &Style::default())
+                    .unwrap()
+                else {
+                    continue;
+                };
+                output
+                    .add_character_chunks_to_client(CLIENT, chunks, None)
+                    .unwrap();
+                output.add_kitty_image_chunks_to_client(
+                    CLIENT,
+                    PaneId::Terminal(TerminalId::new(index as u32)),
+                    kitty,
+                    None,
+                );
+            }
+            // Tabs and overlays always leave the frame non-empty for a native client.
+            output.add_post_vte_instruction_to_client(CLIENT, cursor);
+            output.set_native_geometry(
+                CLIENT,
+                GeometryRecord {
+                    panes: vec![pane(0), pane(1)],
+                },
+            );
+            for (rect, focused) in popups {
+                output.add_native_popup(CLIENT, *rect, *focused);
+            }
+            let presentations: HashMap<_, _> = self
+                .presentation
+                .map(|presentation| (CLIENT, presentation))
+                .into_iter()
+                .collect();
+            let mut frames = output.serialize_native(
+                &mut self.states,
+                &HashMap::from([(CLIENT, self.presentation.map_or(self.size, |p| p.terminal))]),
+                &presentations,
+            );
+            self.viewer
+                .apply_frame(&frames.remove(&CLIENT).unwrap())
+                .expect("the live viewer accepts every production frame");
+        }
+
+        fn row(&self, row: usize) -> String {
+            (0..self.viewer.size().cols)
+                .map(|col| self.viewer.screen().cell(row, col).character())
+                .collect()
+        }
+    }
+
+    fn kitty_apc(control: &str, payload: &[u8]) -> Vec<u8> {
+        use base64::Engine as _;
+        let mut out = b"\x1b_G".to_vec();
+        out.extend_from_slice(control.as_bytes());
+        out.push(b';');
+        out.extend_from_slice(
+            base64::engine::general_purpose::STANDARD
+                .encode(payload)
+                .as_bytes(),
+        );
+        out.extend_from_slice(b"\x1b\\");
+        out
+    }
+
+    #[test]
+    fn a_popup_over_a_kitty_image_keeps_the_pane_as_its_owner_and_cursor_rules_hold() {
+        let mut scene = Scene::new();
+        scene.feed(0, b"LEFT\r\n");
+        // A 2x2-cell image at the left pane's second row; the cursor stays put.
+        let raster: Vec<u8> = (0..20 * 40 * 3).map(|i| (i % 251) as u8).collect();
+        scene.feed(0, &kitty_apc("a=T,f=24,s=20,v=40,i=1,C=1", &raster));
+        scene.feed(1, b"RIGHT");
+        let palette = CellRect {
+            x: 0,
+            y: 0,
+            cols: 8,
+            rows: 3,
+        };
+        let toast = CellRect {
+            x: 12,
+            y: 4,
+            cols: 6,
+            rows: 2,
+        };
+        scene.frame(
+            &[(toast, false), (palette, true)],
+            "\x1b[2;5H\x1b[6 q\x1b[?25h",
+        );
+        assert_eq!(
+            scene.viewer.geometry().panes,
+            vec![
+                pane(0),
+                pane(1),
+                popup_rect(toast, false),
+                popup_rect(palette, true)
+            ],
+            "the scene arrives with popups last, in paint order"
+        );
+        let placements: Vec<_> = scene.viewer.graphics().placements().collect();
+        assert_eq!(
+            placements.len(),
+            1,
+            "the image under the palette is accepted"
+        );
+        let (x, y) = (placements[0].cell_x as u16, placements[0].cell_y as u16);
+        assert_eq!((x, y), (0, 1));
+        assert_eq!(
+            scene.viewer.geometry().content_pane_at(x, y).unwrap().flags & PANE_POPUP,
+            PANE_POPUP
+        );
+        assert_eq!(scene.viewer.geometry().image_owner_at(x, y), Some(&pane(0)));
+        assert!(scene.row(0).starts_with("LEFT"));
+        assert_eq!(&scene.row(0)[10..15], "RIGHT");
+        assert!(scene.viewer.cursor_is_visible());
+        assert_eq!(scene.viewer.cursor_position(), (1, 4));
+        assert_eq!(scene.viewer.cursor_shape(), CursorShape::Beam);
+
+        // An input overlay hides the cursor; position and shape survive the hide.
+        scene.feed(1, b"!");
+        scene.frame(&[(palette, true)], "\x1b[?25l");
+        assert!(!scene.viewer.cursor_is_visible());
+        assert_eq!(scene.viewer.cursor_position(), (1, 4));
+        assert_eq!(scene.viewer.cursor_shape(), CursorShape::Beam);
+        assert_eq!(
+            scene.viewer.geometry().panes,
+            vec![pane(0), pane(1), popup_rect(palette, true)],
+            "the toast's rect left with it"
+        );
+
+        // The overlay closes: the cursor returns where it was, the scene is the panes alone.
+        scene.feed(1, b"?");
+        scene.frame(&[], "\x1b[?25h");
+        assert!(scene.viewer.cursor_is_visible());
+        assert_eq!(scene.viewer.cursor_position(), (1, 4));
+        assert_eq!(scene.viewer.cursor_shape(), CursorShape::Beam);
+        assert_eq!(scene.viewer.geometry().panes, vec![pane(0), pane(1)]);
+        assert_eq!(scene.viewer.graphics().placements().count(), 1);
+    }
+
+    #[test]
+    fn a_presentation_change_rebuilds_geometry_cursor_and_cells_and_a_cropped_cursor_hides() {
+        let mut scene = Scene::new();
+        scene.feed(0, b"LEFT");
+        scene.feed(1, b"RIGHT");
+        let menu = CellRect {
+            x: 11,
+            y: 1,
+            cols: 6,
+            rows: 3,
+        };
+        scene.frame(&[(menu, true)], "\x1b[1;5H\x1b[?25h");
+        assert_eq!(scene.viewer.cursor_position(), (0, 4));
+
+        // The client grows past the tab: the frame is a full repaint, everything offset.
+        let presentation = Presentation {
+            terminal: Size { cols: 24, rows: 8 },
+            content: scene.size,
+            background: PaletteColor::EightBit(0),
+        };
+        let (dx, dy) = presentation.offset();
+        assert_eq!((dx, dy), (2, 1));
+        scene.presentation = Some(presentation);
+        for grid in &mut scene.grids {
+            grid.render_full_viewport();
+        }
+        scene.frame(&[(menu, true)], "");
+        assert_eq!(scene.viewer.size().cols, 24);
+        assert_eq!(
+            scene.viewer.geometry().panes,
+            vec![
+                offset(pane(0), (dx, dy)),
+                offset(pane(1), (dx, dy)),
+                offset(popup_rect(menu, true), (dx, dy))
+            ]
+        );
+        assert!(scene.viewer.cursor_is_visible());
+        assert_eq!(scene.viewer.cursor_position(), (dy, 4 + dx));
+        assert_eq!(&scene.row(dy)[dx..dx + 4], "LEFT");
+        assert_eq!(&scene.row(dy)[dx + 10..dx + 15], "RIGHT");
+
+        // Mid-reflow the client is narrower than the tab; the cursor in the right pane is
+        // past its grid and hidden, cells are cropped, and the cursor returns once it fits.
+        scene.presentation = None;
+        scene.size = Size { cols: 12, rows: 6 };
+        for grid in &mut scene.grids {
+            grid.render_full_viewport();
+        }
+        scene.frame(&[], "\x1b[1;16H");
+        assert_eq!(scene.viewer.size().cols, 12);
+        assert!(!scene.viewer.cursor_is_visible());
+        assert_eq!(scene.row(0), "LEFT      RI");
+        scene.size = Size {
+            cols: 2 * PANE_COLS,
+            rows: ROWS,
+        };
+        for grid in &mut scene.grids {
+            grid.render_full_viewport();
+        }
+        scene.frame(&[], "");
+        assert!(scene.viewer.cursor_is_visible());
+        assert_eq!(scene.viewer.cursor_position(), (0, 15));
+    }
+}

@@ -877,6 +877,50 @@ fn the_topmost_pane_owns_a_cell_two_panes_share() {
     assert_eq!(record.content_pane_at(40, 40), None);
 }
 
+fn popup(x: u16, y: u16, cols: u16, rows: u16, flags: u8) -> PaneRect {
+    PaneRect {
+        x,
+        y,
+        cols,
+        rows,
+        flags: flags | PANE_POPUP,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn image_owner_looks_through_popups_to_the_pane_beneath() {
+    let record = GeometryRecord {
+        panes: vec![
+            pane(0, 0, 20, 10, 0),
+            pane(4, 2, 8, 4, PANE_FLOATING),
+            popup(2, 1, 6, 3, 0),
+            popup(10, 3, 6, 4, PANE_FOCUSED),
+        ],
+    };
+    // The popup is the topmost rect at these cells, and still owns no image.
+    assert_eq!(record.content_pane_at(3, 1), Some(&record.panes[2]));
+    assert_eq!(record.image_owner_at(3, 1), Some(&record.panes[0]));
+    assert_eq!(record.content_pane_at(6, 3), Some(&record.panes[2]));
+    assert_eq!(record.image_owner_at(6, 3), Some(&record.panes[1]));
+    assert_eq!(record.content_pane_at(10, 4), Some(&record.panes[3]));
+    assert_eq!(record.image_owner_at(10, 4), Some(&record.panes[1]));
+    // Outside every popup, ownership is the topmost pane's, as before.
+    assert_eq!(record.image_owner_at(15, 8), Some(&record.panes[0]));
+}
+
+#[test]
+fn image_owner_is_absent_where_only_a_popup_or_a_frame_covers_the_cell() {
+    let record = GeometryRecord {
+        panes: vec![pane(0, 0, 10, 6, 0), popup(12, 0, 6, 3, PANE_FOCUSED)],
+    };
+    assert_eq!(record.image_owner_at(13, 1), None);
+    // The frame ring holds no content, so no image anchors there either.
+    assert_eq!(record.image_owner_at(0, 0), None);
+    assert_eq!(record.image_owner_at(1, 1), Some(&record.panes[0]));
+    assert_eq!(GeometryRecord::default().image_owner_at(0, 0), None);
+}
+
 #[test]
 fn clipping_a_pane_trims_the_rectangle_and_the_frame_ring_it_loses() {
     let framed = pane(0, 0, 20, 10, 0);

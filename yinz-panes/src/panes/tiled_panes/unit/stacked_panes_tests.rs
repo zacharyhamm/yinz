@@ -1438,3 +1438,58 @@ fn break_pane_out_of_a_stack_too_small_to_split_leaves_it_whole() {
         .is_none());
     assert_eq!(geoms(&mock_panes), before);
 }
+
+#[test]
+fn visible_pane_ids_keep_collapsed_stack_titles_and_drop_hidden_panes() {
+    use super::super::tiled_pane_ids_on_screen;
+    use std::collections::{BTreeMap, HashSet};
+    let stacked = |rows: Dimension, y: usize| -> Box<dyn Pane> {
+        Box::new(MockPane::new(PaneGeom {
+            y,
+            rows,
+            cols: Dimension::percent(100.0),
+            stacked: Some(0),
+            ..Default::default()
+        }))
+    };
+    let id = |n| PaneId::Terminal(crate::TerminalId::new(n));
+    let mut expanded_rows = Dimension::percent(50.0);
+    expanded_rows.set_inner(8);
+    let mut collapsed_rows = Dimension::fixed(1);
+    collapsed_rows.set_inner(1);
+    let mut whole_rows = Dimension::percent(50.0);
+    whole_rows.set_inner(10);
+    let mut panes: BTreeMap<PaneId, Box<dyn Pane>> = BTreeMap::new();
+    panes.insert(id(4), stacked(collapsed_rows, 0));
+    panes.insert(id(2), stacked(expanded_rows, 1));
+    panes.insert(id(3), stacked(collapsed_rows, 9));
+    panes.insert(
+        id(1),
+        Box::new(MockPane::new(PaneGeom {
+            y: 10,
+            rows: whole_rows,
+            cols: Dimension::percent(100.0),
+            ..Default::default()
+        })),
+    );
+
+    let nothing_hidden = HashSet::new();
+    assert_eq!(
+        tiled_pane_ids_on_screen(&panes, &nothing_hidden, true),
+        vec![id(1), id(2), id(3), id(4)],
+        "collapsed titles occupy cells, in id order"
+    );
+    assert_eq!(
+        tiled_pane_ids_on_screen(&panes, &nothing_hidden, false),
+        vec![id(1), id(2)],
+        "collapsed members render no content"
+    );
+
+    // Fullscreen hides every pane but the fullscreen one, collapsed titles included.
+    let hidden: HashSet<PaneId> = [id(1), id(3), id(4)].into();
+    assert_eq!(tiled_pane_ids_on_screen(&panes, &hidden, true), vec![id(2)]);
+    assert_eq!(
+        tiled_pane_ids_on_screen(&panes, &hidden, false),
+        vec![id(2)]
+    );
+}
